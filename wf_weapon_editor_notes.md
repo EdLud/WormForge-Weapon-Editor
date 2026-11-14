@@ -2134,6 +2134,13 @@ the fix. The rest came out of testing on a 390 px viewport:
   the control's, and no tip opens.
 - the help glyph was a 14 px target, which is a coin toss with a thumb. The
   clickable span carries `-m-1.5 p-1.5`, so it is 26 px without moving the icon.
+- **the label's own text must keep its activation.** The first version swallowed
+  it for every label, which made a checkbox card look dead on a phone: the words
+  are the big target a thumb hits, not the 14 px box. It is only cancelled for a
+  titled element *inside* a label (the help icon beside the text). On a touch
+  screen a label tap now toggles or focuses *and* opens the bubble, because a
+  finger has no hover; with a mouse it only activates, since the native tooltip
+  already showed the text.
 
 ### Frames must divide the height, or the loader drops the sheet
 
@@ -2226,11 +2233,102 @@ that stamps instead of blasting, so `power` is the gate. Strikes never reach the
 hook at all (their munitions are built from the strike's own record copy), and a
 mine has no impact heading.
 
-### Electrical blast damage is a hit kind, not a separate library
+### Electrical blast damage: arm the hurt, do not patch the library
 
 `blast.explode` takes a `kind`, and `"taze"` is the scripted electric kind
 (`crates/game/src/hit_kind.rs`). WA applies it as a Prod hit, but a `wa.on.hit`
-handler sees `"taze"`, which is exactly how PX's electric weapons recognise their
-own damage and chain. So the burst card's custom hit values carry an
-Explosive/Electrical toggle, and only the custom blast names a kind, `effect`
+handler sees `"taze"`, which is how PX's electric weapons recognise their own
+damage and chain. So the burst card's custom hit values carry an
+Explosive/Electrical toggle, and only the custom blast names a kind; `effect`
 mode leaves WA's own hit untouched, and the native record has no field for it.
+
+The first version of this stopped there, and the user's report was right: the
+worms took a blast and nothing tazed. WA has no electric hit kind (not one of the
+eleven 0x4B kinds), so a name cannot electrocute anything. The first fix added
+PX's second pass to `effects.sdk`'s `custom_explosion` and handed it the taze
+module as `zap`. It worked, and it was the wrong trade: `effects.sdk` is
+installed on every author's machine, so a pass added there only takes effect once
+every one of them has the new copy, and the editor would quietly ship a bundle
+that does less for anyone who has not updated.
+
+`px.electric` already solves this, and packs already depend on it. Its damage
+module is installed as `wf-lib/electric/damage`, and its whole job is to taze a
+hurt that already happened:
+
+- `zap.set_message_electric(frames, push_x, push_y, retain, window)` arms the
+  next hit for 8 frames; `wa.on.hurt`'s `post` then tazes every worm that lost
+  health. `retain` captures the worm's velocity, which is the knockback the blast
+  gives it, and re-applies it on release, so a tazed blast still throws the worm.
+  That is PX's `TazeArtificial`.
+- `zap.set_message_electric_missile(frames, owner, window)` does the same for a
+  blast-kind hurt, scoped to that shooter's blast. It is what lets an *overlay*
+  burst taze at all: `on_explode` runs before WA's own blast (`missile_boom.rs`'s
+  `boom_hook` calls the callback, then jumps to WA's detonate), so the arm is in
+  place when the native blast lands.
+
+So the generator declares `local zap`, assigns it inside `install(ctx)`, adds one
+arm line at the top of `on_explode`, and declares `px.electric` in `mod.toml`.
+Nothing else changes: `custom_explosion` keeps the `kind` argument and stays the
+version everyone already has, and the taze sheets and loop sound come from
+`px.electric`'s namespace instead of the weapon's `sprites`.
+
+**The require has to be inside `install`, and that cost a bundle.** The first cut
+wrote `local zap = require("wf-lib/electric/damage")` at the top of the weapon,
+next to `px_effects` and `trail`, and it failed the whole component:
+
+```
+ERROR mod loader: the weapons' defaults can't be read: weapon wfws.hydrogen_bait:
+wa.depth while declaring: a component's file only returns its data; use wa in install(ctx)
+  [string "lib/electric_damage.lua"]:25: in main chunk
+ERROR overlay failed: no overlay (InitGraphic did not run)
+```
+
+A component file is data: the engine parses it before `wa` exists, so a
+module-level `require` of anything that touches `wa` at load takes the bundle
+down with it (`electric_damage.lua` line 25 is `local DEPTH = wa.depth and …`,
+plus a `wa.assets.load` just below). The fix is the ordinary Lua pattern: declare
+`local zap` at module level so the module-level helpers (`stamp_hit`) capture the
+upvalue when they are defined, and assign it on the first line of
+`install(ctx)`. Every arm runs from a callback, long after install, so the value
+is always there by then. `px_electric`'s own Electric Mine does the same thing for
+the same reason (`weapons/electric_mine.lua`: "electric_damage reads wa at load,
+so it must wait for install"), which is the reference to copy rather than a
+workaround. The other modules the generator requires do not touch
+`wa` while loading, which is why they were fine at module level; a new one has to
+be checked before it joins them.
+
+Two details are easy to get wrong. The arm window is frames, not events, so it is
+short on purpose (8 by default, 2 in effect mode): a weapon that arms and then
+does not blast in that window simply does not taze, which beats an arm that
+survives until some later explosion and tazes the wrong worm. And the taze
+releases with the captured velocity, so passing `retain` matters: without it the
+worm is dropped with PX's small default pop and the blast's knockback vanishes
+into the hold.
+
+The javelin's pierce (`terrainStamp.impact`) is the same hurt in a different
+clothes: `o:hurt{ amount, vx, vy, kind }` with `kind = "taze"`, one target per
+call. It had the same bug for the same reason, so `stamp_hit` arms its own hit
+(`zap.set_message_electric(20, 0, -4, true, 2)`) before it walks the targets. The
+ordering trap is Lua's, not the generator's: `stamp_hit` is a `local function`,
+and Lua binds a function's upvalues when it is *defined*, so the
+`local zap = require("wf-lib/electric/damage")` line has to be emitted before it.
+Written after, the function reads a nil global and the weapon errors on the
+first pierce. `check_mod_import` asserts the position for exactly that reason.
+An electrical pierce needs no burst and no stamp sheet: the arm, the module and
+the dependency are the whole feature.
+
+**The card's damage timing is a pair, not one checkbox.** The first version put a
+lone "Pierce Targets" switch in the section header, and turning it off was
+supposed to mean "the record's own blast does the damage", which nothing on the
+card said. It is now two boxes side by side, `Pierce Targets` and `On Explosion`,
+the same boolean with one inverted, so exactly one is always ticked and the
+alternative is visible. Clicking the ticked one does nothing (a pair, not two
+switches), and the unticked box explains itself in its own tooltip.
+
+The default stays `On Explosion` on purpose. `DEFAULT_TERRAIN_STAMP` is shared by
+every new project, by `App`'s starter weapon and by `gen_test_pack`'s `makeOp`, so
+flipping `impact.enabled` to true would make a fresh weapon pierce with its blast
+zeroed and turn all 43 test weapons into pierce tests. "On by default" is only
+meaningful where the value is actually read, and that is exactly where it does
+damage to the defaults.
+

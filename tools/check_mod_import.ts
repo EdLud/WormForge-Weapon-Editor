@@ -57,7 +57,7 @@ const files: ModFile[] = walk(BUNDLE).map((full) => {
 const bundles = readBundles(files);
 const weapons = readWeapons(bundles, files);
 check('test pack has one bundle', bundles.length === 1, String(bundles.length));
-check('test pack has 40 weapons', weapons.length === 40, String(weapons.length));
+check('test pack has 43 weapons', weapons.length === 43, String(weapons.length));
 
 const byName = new Map(weapons.map((weapon) => [weapon.name, weapon]));
 const projects = new Map<string, WeaponProject>();
@@ -396,6 +396,16 @@ for (const [name, p] of projects) {
     check(`${name}: regen keeps sounds`, lua.includes('sounds = {'));
   }
   check(`${name}: regen is non-empty`, lua.includes('wa.weapons.replace'));
+  // `wf-lib/electric/damage` reads `wa.depth` and loads its taze sheets while it
+  // loads, and a component file is data: the engine has no `wa` until
+  // `install(ctx)`. Required at module level it fails the whole bundle with
+  // "a component's file only returns its data; use wa in install(ctx)".
+  const damageRequire = lua.indexOf('require("wf-lib/electric/damage")');
+  check(
+    `${name}: the taze module is required inside install`,
+    damageRequire === -1 || damageRequire > lua.indexOf('install = function(ctx)'),
+    'a load-time require of a module that reads wa',
+  );
 }
 
 // ---- custom on_explode survives, generated lines do not ------------------
@@ -626,6 +636,125 @@ return {
     'WF 40: pingpong emitted after cyclical',
     /cyclical = 6,\s*\n\s*pingpong = true,/.test(lua),
     'pingpong row missing',
+  );
+}
+
+// ---- electric blast taze (WF 41) ----------------------------------------
+{
+  const p = project('WF 41 Electric Blast')!;
+  near('WF 41: damage type read back', p.explosionEffect?.damageType, 'electric');
+  near('WF 41: blast mode', p.explosionEffect?.mode, 'blast');
+  near('WF 41: damage', p.explosionEffect?.damage, 30);
+  const lua = generateLuaCode(fullProject(p, 'WF 41 Electric Blast'));
+  check(
+    'WF 41: taze module declared, required in install',
+    /^local zap$/m.test(lua) &&
+      lua.includes('    zap = require("wf-lib/electric/damage")'),
+    'zap declaration or install require missing',
+  );
+  check(
+    'WF 41: the taze module is not required at load',
+    lua.indexOf('require("wf-lib/electric/damage")') >
+      lua.indexOf('install = function(ctx)'),
+    'a load-time require of a module that reads wa fails the bundle',
+  );
+  check(
+    'WF 41: the hurt is armed before the blast',
+    lua.indexOf('zap.set_message_electric(20') > 0 &&
+      lua.indexOf('zap.set_message_electric(20') < lua.indexOf('blast.explode{'),
+    'arm missing or after the blast',
+  );
+  check(
+    'WF 41: the hit still travels as the taze kind',
+    lua.includes('kind = "taze"'),
+    'kind row missing',
+  );
+  check(
+    'WF 41: custom_explosion is handed no taze module',
+    !/zap = zap,/.test(lua),
+    'an option the SDK does not have',
+  );
+  check(
+    'WF 41: px.electric declared',
+    generateModToml(fullProject(p, 'WF 41 Electric Blast')).includes('"px.electric"'),
+    'dependency missing',
+  );
+  // The overlay mode arms WA's own blast instead: it stays, and still tazes.
+  const overlay = fullProject(
+    { ...p, explosionEffect: { ...p.explosionEffect!, mode: 'effect' } } as WeaponProject,
+    'WF 41 Overlay',
+  );
+  const overlayLua = generateLuaCode(overlay);
+  check(
+    'WF 41 overlay: WA blast is armed, not replaced',
+    overlayLua.includes('zap.set_message_electric_missile(20, ev.worm, 2)') &&
+      !overlayLua.includes('blast.explode{'),
+    'overlay arm or blast replacement wrong',
+  );
+  check(
+    'WF 41 overlay: px.electric still declared',
+    generateModToml(overlay).includes('"px.electric"'),
+    'dependency missing',
+  );
+}
+
+// ---- electric overlay burst (WF 42) --------------------------------------
+{
+  const p = project('WF 42 Electric Overlay')!;
+  near('WF 42: overlay mode', p.explosionEffect?.mode, 'effect');
+  near('WF 42: damage type read back without a kind', p.explosionEffect?.damageType, 'electric');
+  check(
+    'WF 42: the arm is not left behind as custom Lua',
+    !p.enableCustomLua && !(p.customLuaSnippet ?? '').includes('set_message_electric'),
+    p.customLuaSnippet ?? '(empty)',
+  );
+  const lua = generateLuaCode(fullProject(p, 'WF 42 Electric Overlay'));
+  check(
+    'WF 42: WA blast is armed, not replaced',
+    lua.includes('zap.set_message_electric_missile(20, ev.worm, 2)') &&
+      !lua.includes('blast.explode{'),
+    'arm or replacement wrong',
+  );
+  check(
+    'WF 42: px.electric declared',
+    generateModToml(fullProject(p, 'WF 42 Electric Overlay')).includes('"px.electric"'),
+    'dependency missing',
+  );
+}
+
+// ---- electrical pierce (WF 43) -------------------------------------------
+{
+  const p = project('WF 43 Electric Pierce')!;
+  near('WF 43: impact enabled', p.terrainStamp?.impact?.enabled, true);
+  near('WF 43: hit kind', p.terrainStamp?.impact?.kind, 'taze');
+  near('WF 43: stamp itself is off', p.terrainStamp?.enabled, false);
+  const lua = generateLuaCode(fullProject(p, 'WF 43 Electric Pierce'));
+  check(
+    'WF 43: zap is a local before stamp_hit',
+    /^local zap$/m.test(lua) && lua.indexOf('local zap') < lua.indexOf('local function stamp_hit'),
+    'the arm would read a nil global',
+  );
+  check(
+    'WF 43: stamp_hit reads it after install assigns it',
+    lua.indexOf('    zap = require("wf-lib/electric/damage")') >
+      lua.indexOf('install = function(ctx)'),
+    'required at load, where wa does not exist',
+  );
+  check(
+    'WF 43: the pierce arms its hurt before it lands',
+    lua.indexOf('zap.set_message_electric(20') > lua.indexOf('local function stamp_hit') &&
+      lua.indexOf('zap.set_message_electric(20') < lua.indexOf('o:hurt{'),
+    'arm missing or after the hurt',
+  );
+  check(
+    'WF 43: px.electric declared',
+    generateModToml(fullProject(p, 'WF 43 Electric Pierce')).includes('"px.electric"'),
+    'dependency missing',
+  );
+  check(
+    'WF 43: no stamp is written',
+    !lua.includes('wa.land.stamp{') && !generateModToml(fullProject(p, 'WF 43 Electric Pierce')).includes('stamp.png'),
+    'a stamp the author did not enable',
   );
 }
 

@@ -82,6 +82,55 @@ const StripFrame: React.FC<{
  * frame of a vertical strip, so the upload is baked into 32 cells: frame 0 up,
  * clockwise, and the frame is picked from the impact heading.
  */
+/**
+ * One half of the damage-timing pair: what the round does when it lands.
+ *
+ * Two mutually exclusive choices shown as two checkboxes, because the pair is
+ * the only way a reader can tell that turning the pierce off is not "no damage"
+ * but "the blast does it". The unselected one is never hidden, so the
+ * alternative is always visible; it just cannot be unchecked by clicking.
+ */
+const ModeChip: React.FC<{
+  label: string;
+  on: boolean;
+  accent: 'amber' | 'forge';
+  title?: string;
+  onClick: () => void;
+}> = ({ label, on, accent, title, onClick }) => (
+  <label
+    title={title}
+    className={`flex cursor-pointer items-center gap-2 rounded-lg border px-2.5 py-1 ${
+      on
+        ? accent === 'amber'
+          ? 'border-amber-300 bg-amber-50/80 dark:border-amber-800/70 dark:bg-amber-950/30'
+          : 'border-forge-300 bg-forge-50/80 dark:border-forge-800/70 dark:bg-forge-950/30'
+        : 'border-stone-200 bg-white dark:border-stone-700 dark:bg-stone-900'
+    }`}
+  >
+    <input
+      type="checkbox"
+      checked={on}
+      // A pair, not two switches: ticking the other one is the only way to
+      // change it, so clicking the active box keeps it active.
+      onChange={() => onClick()}
+      className={`h-3.5 w-3.5 cursor-pointer rounded focus:ring-forge-500 ${
+        accent === 'amber' ? 'text-amber-600' : 'text-forge-600'
+      }`}
+    />
+    <span
+      className={`whitespace-nowrap text-[11px] font-semibold ${
+        on
+          ? accent === 'amber'
+            ? 'text-amber-900 dark:text-amber-100'
+            : 'text-forge-900 dark:text-forge-100'
+          : 'text-stone-700 dark:text-stone-200'
+      }`}
+    >
+      {label}
+    </span>
+  </label>
+);
+
 export const TerrainStampCard: React.FC<Props> = ({ project, onChange }) => {
   if (!supportsTerrainStamp(project)) return null;
   const stamp: TerrainStampConfig = project.terrainStamp ?? DEFAULT_TERRAIN_STAMP;
@@ -362,29 +411,30 @@ export const TerrainStampCard: React.FC<Props> = ({ project, onChange }) => {
             <SubSectionTitle
               title="Damage On Impact"
               code="stamp_hit"
-              desc="PX's javelin: the round damages whatever is at the impact point, worms, mines, crates and oil drums, instead of exploding, and only sticks in the land when it hit nothing. The record's own blast is zeroed so nothing blasts twice."
+              desc="When the round's damage happens. Pierce Targets is PX's javelin: it damages whatever is at the impact point (worms, mines, crates, oil drums) instead of exploding, and sticks in the land only when it hit nothing. On Explosion leaves the record's own blast to do the work. The two are exclusive because the pierce zeroes the blast, so nothing can blast twice."
               right={
-                <label
-                  title={buildTooltip(
-                    'Zeroes missile.explosion.power / push_pct and damages the target from on_explode instead.',
-                    'STAMP_HIT',
-                  )}
-                  className={`flex cursor-pointer items-center gap-2 rounded-lg border px-2.5 py-1 ${
-                    impact.enabled
-                      ? 'border-amber-300 bg-amber-50/80 dark:border-amber-800/70 dark:bg-amber-950/30'
-                      : 'border-stone-200 bg-white dark:border-stone-700 dark:bg-stone-900'
-                  }`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={impact.enabled}
-                    onChange={(e) => updateImpact({ enabled: e.target.checked })}
-                    className="h-3.5 w-3.5 cursor-pointer rounded text-forge-600 focus:ring-forge-500"
+                <div className="flex items-center gap-1.5">
+                  <ModeChip
+                    label="Pierce Targets"
+                    accent="amber"
+                    on={impact.enabled}
+                    title={buildTooltip(
+                      'The round damages whatever is at the impact point instead of exploding, and sticks in the land only when it hit nothing. Zeroes missile.explosion.power / push_pct. One of this pair, never both.',
+                      'STAMP_HIT',
+                    )}
+                    onClick={() => updateImpact({ enabled: true })}
                   />
-                  <span className="text-[11px] font-semibold text-stone-700 dark:text-stone-200">
-                    Pierce Targets
-                  </span>
-                </label>
+                  <ModeChip
+                    label="On Explosion"
+                    accent="forge"
+                    on={!impact.enabled}
+                    title={buildTooltip(
+                      'The round bursts and its own blast does the damage, as a stock weapon does. One of this pair, never both: ticking Pierce Targets is what stops the blast.',
+                      'STAMP_HIT',
+                    )}
+                    onClick={() => updateImpact({ enabled: false })}
+                  />
+                </div>
               }
             />
             {impact.enabled ? (
@@ -447,7 +497,7 @@ export const TerrainStampCard: React.FC<Props> = ({ project, onChange }) => {
                     <TooltipLabel
                       label="Hit Kind"
                       code="kind"
-                      desc="The kind the hit is reported as: WA's own names plus the scripted taze. Only custom blast hits can send a taze kind, and there is no blast here."
+                      desc="The kind the hit is reported as: WA's own names plus the scripted taze. Taze is the electrical one: the pierce arms the hurt first, so px.electric holds the worm in the sparking pose and throws it when the hold releases, the same way the burst card's electrical type works."
                       htmlFor="stamp-hit-kind"
                     />
                     <select
@@ -492,8 +542,10 @@ export const TerrainStampCard: React.FC<Props> = ({ project, onChange }) => {
               </>
             ) : (
               <p className="text-[11px] text-stone-500 dark:text-stone-400">
-                Off: the round bursts with the record's own blast. Turning this on zeroes that blast
-                and damages what it hits instead.
+                The round bursts and its own blast does the damage, so nothing here applies. Tick{' '}
+                <strong>Pierce Targets</strong> to hit what it lands on instead: that zeroes the
+                blast, which is why only one of the two can be on. To change the burst itself, use
+                the Explosion Burst tab.
               </p>
             )}
           </div>

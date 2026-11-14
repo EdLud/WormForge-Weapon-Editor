@@ -11,10 +11,15 @@ import { useEffect, useRef, useState } from 'react';
  *
  * - The `title` is moved to `data-tip-tap` while the bubble is open, so the
  *   native tooltip cannot pop up on top of it.
- * - A tap on a `<label>` is swallowed (`preventDefault`), because forwarding it
- *   to the input would open the on-screen keyboard behind the bubble.
  * - Real controls (`button`, `input`, `select`, `textarea`, `a`) keep their
  *   own click; their `title` is not a tooltip the user is trying to read.
+ * - A `<label>`'s own text keeps its activation too: a thumb aims at the words
+ *   to tick a box or focus a field, and swallowing that reads as broken. On a
+ *   touch screen the text is shown as well, because there is no hover to read
+ *   it with; with a mouse the native tooltip already covers it, so a click
+ *   there does not pop a bubble.
+ * - A titled element *inside* a label (the help icon beside a label's text) is
+ *   the tip's own target, so the label's click is swallowed once for it.
  */
 const CONTROLS = new Set(['BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'A', 'OPTION']);
 
@@ -73,14 +78,24 @@ export const TooltipTap: React.FC = () => {
       // `pointerdown` only suppresses the focus: label activation rides on the
       // click that follows, so that click is swallowed once, in the capture
       // phase, before the label can see it.
-      if (element.tagName === 'LABEL' || element.closest('label')) {
+      const pointerType = (event as PointerEvent).pointerType;
+      const touch = pointerType === 'touch' || pointerType === 'pen';
+      if (element.tagName === 'LABEL') {
+        // The label's own text: let its activation through (tick the box, focus
+        // the field), and only add the bubble for a finger.
+        if (!touch) return;
+      } else if (element.closest('label')) {
+        // A titled element inside a label, so the tip is the target: swallow the
+        // label's click once, in the capture phase. `preventDefault` on
+        // pointerdown only stops the focus, and label activation rides on the
+        // click that follows. A cancelled gesture sends no click, so the
+        // listener is dropped again.
         event.preventDefault();
         const swallow = (clickEvent: Event) => {
           clickEvent.preventDefault();
           clickEvent.stopPropagation();
         };
         document.addEventListener('click', swallow, { capture: true, once: true });
-        // A cancelled gesture sends no click, so the listener is dropped again.
         window.setTimeout(
           () => document.removeEventListener('click', swallow, true),
           500,

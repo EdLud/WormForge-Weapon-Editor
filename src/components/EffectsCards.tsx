@@ -622,14 +622,18 @@ export function ExplosionEffectCard({ project, onChange }: CardProps) {
             </label>
           </div>
 
-          {/* Custom Damage / Crater overrides when Replace Game Blast is selected */}
-          {fx.mode === 'blast' && (
-            <div className="space-y-3 border-t border-stone-200/80 pt-3.5 dark:border-stone-800">
-              <SubSectionTitle
-                title="Custom Explosion Hit Values"
-                code="custom_explosion"
-                desc="Applied directly when Replace Game Blast mode is active."
-              />
+          {/* Damage and crater are the replacement blast's own numbers, so they
+              only apply when it owns the blast. The damage type is a property of
+              the blast either way: it arms the hurt, so an overlay burst tazes
+              through WA's own blast and a replacement tazes through its own. */}
+          <div className="space-y-3 border-t border-stone-200/80 pt-3.5 dark:border-stone-800">
+            {fx.mode === 'blast' && (
+              <>
+                <SubSectionTitle
+                  title="Custom Explosion Hit Values"
+                  code="custom_explosion"
+                  desc="Applied directly when Replace Game Blast mode is active."
+                />
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <BurstNumField
                   id="explosion-damage"
@@ -700,42 +704,44 @@ export function ExplosionEffectCard({ project, onChange }: CardProps) {
                 </div>
               </div>
 
-              {/* The hit kind the blast sends. `taze` is the scripted electric
-                  kind (`crates/game/src/hit_kind.rs`): WA applies it as a Prod
-                  hit, but a `wa.on.hit` handler sees "taze", which is how PX's
-                  electric weapons recognise their own damage. */}
-              <div>
-                <TooltipLabel
-                  label="Damage Type"
-                  code="kind"
-                  desc="Explosive is a plain blast hit. Electrical sends the scripted taze kind: WA hurts the worm as a Prod, and any wa.on.hit handler can tell the two apart (PX's electric ring chains on its own taze hits)."
-                />
-                <div className="grid grid-cols-2 gap-1 rounded-xl border border-stone-200 bg-stone-100 p-1 dark:border-stone-800 dark:bg-stone-950/60">
-                  {(
-                    [
-                      { id: 'blast', label: 'Explosive' },
-                      { id: 'electric', label: 'Electrical' },
-                    ] as const
-                  ).map((option) => (
-                    <button
-                      key={option.id}
-                      type="button"
-                      onClick={() => update({ damageType: option.id })}
-                      className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                        fx.damageType === option.id
-                          ? option.id === 'electric'
-                            ? 'bg-sky-600 text-white shadow-xs'
-                            : 'bg-forge-600 text-white shadow-xs'
-                          : 'text-stone-600 hover:text-stone-900 dark:text-stone-400 dark:hover:text-white'
-                      }`}
-                    >
-                      {option.label}
-                    </button>
-                  ))}
-                </div>
+              </>
+            )}
+
+            {/* Electrical is not just a name: `px.electric`'s taze holds every
+                worm the blast takes health from in the sparking pose for 20
+                frames and throws it when the hold releases. The weapon arms the
+                hurt before the blast, so it works on WA's own blast too. */}
+            <div>
+              <TooltipLabel
+                label="Damage Type"
+                code="kind"
+                desc="Explosive is a plain blast hit. Electrical tazes: the hurt from this blast is armed first, and every worm that loses health is held in the sparking pose for 20 frames and then thrown with the knockback it would have had, as Project X's electric mine does. Project X's electric library does the hold, so the bundle depends on px.electric (the damage itself is unchanged, and WA's own blast can stay)."
+              />
+              <div className="grid grid-cols-2 gap-1 rounded-xl border border-stone-200 bg-stone-100 p-1 dark:border-stone-800 dark:bg-stone-950/60">
+                {(
+                  [
+                    { id: 'blast', label: 'Explosive' },
+                    { id: 'electric', label: 'Electrical' },
+                  ] as const
+                ).map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => update({ damageType: option.id })}
+                    className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                      fx.damageType === option.id
+                        ? option.id === 'electric'
+                          ? 'bg-sky-600 text-white shadow-xs'
+                          : 'bg-forge-600 text-white shadow-xs'
+                        : 'text-stone-600 hover:text-stone-900 dark:text-stone-400 dark:hover:text-white'
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
               </div>
             </div>
-          )}
+          </div>
         </div>
 
         {/* Live 50 Hz Preview */}

@@ -551,6 +551,27 @@ Reference implementation: `WormForgeNew/crates/weapons/src/record.rs`,
   there is no stamp call, and the guard line (with its trailing comment on the
   same line, so nothing is left behind in the custom body) is stripped from the
   custom `on_explode`.
+  The card presents the damage timing as a **pair of checkboxes, never both**:
+  `Pierce Targets` (`impact.enabled`) and `On Explosion` (its negation, the
+  record's own blast). They are the same switch, but a lone "Pierce Targets"
+  checkbox left a reader unable to tell that off means "the blast does it", so
+  the alternative is always visible and one of the two is always ticked. The
+  default stays **On Explosion**: `DEFAULT_TERRAIN_STAMP.impact.enabled` is
+  false because the constant is shared by every new project *and* by
+  `gen_test_pack`'s `makeOp`, so ticking it would make every new weapon and all
+  43 test weapons pierce with their blast zeroed.
+  **`kind = "taze"` tazes here too:** the pierce's hit is armed with
+  `zap.set_message_electric(20, 0, -4, true, 2)` (the same `px.electric` module
+  the burst uses), so the worm it stabs is held in the sparking pose and then
+  thrown along the flight. Two placement rules, both load order: the `local zap`
+  **declaration** must come before `local function stamp_hit`, because Lua binds
+  a function's upvalues when it is defined; and the **require** must be inside
+  `install(ctx)`, never at module level, because `electric_damage.lua` reads
+  `wa.depth` and calls `wa.assets.load` while it loads, and a component file may
+  only return its data. A top-level require fails the whole bundle with
+  "`wa.depth` while declaring: a component's file only returns its data; use wa
+  in install(ctx)". `px.electric` is declared for the pierce on its own, so an
+  electrical pierce works with no burst at all.
   Only a `power` record is offered: a mine has no impact heading (out of scope
   for now) and a strike's munitions never reach the hook. A girder launcher is a
   missile that stamps instead of blasting, so the gate is the fire type, not a
@@ -578,6 +599,24 @@ Reference implementation: `WormForgeNew/crates/weapons/src/record.rs`,
   `on_explode` never fires. When a custom Lua `on_explode` exists in the snippet,
   `parseCustomLua` safely extracts its body and merges it with the explosion burst
   and custom sound into a single `on_explode = { on = function(ev) ... end }` callback.
+  **Damage Type: Electrical tazes through `px.electric`, not the SDK.** WA has
+  no electric hit kind, so `kind = "taze"` alone changes nothing about a worm
+  (the scripted name goes to WA as the Prod's). What tazes is `px.electric`'s
+  damage module, already installed as `wf-lib/electric/damage`: the weapon arms
+  the hurt, the blast lands, and the module holds every worm that lost health in
+  the sparking pose and throws it with the knockback it would have had. So the
+  generator declares `local zap` at module level, assigns it inside
+  `install(ctx)` (`zap = require("wf-lib/electric/damage")`), puts one arm line
+  in `on_explode` and declares `px.electric`:
+  `zap.set_message_electric(20, 0, -4, true)` before `blast.explode{ … kind =
+  "taze" }` (a custom blast is a hit of that scripted kind, and `retain` hands
+  the hold WA's knockback), or `zap.set_message_electric_missile(20, ev.worm, 2)`
+  in `effect` mode, where WA's own blast stays and its blast-kind hurt is armed
+  instead. The pierce arms its own hit the same way, so all three share one
+  module. Each is one module call, so `effects.sdk` is untouched: a new SDK
+  version would have to be shipped to every author for the feature to work, and
+  this way only a dependency the packs already use is added. `px.electric` also
+  carries the taze sheets and loop sound, so the weapon declares none of them.
 - Hold geometry is emitted in PX units:
   `weap_rotation = 1 + degrees/180`, `hand_rotation = 1`,
   `weap_radial_rotation = 1`, `hand_radial_rotation = 1`, and `weap_scale`
@@ -873,11 +912,14 @@ edits the suffix only, so no id can collide with a mod the reader shows.
   bubble. The attribute is moved to `data-tip-tap` while open so the native
   tooltip cannot double up. A tap that lands on a real control (`button`,
   `input`, `select`, `textarea`, `a`) is the control's own, so a checkbox still
-  toggles. A tap on a `<label>`, or on a titled element inside one (the help icon
-  on a checkbox card), shows the tip and cancels the activation: the pointer
-  event only stops the focus, so the click that follows is swallowed once in the
-  capture phase. The help icons themselves carry `-m-1.5 p-1.5`, a 26 px target
-  instead of the 14 px glyph.
+  toggles. A titled element *inside* a label (the help icon beside a label's
+  text) is the tip's own target, so the label's activation is cancelled: the
+  pointer event only stops the focus, so the click that follows is swallowed
+  once in the capture phase. A `<label>`'s own text keeps its activation, because
+  a thumb aims at the words to tick a box or focus a field; on a touch screen the
+  bubble opens as well (there is no hover), and with a mouse it does not (the
+  native tooltip covers it, and a bubble on every click is noise). The help icons
+  themselves carry `-m-1.5 p-1.5`, a 26 px target instead of the 14 px glyph.
 - **A declared frame count must divide the sheet's height.** The engine slices a
   vertical strip as `height / frames` and refuses an image that leaves a
   remainder (`initgraphic` fails, so the sprite never loads). `SheetFrameWarning`
@@ -977,7 +1019,7 @@ Test pack for engine behaviour (dev only, output is git-ignored):
 bun run tools/gen_test_pack.ts   # -> test_pack/wftest_pack/ + test_pack/README.md
 ```
 
-It writes one bundle with 39 components, one profile ("WF Test Pack") and art
+It writes one bundle with 43 components, one profile ("WF Test Pack") and art
 derived from `spec/` sheets, one per role (the sprite builder, cluster bits, the
 homing window, the homing bit, the roaming animal and native trails). Each
 test carries its intent, expected result and failure symptom in
@@ -986,8 +1028,12 @@ infinite ammo. Tests 21/22 cover the explosion burst in `blast` mode (a
 bazooka) and `effect` overlay mode (a mine); 34/35 cover the roam tilt and the
 roaming role's own sheet; 37/38 cover the terrain stamp in impact mode (custom
 blast, so the stamp survives the crater) and fixed angle / dither / true colours;
-39 covers the javelin-shaped pierce (`STAMP_HIT`, blast zeroed). The stamp art is
-a built-up arrow pointing up, so a wrong frame index is obvious in game.
+39 covers the javelin-shaped pierce (`STAMP_HIT`, blast zeroed), 40 the
+`pingpong` frame reversal (with `anim = "none"`, so the cycle is the only
+motion), 41 the electric blast's taze on a replaced blast, 42 the same taze with
+WA's own blast left in place, and 43 the electrical pierce (a taze with no burst
+and no stamp). The stamp art is a built-up arrow
+pointing up, so a wrong frame index is obvious in game.
 
 Stock record values (PX's default scheme, from `WormForgeNew`):
 
@@ -1017,13 +1063,16 @@ bun run tools/gen_test_pack.ts
 bun run tools/check_mod_import.ts
 ```
 
-It imports all 39 test weapons and asserts the features come back with their
+It imports all 43 test weapons and asserts the features come back with their
 files: held art and its scale, `sb.flight` roles and `size`/`angle`, the ribbon
 trail and its target, both explosion modes with every burst field and the preset,
 `fire_seq` counts/speed/offsets, custom WAVs, pack sheets, roaming strips and the
 terrain stamp's strip, mode, angle, `soften`/`blend`/`true_colour` (with the
 fixed angle read back as degrees), and the impact table's damage/radius/impulse/
-kind/`spare_shooter` with the record's blast zeroed.
+kind/`spare_shooter` with the record's blast zeroed, and the electric bursts'
+`damageType` (named by the blast's `kind`, or by the arm alone in overlay mode)
+with their `zap` require, arm line and `px.electric` dependency, and the arm
+kept out of the recovered custom `on_explode`.
 It also regenerates each weapon and checks the original feature calls survive.
 
 Compiler check (lives in the code-editor repo):
@@ -1226,7 +1275,19 @@ that `vite preview` at `/` hides).
     `sign(vx)`, so a drill or saw tunneling straight up/down (`vx == 0, vy != 0`)
     would freeze its spin unless `wfws_sprite_builder.lua` and the 50 Hz preview
     substitute a tiny non-zero `eff_vx` while `digging` is active.
-33. **Use `bun run` (not `npx tsx`) for repo check scripts.** Scripts that
+33. **A module that reads `wa` while it loads cannot be required at module
+    level.** A component file only returns its data; `wa` exists inside
+    `install(ctx)`. `wf-lib/electric/damage` sets `wa.depth` and calls
+    `wa.assets.load` at load, so a top-level
+    `local zap = require("wf-lib/electric/damage")` killed a whole bundle with
+    "`wa.depth` while declaring: a component's file only returns its data; use
+    wa in install(ctx)", followed by "no overlay (InitGraphic did not run)".
+    Declare `local zap` at module level where a module-level function needs it
+    as an upvalue, and assign it inside `install`. The other modules the
+    generator requires (`px_effects`, `trail`, `custom_explosion`, `fire_seq`,
+    `px_hold_art`, the WFWS builder) are safe at load; check a new one with
+    `grep -n '^wa\.' <module>.lua` first.
+34. **Use `bun run` (not `npx tsx`) for repo check scripts.** Scripts that
     import `src/utils/` hit Vite's `import.meta.env`, which `tsx` does not
     populate cleanly; `bun run tools/check_copyfrom.ts` works directly. Also
     `vite` imports assets from `spec/` cleanly even with `base: './'`, whereas

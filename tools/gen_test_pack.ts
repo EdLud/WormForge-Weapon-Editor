@@ -1443,7 +1443,89 @@ const TESTS: TestCase[] = [
     expect:
       'The rocket glyph rotates through the six orientations and then back the other way, smoothly and repeatedly, with no jump from the last frame to the first.',
     watch:
-      'A hard loop (the glyph snapping back to frame 0), no cycle at all (`pingpong` left out of `sb.flight`), or WA’s own rocket under the sheet (`sprite = 0` not written).',
+      'A hard loop (the glyph snapping back to frame 0), no cycle at all (`pingpong` left out of `sb.flight`), or WAÕs own rocket under the sheet (`sprite = 0` not written).',
+  },
+  {
+    project: makeOp({
+      id: 'wftest.41_electric_blast',
+      name: 'WF 41 Electric Blast',
+      slot: 'bazooka',
+      body: { sprite: 'bazooka', damage: 40 },
+      // The taze is `px.electric`'s damage module: the weapon arms the hurt
+      // before the custom blast, and every worm the blast takes health from is
+      // held and thrown. `damageType` is what the card's Damage Type sends.
+      explosion: {
+        enabled: true,
+        mode: 'blast',
+        preset: 'electric',
+        damageType: 'electric',
+        damage: 30,
+        push: 70,
+        hole: 30,
+        sound: 'none',
+      },
+    }),
+    intent:
+      'Electrical damage type on the custom blast: every worm the blast reaches is held in the sparking taze pose and thrown when the hold releases.',
+    expect:
+      'The rocket bursts, the ring appears, and each worm in range crackles for about 0.4 s and is then thrown outward by the blast falloff; the damage lands once, not twice.',
+    watch:
+      'Worms taking damage but never sparking (`px.electric` missing, so the require fails and the whole weapon does not load), no knockback on release (the arm not passed `retain`), or double damage (the arm carrying damage the blast already took).',
+  },
+  {
+    project: makeOp({
+      id: 'wftest.42_electric_overlay',
+      name: 'WF 42 Electric Overlay',
+      slot: 'bazooka',
+      body: { sprite: 'bazooka', damage: 40 },
+      // WA's own blast stays, so nothing in the record changes: the weapon arms
+      // its blast-kind hurt and `px.electric`'s taze holds whoever it reaches.
+      explosion: {
+        enabled: true,
+        mode: 'effect',
+        preset: 'electric',
+        damageType: 'electric',
+      },
+    }),
+    intent:
+      'Electrical damage type while WA keeps its own blast: the burst is only the overlay, and the worms the native blast hurts are tazed all the same.',
+    expect:
+      'A stock rocket blast (native damage, push and crater) with the blue ring over it, and every worm it damaged crackling for about 0.4 s and then thrown outward.',
+    watch:
+      'The native blast missing or doubled (the arm is not a blast replacement), no taze at all (`set_message_electric_missile` not emitted, or `ev.worm` filtered out the hurt), or the taze firing for a later, unrelated explosion.',
+  },
+  {
+    project: makeOp({
+      id: 'wftest.43_pierce_taze',
+      name: 'WF 43 Electric Pierce',
+      slot: 'bazooka',
+      body: { sprite: 'bazooka', damage: 35 },
+      // PX's javelin with an electric tip. No stamp sheet on purpose: the pierce
+      // is the whole point, and it must work with the stamp switched off. The
+      // taze is `px.electric`'s arm around the pierce's one `o:hurt`.
+      terrainStamp: {
+        enabled: false,
+        onImpact: false,
+        soften: 1,
+        blend: 'dither',
+        trueColour: false,
+        wormClearance: 12,
+        impact: {
+          enabled: true,
+          damage: 25,
+          radius: 20,
+          impulse: 0.4,
+          kind: 'taze',
+          spareShooter: true,
+        },
+      },
+    }),
+    intent:
+      'An electrical pierce: the round stabs the first worm or object it lands on and sends the scripted taze kind, which `px.electric` turns into the sparking hold.',
+    expect:
+      'No blast and no crater, the round sticks in the land only when it hit nothing, and the worm it stabbed crackles for about 0.4 s and is thrown along the flight. A mine or crate in the way is hit instead.',
+    watch:
+      'A worm taking damage but never sparking (`zap` missing, or the arm placed after the hurt), a native blast on top of the pierce, or the firing worm tazed by its own round (`spare_shooter` is on).',
   },
 ];
 
@@ -1467,6 +1549,8 @@ const usedSheets = new Set<string>();
 let usesBuilders = false;
 let usesRibbon = false;
 let usesExplosion = false;
+// The taze the electric blast hands to custom_explosion comes from `px.electric`.
+let usesElectric = false;
 let usesFireSeq = false;
 let usesHolds = false;
 
@@ -1620,6 +1704,9 @@ for (const test of TESTS) {
     (project.fireType === 'power' || project.fireType === 'drop')
   ) {
     usesExplosion = true;
+    // Either mode: the overlay arms WA's own blast, the replacement arms its
+    // own, and both go through the same module.
+    if (project.explosionEffect.damageType === 'electric') usesElectric = true;
   }
 
   const position = getStockPanelPosition(project.slot);
@@ -1644,6 +1731,8 @@ const dependencies: string[] = [];
 if (usesHolds) dependencies.push('wf.sdk');
 if (usesBuilders) dependencies.push('wfws.sdk');
 if (usesRibbon || usesExplosion) dependencies.push('effects.sdk');
+// An electric burst tazes through this module, which the weapon requires.
+if (usesElectric) dependencies.push('px.electric');
 if (usesFireSeq) dependencies.push('px.fire_seq');
 
 const toml: string[] = [

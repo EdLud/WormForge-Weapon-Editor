@@ -723,6 +723,20 @@ export function generateLuaCode(project: WeaponProject): string {
   // would blast once more on top of the pierce (and crater over a stamp).
   const silencesBlast =
     (usesExplosionEffect && explosionEffect!.mode === 'blast') || usesImpactDamage;
+  // Electric damage. WA has no electric hit kind, so `kind = "taze"` only names
+  // the hit (WA takes it as the Prod's) and nothing about the worm changes.
+  // What tazes is `px.electric`'s damage module, which is already installed as
+  // `wf-lib/electric/damage`: arm the blast, let it hurt, and the module holds
+  // every worm that lost health in the sparking pose and throws it when the
+  // hold releases. It works on WA's own blast too, so an overlay burst can taze
+  // without replacing anything (`set_message_electric_missile`), and it needs
+  // no change to `effects.sdk` beyond the `kind` it already forwards.
+  const usesElectricBlast =
+    !!usesExplosionEffect && explosionEffect!.damageType === 'electric';
+  // The javelin's pierce takes the same hit kinds, so its `taze` needs the same
+  // arm: `o:hurt{ kind = "taze" }` is a Prod to WA and nothing more.
+  const usesElectricImpact = usesImpactDamage && stampImpact!.kind === 'taze';
+  const usesZap = usesElectricBlast || usesElectricImpact;
   const usesIntervalSound =
     !!intervalSoundPath &&
     (project.fireType === 'power' || (project.fireType === 'drop' && !!project.body.fuse));
@@ -775,6 +789,18 @@ export function generateLuaCode(project: WeaponProject): string {
     lines.push('  if w.facing < 0 then ang = 2 * math.pi - ang end');
     lines.push('  return wa.math.sin(ang), -wa.math.cos(ang)');
     lines.push('end');
+  }
+  if (usesZap) {
+    // Declared here, before the stamp helpers below: `stamp_hit` is a `local
+    // function`, and Lua binds the names it uses when it is defined, so a local
+    // written after it would leave the function reading a nil global.
+    //
+    // The module itself is required inside `install(ctx)`, not here: its file
+    // reads `wa.depth` and calls `wa.assets.load` at load time, and a component
+    // file may only *return its data* (`wa` is unavailable while declaring, so
+    // a top-level require fails the whole bundle with "use wa in install(ctx)").
+    // The arm only ever runs from a callback, long after install.
+    lines.push('local zap');
   }
   if (usesTerrainStamp && terrainStamp!.onImpact) {
     // PX's 32 stamp orientations (`px_ninja_star` / `javelin` / the girder
@@ -832,6 +858,12 @@ export function generateLuaCode(project: WeaponProject): string {
     lines.push('  local vx, vy = ev.vx or 0, ev.vy or 0');
     lines.push('  local mine = ev.worm and ev.worm.id');
     lines.push('  local scan = STAMP_HIT.radius + 16');
+    if (hit.kind === 'taze') {
+      // Same arm the burst uses: the pierce is one `o:hurt`, so the hold takes
+      // the worm that hurt landed on, and `retain` keeps the pierce's push for
+      // the release instead of dropping it.
+      lines.push('  zap.set_message_electric(20, 0, -4, true, 2)');
+    }
     lines.push('  for _, o in ipairs(wa.world.electrical_nearby(ev.x, ev.y, scan, false)) do');
     lines.push('    local worm = o.kind == "worm"');
     lines.push('    if (worm or o.kind == "mine" or o.kind == "crate" or o.kind == "oil")');
@@ -972,6 +1004,12 @@ export function generateLuaCode(project: WeaponProject): string {
 
   // Install function
   lines.push('  install = function(ctx)');
+  if (usesZap) {
+    // `px.electric`'s damage module uses `wa` at load (its depth, sheets and
+    // loop sound), so it can only be required here. Assigning the outer local
+    // is what the callbacks and `stamp_hit` read.
+    lines.push('    zap = require("wf-lib/electric/damage")');
+  }
   if (usesExplosionEffect) {
     // px_effects draws through a hidden driver actor, so it has to be installed
     // before a round can explode; `trail = true` also installs the ribbon
@@ -2766,6 +2804,20 @@ export function generateLuaCode(project: WeaponProject): string {
         return rows;
       };
 
+      if (usesElectricBlast) {
+        // PX's electric damage (`set_message_electric`, custom_taze.c): arm the
+        // hurt, and the module tazes each worm the blast takes health from.
+        // `retain` hands the hold the knockback WA gives the worm, so the push
+        // is re-applied on release instead of being lost to the hold. A custom
+        // blast delivers a hit of the scripted `taze` kind, so it takes the hit
+        // arm; WA's own blast is a blast-kind hurt, and its arm is scoped to
+        // this shooter and only lasts a couple of frames.
+        lines.push(
+          e.mode === 'blast'
+            ? '        zap.set_message_electric(20, 0, -4, true)'
+            : '        zap.set_message_electric_missile(20, ev.worm, 2)',
+        );
+      }
       if (e.mode === 'blast') {
         const blastRows = [
           '          x = ev.x, y = ev.y, owner = ev.worm,',
@@ -2782,6 +2834,8 @@ export function generateLuaCode(project: WeaponProject): string {
         // (`crates/game/src/hit_kind.rs`): WA takes it as a Prod hit, but a
         // `wa.on.hit` handler sees "taze", which is how PX's electric weapons
         // recognise their own damage. Only the custom blast can name a kind.
+        // The hold itself is the `zap` table above: the taze kind alone changes
+        // nothing about the worm.
         if (e.damageType === 'electric') {
           blastRows.push('          kind = "taze",');
         }
@@ -3192,6 +3246,16 @@ export function generateModToml(project: WeaponProject): string {
   const explodesNatively = project.fireType === 'power' || project.fireType === 'drop';
   const usesExplosionEffect =
     !!project.explosionEffect?.enabled && explodesNatively;
+  // An electric burst (or an electric pierce) tazes through `px.electric`'s
+  // damage module, which the weapon requires as `zap`. Keep the dependency in
+  // step with the code the weapon Lua actually requires.
+  const usesElectricBlast =
+    usesExplosionEffect && project.explosionEffect!.damageType === 'electric';
+  const stampImpact = project.terrainStamp?.impact;
+  const usesElectricImpact =
+    !!stampImpact?.enabled &&
+    supportsTerrainStamp(project) &&
+    stampImpact.kind === 'taze';
   // `wf-lib/fire_seq` is its own library bundle (`px.fire_seq`), and so is
   // `wf-lib/px_hold_art`, which the firing-state sprite rides (FAMAS-style).
   const usesFireSequence =
@@ -3213,6 +3277,7 @@ export function generateModToml(project: WeaponProject): string {
   if (usesHold) dependencies.push('wf.sdk');
   if (usesWfws) dependencies.push('wfws.sdk');
   if (usesRibbonTrail || usesExplosionEffect) dependencies.push('effects.sdk');
+  if (usesElectricBlast || usesElectricImpact) dependencies.push('px.electric');
   if (usesFireSequence || usesFiringArt) dependencies.push('px.fire_seq');
   // Extra library bundles the author asked for (they may be used from the
   // custom Lua snippet, or by a component this editor does not model).

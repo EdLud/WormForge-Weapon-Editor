@@ -33,8 +33,8 @@ interface SidebarProps {
 
 const WORKSPACE: { id: WorkspaceTab; label: string; hint: string; icon: React.ElementType; key: string }[] = [
   { id: 'editor', label: 'Weapon Record', hint: 'Identity, physics & payload', icon: Layers, key: '1' },
-  { id: 'hold', label: 'Hold & Sprites', hint: 'Worm grip & flight animation', icon: Sparkles, key: '2' },
-  { id: 'effects', label: 'Effects & Audio', hint: 'Ribbon trail, blast & WAVs', icon: Wand2, key: '3' },
+  { id: 'hold', label: 'Hold & Sprites', hint: 'Worm aiming & projectile animation', icon: Sparkles, key: '2' },
+  { id: 'effects', label: 'Lua Libraries', hint: 'Ribbon trail, blast & WAVs', icon: Wand2, key: '3' },
   { id: 'code', label: 'Bundle & Export', hint: 'Lua, mod.toml & profile', icon: FileCode2, key: '4' },
 ];
 

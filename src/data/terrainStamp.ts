@@ -68,7 +68,11 @@ export const STAMP_HIT_KINDS: { id: StampHitKind; label: string; hint: string }[
   { id: 'arrow', label: 'Arrow', hint: 'The Longbow’s kind.' },
   { id: 'prod', label: 'Prod', hint: 'WA’s plain poke: what a scripted hit is before names.' },
   { id: 'percent', label: 'Percent', hint: 'The Battle Axe’s kind: damage is that percentage of the worm’s health.' },
-  { id: 'taze', label: 'Taze', hint: 'Scripted electric: WA gets a Prod, but a wa.on.hit handler sees "taze".' },
+  {
+    id: 'taze',
+    label: 'Taze',
+    hint: 'Electrical: the pierce arms the hit, and px.electric holds the worm in the sparking pose and throws it. WA still takes it as a Prod, so a wa.on.hit handler sees "taze".',
+  },
 ];
 
 /**

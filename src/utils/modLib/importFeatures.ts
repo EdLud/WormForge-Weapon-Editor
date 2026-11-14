@@ -429,6 +429,11 @@ function customExplodeBody(moduleText: string, stripStamp = false): string {
       continue;
     }
     if (/^if\s+ev\.worm\s+then\s+wa\.sound\.play\(/.test(trimmed)) continue;
+    // The electric burst's arm (`px.electric`'s set_message_electric`, or its
+    // `_missile` form for WA's own blast) is generated from the Damage Type
+    // toggle, so it is one of ours too. Left in, it would be re-emitted as the
+    // author's custom Lua and then armed twice on the next export.
+    if (/^zap\.set_message_electric(?:_missile)?\(/.test(trimmed)) continue;
     kept.push(line);
   }
   return kept.join('\n').trim();
@@ -666,6 +671,13 @@ export async function readBundleFeatures(args: {
   // ---- explosion burst ----------------------------------------------------
   const blastCall = readCallTable(moduleText, 'blast.explode');
   const burstCall = readCallTable(moduleText, 'fx.burst');
+  // The Damage Type toggle. A replacement blast names the kind inside its
+  // table, but an overlay arms WA's own blast instead (`set_message_electric_
+  // missile`) and carries no kind, so the arm itself is the other half of the
+  // signal. Either way the module is required only for an electric burst.
+  const armedElectric =
+    /zap\.set_message_electric(?:_missile)?\(/.test(moduleText) &&
+    moduleText.includes('wf-lib/electric/damage');
   if (blastCall || burstCall) {
     let effect = explosionBase;
     const isBlast = !!blastCall;
@@ -678,7 +690,8 @@ export async function readBundleFeatures(args: {
         // `destroy = false` is the generator's "no crater"; `hole` is absent.
         hole: num(b.hole) ?? (b.destroy === false ? 0 : effect.hole),
         // The scripted hit kind; the generator only ever writes `"taze"`.
-        damageType: str(b.kind) === 'taze' ? 'electric' : 'blast',
+        damageType:
+          str(b.kind) === 'taze' || armedElectric ? 'electric' : 'blast',
         sound:
           b.sound === true ? 'default' : (num(b.sound) ?? 'none'),
       };
@@ -686,6 +699,7 @@ export async function readBundleFeatures(args: {
       if (inner) effect = readBurstRows(inner, effect);
     } else {
       effect = readBurstRows(burstCall!.table, effect);
+      if (armedElectric) effect = { ...effect, damageType: 'electric' };
     }
     project.explosionEffect = {
       ...effect,
@@ -1013,7 +1027,15 @@ export async function readBundleFeatures(args: {
   }
 
   // ---- manifest dependencies and icon -------------------------------------
-  const automatic = new Set(['wf.sdk', 'wfws.sdk', 'effects.sdk', 'px.fire_seq']);
+  // `px.electric` is automatic for an electric blast: the generator emits
+  // `zap = require("wf-lib/electric/damage")` and declares the bundle itself.
+  const automatic = new Set([
+    'wf.sdk',
+    'wfws.sdk',
+    'effects.sdk',
+    'px.fire_seq',
+    'px.electric',
+  ]);
   const extras = (weapon.dependencies ?? []).filter((dep) => dep && !automatic.has(dep));
   if (extras.length > 0) {
     project.extraDependencies = extras;

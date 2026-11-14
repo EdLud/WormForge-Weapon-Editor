@@ -34,8 +34,21 @@ export function BundleDependencies({ project, onChange }: BundleDependenciesProp
     !!project.explosionEffect?.enabled &&
     !customOnExplode &&
     (project.fireType === 'power' || project.fireType === 'drop');
+  // An electric blast hands custom_explosion the taze module from `px.electric`
+  // (`zap = require("wf-lib/electric/damage")`), so the library is a real
+  // dependency, not a nicety.
+  const electricBlast =
+    !!project.explosionEffect?.enabled &&
+    project.explosionEffect.mode === 'blast' &&
+    project.explosionEffect.damageType === 'electric' &&
+    (project.fireType === 'power' || project.fireType === 'drop');
   if (ribbonTrail) auto.push({ id: 'effects.sdk', reason: 'ribbon trail' });
   if (explosion) auto.push({ id: 'effects.sdk', reason: 'explosion burst' });
+  // The pierce arms its hit the same way, with or without a stamp or a burst.
+  const electricPierce =
+    !!project.terrainStamp?.impact?.enabled && project.terrainStamp.impact.kind === 'taze';
+  if (electricBlast) auto.push({ id: 'px.electric', reason: 'electric blast taze' });
+  if (electricPierce) auto.push({ id: 'px.electric', reason: 'electrical pierce taze' });
 
   // One row per id, with every feature that pulled it in.
   const autoById = new Map<string, string[]>();
@@ -180,6 +193,7 @@ export function BundleDependencies({ project, onChange }: BundleDependenciesProp
             { id: 'effects.sdk', hint: 'Project X effects (trail, bursts, emitters)' },
             { id: 'wf.sdk', hint: 'WormForge SDK (holds, shared sprites)' },
             { id: 'wfws.sdk', hint: 'WFWS flight sprite builder (primary, bits, states)' },
+            { id: 'px.electric', hint: 'Project X electric hold (tazed blast, electric weapons)' },
           ].map((entry) => (
             <button
               key={entry.id}
