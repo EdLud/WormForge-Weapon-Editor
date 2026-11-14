@@ -90,11 +90,23 @@ end
 
 local function sign(n) return n > 0 and 1 or (n < 0 and -1 or 0) end
 
-function M.cyclical_frame(phase, anim_speed, num_frames)
+-- Sheet frames, one cycle per `1 / anim_speed` second (PX's rate).
+--
+-- `pingpong` plays the strip forwards and then backwards (0, 1, 2, 1, 0, ...)
+-- instead of looping it hard back to the first frame, which is what an
+-- animation authored to reverse itself needs. The phase still spans one
+-- forwards-plus-backwards pass, so `anim_speed` means the same thing either way,
+-- and the two endpoints are not held for a double frame.
+function M.cyclical_frame(phase, anim_speed, num_frames, pingpong)
   if not phase then phase = 0.0 end
   local spd = (anim_speed or 1.0) * 30 / 1000
   phase = phase + spd
   if phase > 0.99 then phase = 0.0 end
+  if pingpong and num_frames > 1 then
+    local span = 2 * num_frames - 2
+    local i = math.floor(phase * span) % span
+    return i < num_frames and i or span - i, phase
+  end
   local frame = math.floor(phase * num_frames) % num_frames
   return frame, phase
 end
@@ -175,6 +187,7 @@ local function dig_settings(o, size)
     anim_type = anim and ANIM_TYPE[anim] or nil,
     spin = t.spin,
     cyclical = t.cyclical,
+    pingpong = t.pingpong,
     anim_speed = t.anim_speed,
     scale = t.scale ~= nil and (t.scale * (size or 1.0)) or nil,
     mirror = t.mirror,
@@ -248,6 +261,7 @@ local function resolve(o, size)
     anim_type = ANIM_TYPE[anim],
     spin = o.spin or 1.0,
     cyclical = o.cyclical or 0,
+    pingpong = o.pingpong == true,
     anim_speed = o.anim_speed or 1.0,
     z = o.z or 5.0,
     scale = (o.scale or 1.0) * (size or 1.0),
@@ -575,6 +589,7 @@ function M.flight(ctx, opts)
     local active_anim_type = cfg.anim_type
     local active_spin = cfg.spin
     local active_cyclical = cfg.cyclical
+    local active_pingpong = cfg.pingpong
     local active_anim_speed = cfg.anim_speed
     local active_mirror = cfg.mirror
     local active_scale = cfg.scale
@@ -585,6 +600,7 @@ function M.flight(ctx, opts)
       active_anim_type = dig.anim_type or ANIM_TYPE[active_anim]
       if dig.spin ~= nil then active_spin = dig.spin end
       if dig.cyclical ~= nil then active_cyclical = dig.cyclical end
+      if dig.pingpong ~= nil then active_pingpong = dig.pingpong end
       if dig.anim_speed ~= nil then active_anim_speed = dig.anim_speed end
       if dig.mirror ~= nil then active_mirror = dig.mirror end
       if dig.scale ~= nil then active_scale = dig.scale end
@@ -630,7 +646,8 @@ function M.flight(ctx, opts)
     elseif digging or active_cyclical > 0 then
       local nframes = digging and math.max(1, active_cyclical) or active_cyclical
       if nframes > 0 then
-        frame, cycl_phase[id] = M.cyclical_frame(cycl_phase[id], active_anim_speed, nframes)
+        frame, cycl_phase[id] = M.cyclical_frame(cycl_phase[id], active_anim_speed,
+          nframes, active_pingpong)
       else
         cycl_phase[id] = nil
       end

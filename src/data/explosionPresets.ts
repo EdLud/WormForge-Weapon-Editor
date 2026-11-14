@@ -4,11 +4,11 @@ import type { ExplosionEffectConfig, ExplosionPreset } from '../types/weapon';
  * Starting points for the effects SDK's bursting explosion. The names and
  * numbers come from PX's own calls:
  *
- * - `electric` — `createElectricExplosion` (effects_methods.c): ring + squashed
+ * - `electric`, `createElectricExplosion` (effects_methods.c): ring + squashed
  *   lens, re-buffered at frame 16, blue smoke. What the electric mine draws.
- * - `pyro` — PX's `do_explosion_particles(..., 130, 130, 255)`: a round blue
+ * - `pyro`, PX's `do_explosion_particles(..., 130, 130, 255)`: a round blue
  *   circle with flares and no smoke (PyroMan's blue blast).
- * - `ember` — `createEffectExplosion(20, 30, 0.1, 200, 150, 90, ...)`, the
+ * - `ember`, `createEffectExplosion(20, 30, 0.1, 200, 150, 90, ...)`, the
  *   short flat ring a digging clustlet leaves behind.
  */
 export const EXPLOSION_PRESETS: Record<

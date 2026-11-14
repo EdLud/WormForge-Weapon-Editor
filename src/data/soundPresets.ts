@@ -28,10 +28,10 @@ export const DEFAULT_CUSTOM_SOUNDS: CustomSoundsConfig = {
  * replace an older lower one; WA's own positional attenuation still applies.
  */
 export const SOUND_PRIORITIES = [
-  { value: 4, label: 'Quiet (4) — gives way first' },
-  { value: 8, label: 'Normal (8) — the engine default' },
-  { value: 10, label: 'Loud (10) — cuts ambient voices' },
-  { value: 16, label: 'Lead (16) — only other leads cut it' },
+  { value: 4, label: 'Quiet (4), gives way first' },
+  { value: 8, label: 'Normal (8), the engine default' },
+  { value: 10, label: 'Loud (10), cuts ambient voices' },
+  { value: 16, label: 'Lead (16), only other leads cut it' },
 ] as const;
 
 /** Quick interval presets: milliseconds between plays, and the first delay. */

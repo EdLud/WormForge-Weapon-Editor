@@ -5,8 +5,8 @@ import React, { useState } from 'react';
  *
  * `<input type="number">` reports `''` when it is cleared, and `Number('')` is
  * `0` (and `Number('-')` is `NaN`), so every `Number(e.target.value)` handler in
- * the record pages silently wrote a `0` into the project — and therefore into
- * the exported record — the moment a field was emptied. This keeps the typed
+ * the record pages silently wrote a `0` into the project, and therefore into
+ * the exported record, the moment a field was emptied. This keeps the typed
  * text as a draft instead: an empty box writes nothing, and leaving it restores
  * the value the project still holds. A lone `-` or `1e` is not committed until
  * it parses.

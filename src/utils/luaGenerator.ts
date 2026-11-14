@@ -201,7 +201,7 @@ export function holdSheetPath(project: WeaponProject): string {
 /**
  * The firing-state sprite (`hold.flash.sheet`): a still drawn over the worm
  * while WA is in its firing states, at the gun's muzzle. The engine loads it
- * like the hold sheet, so it has no record slot and no `mod.toml` declaration —
+ * like the hold sheet, so it has no record slot and no `mod.toml` declaration
  * the file only has to exist at the declared path.
  */
 export function flashSheetPath(project: WeaponProject): string {
@@ -324,7 +324,7 @@ const STOCK_SPRITE_LIMIT = 800;
  * A roaming animal's walking pose: the record `missile.sprite`, which WA
  * animates while the animal is on the ground (`sheep.flight_1/2` is the flown
  * art and `m.sprite` is not what draws it). Returns the id, or `0` when the
- * value cannot draw — unset, a bundle path, or a number outside WA's stock
+ * value cannot draw, unset, a bundle path, or a number outside WA's stock
  * range. An imported Project X record holds PX's own sprite numbers (the Super
  * Queen Bee's `34464`, its sheep's `713`); WA masks those to a pack slot that
  * nothing was installed at, so they draw nothing and the builder has to draw
@@ -367,6 +367,9 @@ function homingWindowRow(
 function roleArtRows(cfg: FlightRoleArt, indent: string): string[] {
   const rows = [`${indent}anim = ${luaQuote(cfg.anim || 'rotation')},`];
   if (cfg.frames > 1) rows.push(`${indent}cyclical = ${cfg.frames},`);
+  // One frame has nothing to play backwards, so `pingpong` is only meaningful
+  // with a real strip.
+  if (cfg.pingpong && cfg.frames > 1) rows.push(`${indent}pingpong = true,`);
   if (cfg.animSpeed && cfg.animSpeed !== 1) {
     rows.push(`${indent}anim_speed = ${formatNumber(cfg.animSpeed)},`);
   }
@@ -391,6 +394,7 @@ export function digArtOverrideRows(cfg: FlightRoleArt | undefined, indent: strin
     rows.push(`${indent}anim = ${luaQuote(cfg.anim)},`);
   }
   if (cfg.frames > 1) rows.push(`${indent}cyclical = ${cfg.frames},`);
+  if (cfg.pingpong && cfg.frames > 1) rows.push(`${indent}pingpong = true,`);
   if (cfg.animSpeed && cfg.animSpeed !== 1) {
     rows.push(`${indent}anim_speed = ${formatNumber(cfg.animSpeed)},`);
   }
@@ -738,7 +742,7 @@ export function generateLuaCode(project: WeaponProject): string {
   // The firing-state sprite (`hold.flash`) rides the same helper, the way PX's
   // FAMAS does it: a second hold entry whose sheet is drawn in those states with
   // the worm's live aim, facing, radius, rotation and `weap_scale`. That is what
-  // makes it follow the held gun 1:1 — the engine's `flash` overlay carried its
+  // makes it follow the held gun 1:1, the engine's `flash` overlay carried its
   // own pre-resolved out/side/scale and could drift from it.
   const usesFiringArt = !!usesHold && !!project.hold?.flashFile;
   const usesHoldArt = !!usesHold && (usesFireSequence || usesFiringArt);
@@ -975,7 +979,7 @@ export function generateLuaCode(project: WeaponProject): string {
     //
     // The burst goes in front (`wa.depth.FRONT`), not on the SDK's `EFFECTS`
     // band: in `effect` mode WA's own blast animation is drawn over that band,
-    // so the ring only surfaced once the boom had played out — a second later,
+    // so the ring only surfaced once the boom had played out, a second later,
     // by which time the envelope was nearly gone. Worms and the whole blast are
     // what it should cover; the smoke stays on its own band behind it.
     lines.push(
@@ -990,7 +994,7 @@ export function generateLuaCode(project: WeaponProject): string {
   if (usesFiringArt) {
     // FAMAS' firing sheet: the hold's own placement, its own picture. The helper
     // has no `weap_scale` (it draws a quad at `size` pixels), so the multiplier
-    // goes into `size` — the flash cell's pixel extent times the hold's scale.
+    // goes into `size`, the flash cell's pixel extent times the hold's scale.
     const h = project.hold!;
     const fallback = defaultArtFor(project);
     const holdFrames = Math.max(1, h.frames || 1);
@@ -1019,7 +1023,7 @@ export function generateLuaCode(project: WeaponProject): string {
     if (usesFireSequence) {
       // A burst keeps WA's firing states for its whole length; only the shot
       // frames should show the firing sheet, so it follows `fire_seq`'s shot
-      // marks — the weapon passes its own sequencer table, because an exported
+      // marks, the weapon passes its own sequencer table, because an exported
       // library module is instanced per pack and would see a different one. A
       // single shot needs no mark: its two firing states are the shot.
       lines.push('      flash = true,');
@@ -2824,7 +2828,7 @@ export function generateLuaCode(project: WeaponProject): string {
       //
       // `ev.vx`/`ev.vy` are the round's speed as it bursts (`weapon_emit`'s
       // speed, `ENT_SPEED_X/Y`) and are absent for a mine, which has no flight
-      // velocity — hence `or 0`, which keeps a real zero because 0 is truthy
+      // velocity, hence `or 0`, which keeps a real zero because 0 is truthy
       // in Lua. A mine therefore wants the fixed angle.
       const frame = terrainStamp!.onImpact
         ? 'stamp_orientation(ev.vx or 0, ev.vy or 0)'
@@ -2869,7 +2873,7 @@ export function generateLuaCode(project: WeaponProject): string {
     // set, and only the turn's own fire message sets it; a fire_seq burst
     // repeats the shot without one, so 0x6A/0x6B would hide it every other
     // frame. A plain shot has that message, so with `keep_while_firing` the
-    // engine draws the sheet itself and only the firing sheet is added here —
+    // engine draws the sheet itself and only the firing sheet is added here
     // adding both would draw the gun twice.
     const keeper = !!project.hold?.keepWhileFiring && !usesFireSequence;
     if (!keeper) {
@@ -2996,6 +3000,9 @@ export function generateLuaCode(project: WeaponProject): string {
     if (m.frames > 1) {
       lines.push(`      cyclical = ${m.frames},`);
     }
+    if (m.pingpong && m.frames > 1) {
+      lines.push('      pingpong = true,');
+    }
     if (m.animSpeed && m.animSpeed !== 1.0) {
       lines.push(`      anim_speed = ${m.animSpeed},`);
     }
@@ -3093,14 +3100,14 @@ export function generateLuaCode(project: WeaponProject): string {
     // leaves the animal to WA until the takeoff, and it doubles as the identity
     // signal for the primary (that sprite is not zeroed then, so `m.sprite == 0`
     // alone cannot identify it). `fly` is the sentinel `sheep.flight_1` carries,
-    // which WA moves into the render slot as it takes off — an exact takeoff
+    // which WA moves into the render slot as it takes off, an exact takeoff
     // signal that does not depend on catching the key press.
     if (project.action === 'roam') {
       const roamArt = project.behaviorArt?.roam;
       if (roamRole && roamArt) {
         // Its own role: the animal is still WA's until Space (`walk` is the
         // pose WA draws; `fly` is the id WA moves into the render slot at the
-        // takeoff). Both are optional — a record whose walk pose cannot draw
+        // takeoff). Both are optional, a record whose walk pose cannot draw
         // gets `fly` only and the builder animates the ground itself.
         lines.push('      roam = {');
         lines.push(`        sheet = ${luaQuote(behaviorStateSheetPath(project, 'roam'))},`);
@@ -3186,7 +3193,7 @@ export function generateModToml(project: WeaponProject): string {
   const usesExplosionEffect =
     !!project.explosionEffect?.enabled && explodesNatively;
   // `wf-lib/fire_seq` is its own library bundle (`px.fire_seq`), and so is
-  // `wf-lib/px_hold_art` — which the firing-state sprite rides (FAMAS-style).
+  // `wf-lib/px_hold_art`, which the firing-state sprite rides (FAMAS-style).
   const usesFireSequence =
     !!project.fireSequence?.enabled &&
     !(project.enableCustomLua && /(?:^|\n)[ \t]*on_fire\s*=/.test(project.customLuaSnippet || '')) &&

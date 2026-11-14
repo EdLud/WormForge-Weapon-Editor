@@ -15,14 +15,14 @@ Maintenance and hand-off notes live in [AGENTS.md](AGENTS.md).
   - Automatically declares `dependencies = ["wf.sdk"]` for holds and `["wfws.sdk"]` for the flight sprite builder.
 - **Read installed mods**:
   - Opens a `Mods/` folder or `.zip`, lists every bundle and weapon, and reads records kept in Lua (including `copy_from`, bundled `.wep` files and the native record groups).
-  - Imports the WFWS features this editor writes: hold art, sprite-builder roles and `size`/`angle`, ribbon trail, explosion burst, sequential fire, terrain stamp, custom WAVs and pack sheets — with the bundle's own PNG/GIF/WAV files attached for re-export.
+  - Imports the WFWS features this editor writes: hold art, sprite-builder roles and `size`/`angle`, ribbon trail, explosion burst, sequential fire, terrain stamp, custom WAVs and pack sheets, with the bundle's own PNG/GIF/WAV files attached for re-export.
 - **Project X `.wep` Binary Importer**:
   - Parses binary header `[0x06, 0xDD, 0xBB, 0x5A]`, Latin-1 name strings at `0x1E4`, and 0x1D0 bytes weapon record slabs.
   - Computes minimal diffs against stock templates (`stock.<slot>`) to prevent boilerplate noise.
   - Reads an air strike's munition body from the strike slab (`record.rs` `STRIKE_SHIFT = 0x14`): `strike.*` (plane, count, spacing, speed, sound, munition) plus the full `missile.*` body and the `clusters.*` / `clusters.bit.*` child body, exactly like a thrown missile's clustlets.
 - **Hold & Sprite Builder Preview**:
   - Uses the PX posture strip (`aim.png`, 32 frames of 60×60) and hand radius textures (`hand_rad_lower.png`, `hand_rad.png`, `hand_rad_upper.png`) from `wf.sdk`.
-  - Before a PNG is uploaded, the preview and the exported bundle use the stock-style `spec/default_grenade.png` or `spec/default_blue_zook.png` (chosen from the donor), so a bundle never points at a missing sprite.
+  - Before a PNG is uploaded, the preview and the exported bundle use one hand-drawn fallback sprite (`spec/holyhandgrenade.png`, 64x64), so a bundle never points at a missing sprite and never carries anyone else's art.
   - Hold geometry is the engine's `worm_hold.rs` math verbatim: aim 0 is down, 31 is up, `weap_radius`/`weap_rotation`/`weap_radial_rotation` and the hand offsets, plus the put-away swing and shrink.
   - The `spec/pre_weapon_preview.png` landscape is the preview backdrop, with 1x–5x pixelated zoom and a true left/right facing flip.
 - **50 Hz Missile Flight Sprite Preview**:
@@ -32,11 +32,11 @@ Maintenance and hand-off notes live in [AGENTS.md](AGENTS.md).
 - **Modern Asset Workflow**:
   - 32×32 PNG icon importer and exporter (saved to `sprites/<mod_name>/icon.png`).
   - Single-sheet PNG hold artwork with `holds.PX_POSTURE` (no legacy GIF conversions).
-  - Pack art for the record sprite fields the engine accepts an image in: the primary trail (`missile.trail.sprite`), the cluster bit sheet (`cluster.sprite`), the homing bit sheet (`cluster.homing_sprite`), the cluster bit trail (`clusters.bit.trail.sprite`) and the weapon's own body sheet (`sprite`) — the last one is the only way to give an **air strike** its munition art, since the sprite builder has no primary missile to follow. Uploaded PNG/GIF files are written into `sprites/<mod_name>/` and declared in `mod.toml`.
+  - Pack art for the record sprite fields the engine accepts an image in: the primary trail (`missile.trail.sprite`), the cluster bit sheet (`cluster.sprite`), the homing bit sheet (`cluster.homing_sprite`), the cluster bit trail (`clusters.bit.trail.sprite`) and the weapon's own body sheet (`sprite`), the last one is the only way to give an **air strike** its munition art, since the sprite builder has no primary missile to follow. Uploaded PNG/GIF files are written into `sprites/<mod_name>/` and declared in `mod.toml`.
   - Rotation sheets: bake a single projectile frame into a full 360° direction strip (16/32/64 frames, frame 0 pointing up and turning clockwise, WA's airmisl order) with the record's native animation set to follow the flight direction.
   - Effects-SDK ribbon trail for the main projectile: colour, core/glow width, length, sample rate and fade, emitted as `wf-lib/effects/trail` (`dependencies = ["effects.sdk"]`), with the choice of trailing only the main round or a whole cluster burst.
   - Effects-SDK explosion burst: Project X's electric-style ring + squashed lens (`wf-lib/effects/px_effects`), either drawn on top of WA's blast or replacing it with the SDK's damage/push/crater/sound (`custom_explosion`), with a 50 Hz preview.
-  - **Terrain Stamp** (`wa.land.stamp`, no library needed): an up-pointing upload is baked into 32 clockwise cells and burned into the land where the round bursts — at the impact heading or a fixed angle, with `buried.soften`/`blend` and optional true colours, and no stamp where a live worm stands (it would be sealed into the land). **Damage On Impact** turns it into PX's javelin: the round damages every worm, mine, crate and oil drum at the impact point (its own kind, knockback and search radius), sticks in the land only when it hit nothing, and zeroes the record's own blast so nothing explodes twice. A built-in verb, so it adds no dependency; a native blast's crater erases it, so the card warns until the custom blast replacement is on.
+  - **Terrain Stamp** (`wa.land.stamp`, no library needed): an up-pointing upload is baked into 32 clockwise cells and burned into the land where the round bursts, at the impact heading or a fixed angle, with `buried.soften`/`blend` and optional true colours, and no stamp where a live worm stands (it would be sealed into the land). **Damage On Impact** turns it into PX's javelin: the round damages every worm, mine, crate and oil drum at the impact point (its own kind, knockback and search radius), sticks in the land only when it hit nothing, and zeroes the record's own blast so nothing explodes twice. A built-in verb, so it adds no dependency; a native blast's crater erases it, so the card warns until the custom blast replacement is on.
   - Bundle Code page lists the `mod.toml` dependencies the features add automatically and lets you add extra SDK/mod ids (`effects.sdk`, `wf.sdk`, or your own).
 - **Desktop Application (Tauri v2)**:
   - Native Windows desktop application with system menus, file dialogs, and native performance.
@@ -130,8 +130,22 @@ When clicking **Export Mod (.zip)**, the archive contains:
   weps/<file>.wep (only when "Use .wep weapon file" is enabled)
   sprites/<mod_name>/
     icon.png (if custom)
-    hold.png (when hold art is enabled; the default Grenade/Bazooka art is written until you upload a sheet)
-    missile.png (when custom flight art is enabled; the default Grenade/Bazooka art is written until you upload a sheet)
+    hold.png (when hold art is enabled; the hand-drawn fallback is written until you upload a sheet)
+    missile.png (when custom flight art is enabled; the hand-drawn fallback is written until you upload a sheet)
     trail.png / bit.png / bit_homing.png / bit_trail.png / body.png (only for the pack-art slots you uploaded)
 ```
 Drop the extracted folder into `WormForge/Mods/` next to `wf-lib/` and launch Worms Armageddon!
+
+---
+
+## Credits and disclaimer
+
+**This is an unofficial fan tool, not affiliated with Team17.**
+
+**Worms Armageddon and its artwork belong to Team17.** The stock art this editor displays is Team17's, used only to preview a mod: the sprite-builder tab icons (Main, Home, Bits, HomeBit, Sheep, Dig), the frozen worm preview, and the terrain preview backdrop. The fallback sprite that fills an untouched export is hand-drawn for this project, not taken from the game. WormForge, the engine these bundles run on, is a separate community project, and this editor is a separate fan tool again.
+
+**What an export contains:** the art you upload and, when you leave it in place, this project's own hand-drawn fallback sprite. No game art is copied into your mod, and nothing is uploaded anywhere: the editor runs entirely on your machine.
+
+**You own what you make here, and you are responsible for it.** Weapons, bundles and anything else you build with this page are yours to publish or keep, and it is your call whether they are legal, appropriate and safe to share.
+
+**Provided as is, no warranty.** Test an export in game before you rely on it; the editor's job is to write a valid bundle, not to make a weapon that plays well or fairly.

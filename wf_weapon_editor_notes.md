@@ -1,4 +1,4 @@
-# WormForge Weapon Studio — Engineering Notes (API 4.0)
+# WormForge Weapon Studio, Engineering Notes (API 4.0)
 
 ## Overview & Architecture
 This application is a modern, full-featured TypeScript & React replacement for the legacy/stale WormForge weapon creator.
@@ -121,7 +121,7 @@ This application is a modern, full-featured TypeScript & React replacement for t
      - Synthesizes valid WormForge API 4.0 weapon record schemas, enforces single-action and burst constraints, and generates custom Lua simulation callbacks when requested.
      - Client UI (`GeminiAntigravityModal.tsx`) displays proof of work (agent reasoning, tool steps) and allows 1-click assimilation into the editor.
 
-## 2026-11-09 — sprite-builder animations and separate collision masks
+## 2026-11-09, sprite-builder animations and separate collision masks
 
 **Scope correction:** the code-editor work (`Worm-Forge-Lua-Editor` parser /
 `undefined-global`) is out of scope until the weapon editor is finished. The
@@ -180,10 +180,10 @@ Also emitted now: `missile.speed_pct`, `missile.alarm_worms`, and the
 
 ### Validation
 
-- `npx tsc --noEmit -p tsconfig.json` — clean.
-- `npx vite build` — succeeds.
+- `npx tsc --noEmit -p tsconfig.json`, clean.
+- `npx vite build`, succeeds.
 - Generated Lua for a custom fast-spin missile checked with `wfcheck --stdin`
-  — no findings.
+, no findings.
 
 ### Follow-up: builder-off must not touch the stock missile
 
@@ -193,7 +193,7 @@ even when `missileSprite.enabled` was false. Every weapon therefore emitted
 The record now only reads `hideStock` / `stockSprite` when the builder is
 enabled. A builder-off project inherits the donor's sprite untouched.
 
-## 2026-11-09 — .wep import no longer rewrites the weapon
+## 2026-11-09, .wep import no longer rewrites the weapon
 
 ### What was breaking
 
@@ -263,7 +263,7 @@ changed field is written on top of the file. This also preserves zero values
   `copy_from`; uncheck/re-check the settings toggle; export the ZIP and confirm
   `weps/petrol_bomb.wep` is inside.
 
-## 2026-11-09 — clustlet actions and the remaining .wep body values
+## 2026-11-09, clustlet actions and the remaining .wep body values
 
 The cluster submunition was previously hard-coded to a single body: `bit`
 only carried damage/gravity/wind/bounciness/fuse, its action was inferred from
@@ -429,8 +429,8 @@ its clustlet submunitions) was invisible and never emitted.
   Verified against `tools/record_fields.py`/`embed_weps.py` in WormForgeNew and
   the PX records under `myre/pxl_extracted`.
 - `luaGenerator.ts`: strikes (`fireType === 'cursor'`, not teleport) now emit
-  the `missile` and `clusters` blocks through the existing missile path — the
-  engine shifts the names itself — and the `strike` header is emitted in the
+  the `missile` and `clusters` blocks through the existing missile path, the
+  engine shifts the names itself, and the `strike` header is emitted in the
   same branch, now including `plane`. Teleport remains `on_select`.
 - `RecordEditor.tsx`: the Gun / Mine / Strike tab gained `strike.plane`
   (`Plane Sprite`). The cluster submunition UI (Burst Payload -> Clusters ->
@@ -513,13 +513,23 @@ missile path had the same problem when `mode = "custom"` had no sheet.
   `HoldSpec`). The panel labels the field "In-game FPS" and shows the emitted
   multiplier under it; the preview timer already used the true FPS, so it now
   matches the game.
-- `spec/default_grenade.png` (46x46) and `spec/default_blue_zook.png` (32x32)
-  are copied to `public/assets/defaults/` and used whenever no hold/flight
-  sheet has been uploaded. `src/utils/defaultArt.ts` picks the grenade or the
-  bazooka from the donor/slot (`fireType === "hitscan"` counts as barrel), loads
-  the same file for the builder preview, and writes it as `hold.png` /
-  `missile.png` (stacked for `frames`) on export. The procedural canvas art
-  remains only as a fallback if the image cannot load.
+- `spec/holyhandgrenade.png` (64x64, drawn by hand for this project) is copied
+  to `public/assets/defaults/default_hand_grenade.png` and used whenever no
+  hold/flight sheet has been uploaded. `src/utils/defaultArt.ts` loads that same
+  file for the builder preview and writes it as `hold.png` / `missile.png`
+  (stacked for `frames`) on export. The procedural canvas art remains only as a
+  fallback if the image cannot load.
+
+  There used to be two fallbacks, `spec/default_grenade.png` (46x46) and
+  `spec/default_blue_zook.png` (32x32), picked from the donor: a grenade for
+  throwables, the blue bazooka for barrel weapons. Both were cut from WA's own
+  sprites, so every untouched export shipped Team17 pixels, and the disclaimer
+  had to say so. One hand-drawn sprite replaced them; the donor pick went with
+  it, because a placeholder has no reason to be family-accurate. The two old
+  files were deleted outright: the dev test pack now bakes its role sheets from
+  `spec/famas.png` and `spec/fire_famas.png` (the author's own gun and muzzle
+  flash), so neither the app nor the test pack needs a Team17 sheet for a
+  placeholder.
 - `src/utils/assetUrl.ts` centralises `BASE_URL` resolution so the logo and the
   default art also work from the GitHub Pages subpath and the Tauri webview
   (`base: "./"`), not just from the dev server root.
@@ -544,7 +554,7 @@ them, which made a whole class of bundled art unreachable.
   written next to `panel_icon` when those sheets exist. The engine loads the
   sheet and writes the installed id into `clusters.bit.sprite` (or the strike's
   cluster sprite) and the cluster render timer, which is why the path must not
-  appear in the record's `bit.sprite` — `record_table` would read it as a sprite
+  appear in the record's `bit.sprite`, `record_table` would read it as a sprite
   name.
 - Trail emission: `missile.trail.sprite` and `clusters.bit.trail.sprite` take
   the path directly (`trail_image_spec` in `lua-host/src/api.rs` copies the
@@ -553,7 +563,7 @@ them, which made a whole class of bundled art unreachable.
   pack path is the only reason the clusters block is entered on an otherwise
   untouched `.wep` import.
 - Mod export: `modExporter` writes each uploaded file and `generateModToml`
-  declares `[sprites."<path>"]` with `frames` (PNG only — the engine rejects
+  declares `[sprites."<path>"]` with `frames` (PNG only, the engine rejects
   `frames` on a GIF), `fps` and `play`.
 - UI: `PackSpriteUpload.tsx` is reused in the Sprite tab (primary trail) and the
   Burst tab (bit sheet, bit trail, homing bit sheet, the last one inside the bit
@@ -576,7 +586,7 @@ Even without `frames`, the engine slices a square-cell vertical strip, and our
 `fps` / `play = "loop"` declaration supplies the looping the raw loader omits.
 
 The trap next to it is `clusters.bit.sprite_count` (0x120): it counts
-consecutive sprite **ids**, not frames — bit i draws
+consecutive sprite **ids**, not frames, bit i draws
 `bit.sprite + (i-1) % sprite_count` (MissileEntity ctor 0x507E70). The editor
 called it "Sprite Frame Count", so a `.wep` import with 4 (e.g. a weapon whose
 bits used four different sprites) would send bits 2..4 to the neighbouring WA
@@ -713,11 +723,14 @@ New in the editor (`project.ribbonTrail`, card on Indices & Particles):
 
 ## In-game behaviour test pack (`tools/gen_test_pack.ts`)
 
-Twenty components in one bundle, one profile, all art from
-`spec/default_grenade.png`. The script has a tiny PNG codec (8-bit RGBA
-decode/encode, no dependencies) and bakes 360° rotation strips with the same
-convention as `src/utils/rotateSheet.ts`, so a pack can be thrown into
-`WormForge/Mods/` and the engine behaviours checked in one match.
+Forty components in one bundle, one profile, all art from the `spec/` sheets,
+one sheet per role so a wrong role is obvious in the match: the held gun and the
+role sheets come from `famas.png` and `fire_famas.png`, the homing bit from the
+oil drum's 20-cell strip, the roaming animal from the sheep. The script has a
+tiny PNG codec (8-bit RGBA decode/encode, no dependencies) and bakes 360°
+rotation strips with the same convention as `src/utils/rotateSheet.ts`, so a pack
+can be thrown into `WormForge/Mods/` and the engine behaviours checked in one
+match.
 
 Coverage: sprite-builder track/rotation and builder+homing, stock sprite 50 as
 the baseline, claim `sprite` with animation 1/2, cluster bit sheets with
@@ -734,7 +747,7 @@ Output is git-ignored. `bun run tools/gen_test_pack.ts` regenerates it; `wfcheck
 
 - `recordTabs.tsx` tabs can carry `parent`. Collision Bitmask now sits under
   Missile Action (`parent: 'action'`), which also tidies the sidebar and the
-  mobile picker (`— Collision Bitmask`). The parent row is still a normal button
+  mobile picker (`, Collision Bitmask`). The parent row is still a normal button
   that selects its own tab; a chevron on its right toggles the children
   (`aria-expanded`), open by default through the sidebar's `openGroups` state.
   This is the shape to reuse for Clusters/Air strike if they grow sub-sections.
@@ -754,12 +767,12 @@ Output is git-ignored. `bun run tools/gen_test_pack.ts` regenerates it; `wfcheck
 The clusters editor was one enormous page. It is now a parent plus five
 children in `recordTabs.tsx` (same `parent` mechanism as Collision Bitmask):
 
-- `burst` — payload selector (plain / clusters / fire), cluster ejection numbers
+- `burst`, payload selector (plain / clusters / fire), cluster ejection numbers
   and the fire payload fields;
-- `burst_bit` — "Bit Behaviour": bit action selector, sprite/trail, damage,
+- `burst_bit`, "Bit Behaviour": bit action selector, sprite/trail, damage,
   gravity, speed, fuse, sounds and pack art;
-- `burst_bit_collision` — "Bit Collision": the bit's `ends_on_contact` grid;
-- `burst_bit_bounce`, `burst_bit_homing`, `burst_bit_roam`, `burst_bit_dig` — one
+- `burst_bit_collision`, "Bit Collision": the bit's `ends_on_contact` grid;
+- `burst_bit_bounce`, `burst_bit_homing`, `burst_bit_roam`, `burst_bit_dig`, one
   entry per bit action.
 
 Those entries are **navigation helpers, not separate views**: the whole burst
@@ -773,7 +786,7 @@ Bit Bounce for a bouncing bit, the page shows behaviour + collision + bounce
 together, clicking Bit Collision scrolls to the grid, and switching the bit
 action to homing swaps the nav entry and the section.
 
-## 2026-11-10 — effects-SDK explosion burst, Effects section and bundle dependencies
+## 2026-11-10, effects-SDK explosion burst, Effects section and bundle dependencies
 
 The editor could draw a ribbon trail but not the other half of the effects SDK:
 PX's explosion burst (`wf-lib/effects/px_effects`, the electric mine's blast).
@@ -851,7 +864,7 @@ C is `wapx-scipts/utils_red/px_effects.c` (`DrawExplosion`, `DrawEllipse`,
   the dependency panel lists `effects.sdk` automatically, accepts `px.electric`,
   and `mod.toml` contains both. The mobile picker lists Effects.
 
-## 2026-11-11 — WFWS flight builder: our own bundle, bit and behaviour art
+## 2026-11-11, WFWS flight builder: our own bundle, bit and behaviour art
 
 PX's `px_sprite_builder` draws exactly one sheet for the primary missile. What
 the weapon editor needed was more: cluster bits with their own art, and art that
@@ -877,7 +890,7 @@ bundle of our own, `spec/lua_sdk/wfws_sdk/` (id `wfws.sdk`), exporting
 - `require("wf-lib/wfws_sprite_builder")` whenever the primary builder is on.
   Air strikes are excluded: their munitions come from the strike's own record
   copy and have no placed missile to follow.
-- `sprite = 0` is **unconditional** on the primary while the builder is on — it
+- `sprite = 0` is **unconditional** on the primary while the builder is on, it
   is the classifier, not a cosmetic toggle. A `.wep` baseline or a
   `missile.sprite` override must not survive. With an untouched `.wep` import
   and the builder off, the emitted Lua is still just `wep = "weps/<file>.wep"`;
@@ -913,7 +926,7 @@ test from Lua. Not needed: WA already writes the behaviour's sprite id into
 means no per-frame input polling and no timers, and the art follows the engine's
 own state machine. The one gap is dig, where WA may draw `sprite_1..3` without
 writing them into `m.sprite`; if in-game testing shows that, a `when` callback
-(or the spacebar timing) is the fallback — the builder already accepts `when`.
+(or the spacebar timing) is the fallback, the builder already accepts `when`.
 
 ### UI
 
@@ -942,7 +955,7 @@ Bundle Code dependency panel adds `wfws.sdk` automatically.
   writes behaviour sprites once or every frame; dig; the swap flicker; roam
   `pre` while grounded.
 
-## 2026-11-11 — WFWS fix pass 1: identity flip and probe-driven digging
+## 2026-11-11, WFWS fix pass 1: identity flip and probe-driven digging
 
 The spb misidentified the two roles and treated digging as a sprite state. Both
 are now settled from how WA actually works.
@@ -977,8 +990,8 @@ only terrain contact changing the animation.
 
 - Generator: with the builder owning the flight art and the record digging
   (`missile.action = "dig"`, or a cluster bit with `bit.action = "dig"`), the four
-  indexes are written as 0 — this is what removes the mole (or a `wsv*` frame)
-  from under the sheet — and `sb.flight` gets `dig = true`. A `native` dig role
+  indexes are written as 0, this is what removes the mole (or a `wsv*` frame)
+  from under the sheet, and `sb.flight` gets `dig = true`. A `native` dig role
   leaves them alone: only an author-set nonzero id is written, never a zero.
 - Builder: four `wa.land.solid` probes across the heading (6 px ahead, ±3 px
   spread, two hits = digging, 3 frames of hysteresis). While digging it locks the
@@ -1005,7 +1018,7 @@ files with Vite's `?raw`, one source of truth.
   true`, no `states`), dig + native role (no zero rows, no `dig = true`), cluster
   bits with dig (bit indexes zeroed, `dig = true`).
 
-## 2026-11-11 — WFWS fix pass 2: timed homing, roaming fields, `wf-lib` install
+## 2026-11-11, WFWS fix pass 2: timed homing, roaming fields, `wf-lib` install
 
 ### Homing is a window, not a signal
 
@@ -1022,7 +1035,7 @@ bits = { sheet = "…/bit_flight.png", homing = { arm = 400, time = 3000, sheet 
 The generator zeroes `missile.homing.sprite` (0xAC) / `clusters.bit.homing.sprite`
 (0x170) while the builder owns that art, so WA's own homing sprite cannot draw
 under the sheet. `wfwsRoleFlags` is the single source for which roles are owned,
-used by the Lua, `mod.toml` and the exporter — the three cannot disagree about a
+used by the Lua, `mod.toml` and the exporter, the three cannot disagree about a
 sheet. `resolveBehaviorStates` no longer produces homing/homing-bit states.
 
 ### Roaming is record fields, not state art
@@ -1080,7 +1093,7 @@ were `value={body.homing_arm_ms || 1000}` / `homing_time_ms || 8000`, and the
 initial project stored 0/0, so the fields *displayed* 1000/8000 while the
 project (and the export) carried zero. `arm = 0` starts the builder's window at
 launch, and WA's `time = 0` leaves the missile unguided (no stock homing record
-has one — `myre`'s 15 homing records use arm 0-1500 ms, time 2000-5000).
+has one, `myre`'s 15 homing records use arm 0-1500 ms, time 2000-5000).
 
 Fixed: the `App.tsx` defaults are 1000/8000, the inputs read `?? 1000` / `?? 8000`
 so a real 0 is visible, and the duration field says what 0 means. Test 25's
@@ -1093,8 +1106,8 @@ back at 6800 ms).
 `sprites entry 'smoke' must be a pack PNG/GIF or frame folder`. The engine's
 `trail_image_spec` keeps a value only when it is a *stock* sprite name
 (`gfx::stock_sprite_id`); everything else is read as a bundle path and loaded.
-The editor's own trail defaults and presets were the source — `smoke`, `sparks`,
-`fire_smoke` — and one was written as soon as the trail was enabled.
+The editor's own trail defaults and presets were the source, `smoke`, `sparks`,
+`fire_smoke`, and one was written as soon as the trail was enabled.
 
 - WA's sprite table is now vendored as `src/data/stockSprites.ts` (694 entries
   from `crates/gfx/src/stock_ids.rs`) with `stockSpriteId`, `stockSpriteName`,
@@ -1176,7 +1189,7 @@ PX's sheep editor lists five sprites. Mapped against the record
 
 Only the first two are named by `record::fields()`, so `sheep_sprites` is the
 only bundle path there. 0xE8/0xEC are sheep sprite fields WA reads that the
-engine does not name yet — an engine field to add (phase 6 of the plan), not
+engine does not name yet, an engine field to add (phase 6 of the plan), not
 something the generator can emit.
 
 The Skunk is the reverse case worth knowing: its primary action is roam but the
@@ -1302,7 +1315,7 @@ A reader for bundles that are already installed, so their records and the
 editor's own WFWS features can be inspected and imported without decoding a
 `.wep`. It lives in `src/utils/modLib/`:
 
-- `luaTable.ts` — a Lua **data** reader, not an evaluator. It walks a file's
+- `luaTable.ts`, a Lua **data** reader, not an evaluator. It walks a file's
   tokens and keeps every table literal it can see: `a.b = { … }`,
   `a.b{ … }`, `a.b({ … })`, `a.b(name)` (the table looked up by that name) and
   the file's `return { … }`. Function bodies are skipped *as values*, but the
@@ -1310,19 +1323,19 @@ editor's own WFWS features can be inspected and imported without decoding a
   wa.weapons.replace{ … } end }` is exactly how this editor's own bundles are
   written. Non-literal values (calls, arithmetic, functions) become `null`
   rather than aborting, so one odd field cannot lose a record.
-- `modToml.ts` — scalars, string arrays, `[[components]]` and
+- `modToml.ts`, scalars, string arrays, `[[components]]` and
   `[sprites."path"]`, tolerant of anything it does not model.
-- `scan.ts` — `readBundles` finds every `mod.toml` in a file map (nested
+- `scan.ts`, `readBundles` finds every `mod.toml` in a file map (nested
   bundles like `wf-lib/px` included) and `readWeapons` resolves each weapon
   component to its Lua module: the component's own entry when it is unique,
   else `weapons/index.lua` (PX's ports share one `components/weapon.lua` and
   map ids to modules there), else `weapons/<id after the dot>.lua`. When a
   module has no record it follows that module's `require("lib/…")` one level
-  deep — PX's Ninja Star keeps its `wa.weapons.replace{ … }` in
+  deep, PX's Ninja Star keeps its `wa.weapons.replace{ … }` in
   `lib/px_ninja_star.lua`. A record is recognised by its shape (`missile`,
   `clusters`, `handling`, `gun`, `mine`, `strike`) as a last resort, which
   catches `weapon.definition` and locals.
-- `loadFiles.ts` — folder picker (`webkitdirectory`, which also opens Tauri's
+- `loadFiles.ts`, folder picker (`webkitdirectory`, which also opens Tauri's
   native dialog), `.zip` through the JSZip the exporter already uses, and
   dropped folders/files through `webkitGetAsEntry`. Nothing is uploaded.
   `.lua`/`.toml`/`.wep` are read eagerly; PNG/GIF/WAV entries are listed with a
@@ -1343,7 +1356,7 @@ Corpus check (`bun run tools/scan_mods.ts`, folders and `.zip`):
 The 22 misses are `example.tools` (70 components that place stock weapons and
 Keep no Lua record), the Holdable Uzi template (no record yet) and a handful of
 PX weapons whose record lives in a `.wep` file (`pyro.replace` passes
-`wep = "…wep"`) — reading those means handing the bundled `.wep` to the
+`wep = "…wep"`), reading those means handing the bundled `.wep` to the
 existing decoder, which is the natural next step.
 
 The editor's own ids are now namespaced: `weaponId.ts` fixes the `wfws.` prefix
@@ -1434,7 +1447,7 @@ inverse of the generator's feature emission:
   with every burst field, `damage`/`push`/`hole`/`sound`, the positional
   `ellipse`, and the named preset matched back from the numbers.
 - **Sequential fire**: `seq.fire_seq_mis` / `fire_sequential_actor`, including
-  the fields the table reader cannot see because they are expressions —
+  the fields the table reader cannot see because they are expressions
   `vx = function … * 14`, `x`/`y` offsets, and `on_shot`'s path, priority and
   every-Nth guard.
 - **WAVs, sheets and dependencies**: the claim `sounds` paths and `on_shot`,
@@ -1504,7 +1517,7 @@ Three rules the mapper has to get right, all learned from the corpus:
   back to `smklt25`.
 - **Unknown fields are kept.** The reader is destructive (`take()` deletes what
   it consumed), and whatever is left inside a group it did consume is put back
-  under the same path in `recordExtra` — a clustlet's `random_motion` or
+  under the same path in `recordExtra`, a clustlet's `random_motion` or
   `impact_particles` has no panel, but it still reaches the export.
 
 `importBundleWeapon` now also keeps the decoded `.wep` as the diff base
@@ -1523,22 +1536,22 @@ values the Lua reader cannot follow (a call or a function, stored as `null`).
 
 A bundle weapon usually declares a handful of fields and lets `copy_from` do the
 rest. That worked badly before: with no `.wep` the editor had no baseline, so
-the generator wrote *every* typed field — and the open project was the Moon
+the generator wrote *every* typed field, and the open project was the Moon
 Grenade preset, so a sparse import inherited gravity 35%, damage 20 and a
 crater-cutting `on_explode` it never asked for.
 
 Two pieces fix it:
 
-- **`src/data/stockDonors.json`** — one decoded record per panel slot, 70 of
+- **`src/data/stockDonors.json`**, one decoded record per panel slot, 70 of
   them, from PX's default scheme (`python tools/px_scheme_weps.py <scheme>.pxs
   OUT --all`, then `bun run tools/gen_stock_donors.ts [folder]`). It holds the
   record fields only: `body`, `action`, `burst`, `fireType`, `specialSubtype`
   and `recordOverrides`. `body.sprite` is taken from
   `recordOverrides['missile.sprite']`, because the parser's `body.sprite` is a
   family guess ("missile" for anything that is not a mine/gun/timed explosive)
-  while the record's real id is decoded into the override — the same rule the
+  while the record's real id is decoded into the override, the same rule the
   bundle importer follows.
-- **`project.donorBaseline`** — the donor as a `WepBaseline`. The generator now
+- **`project.donorBaseline`**, the donor as a `WepBaseline`. The generator now
   picks its baseline with `useWepFile ? wepBaseline : donorBaseline`, so with
   `copy_from` the donor's record is the diff base: untouched fields are left to
   the engine and only real edits are written. An untouched new project exports
@@ -1562,7 +1575,7 @@ gets the right donor instead of the Grenade default.
 `INITIAL_PROJECT` is now WA's Grenade, built from that donor table, with hold
 art, the sprite builder, effects, sounds and custom Lua all switched off. A
 bundle import sets `replaceProject` so it starts from that project instead of
-merging into whatever was open — the previous weapon's art and builder settings
+merging into whatever was open, the previous weapon's art and builder settings
 used to leak into the new one.
 
 ### Re-basing the donor (a stale baseline silently ate edits)
@@ -1579,7 +1592,7 @@ That is not just stale panels. Every value the two donors happen to share looked
 value survived. A Mortar re-based from the Grenade is the clean example: the
 Grenade's `burst` is `nothing` and its `push_pct` is 100, the Mortar's are
 `clusters` and 0. The author turned the Mortar's clustlets off and set its push
-to 100 — both were skipped, and the weapon still spawned clustlets with no
+to 100, both were skipped, and the weapon still spawned clustlets with no
 knockback.
 
 Two changes, one for the state and one as a backstop:
@@ -1617,19 +1630,19 @@ table on a record whose `burst` is not clusters.
 
 `bun run tools/audit_records.ts [ModsFolder]` is the audit. Four passes:
 
-1. **Coverage** — every *record* group `crates/weapons/src/record.rs` names,
+1. **Coverage**, every *record* group `crates/weapons/src/record.rs` names,
    checked against what the editor can express. Claim-level keys (`sprites`,
    `hold`, `sounds`, callbacks) are deliberately not imported: they name art
    inside the source bundle.
-2. **Invariants** — `worms` beside its own constituent groups (the engine
+2. **Invariants**, `worms` beside its own constituent groups (the engine
    refuses it), a burst without its table, a record sprite field holding a path,
    a sprite name that is not stock.
-3. **Implicit behaviour** — 28 stock slots whose native behaviour implies a
+3. **Implicit behaviour**, 28 stock slots whose native behaviour implies a
    shape, checked against the decoded donors: the sheep roams and does not gas,
    the skunk's *bits* gas, the petrol bomb spreads fire, the mole bomb walks and
    burrows (WA's record is `action = "roam"`, as PX's Gravler port declares),
    the utilities toggle their own effect, the drill has a duration, and so on.
-4. **The editor's own output** — import each corpus weapon, generate its Lua,
+4. **The editor's own output**, import each corpus weapon, generate its Lua,
    and check the record the engine would end up with (donor + emitted diffs):
    action/group agreement, burst/table agreement, mask conflicts, sprite
    validity, `sprite_count`, homing windows, armed-but-harmless gas, and that
@@ -1659,7 +1672,7 @@ What it found, and what changed:
 
 Still not modelled, on purpose: `projectile` (a separate launch record) and
 `raw` (offset writes), plus the claim-level keys. `fires.type`/`method` are not
-editable — changing the archetype is the supported way to change the family.
+editable, changing the archetype is the supported way to change the family.
 
 ### The explosion preview draws the SDK's own sheets
 
@@ -1686,10 +1699,10 @@ of to the game's pixels. It now draws what `px_effects.lua` draws:
   (`Fit` is there for radii larger than the canvas) and the readout shows the
   live radius. The electric preset's radius is PX's own formula,
   `(damage + 2) * 2` (`lib/custom_explosion.lua`), so a 45-damage blast is a
-  94 px ring — the old preset's 30 px was why the preview looked small next to
+  94 px ring, the old preset's 30 px was why the preview looked small next to
   the in-game screenshot (the electric mine's 56-damage blast is 116 px).
 
-## 2026-11-12 — Hold builder polish, firing flash sync, 6-role hotbar & underground `dig` overrides
+## 2026-11-12, Hold builder polish, firing flash sync, 6-role hotbar & underground `dig` overrides
 
 ### Hold Art Builder layout, `weap_scale`, radius parity & `draw_hand` fallback
 
@@ -1749,7 +1762,7 @@ of to the game's pixels. It now draws what `px_effects.lua` draws:
 The builder used to classify a roaming weapon's rounds by spawn order: the
 first missile for the weapon was the primary and every later one a bit. It
 looked right on a single animal, and broke the moment one trigger made several
-rounds — a sequential `fire_seq` burst drew every shot after the first with bit
+rounds, a sequential `fire_seq` burst drew every shot after the first with bit
 art, and so would a herd fire.
 
 The identity has to come from the record. `m.sprite` is `MISSILE_RENDER_SPRITE`
@@ -1773,7 +1786,7 @@ The Super Queen Bee showed the other half of it. Its PX record points
 to its low 16 bits and reads it as a pack slot, and nothing is installed there,
 so the queen drew nothing at all while it walked (the flown art did appear after
 takeoff, because that is the builder's). `roamWalkPoseId()` now accepts only a
-stock id (1..799 — packs are assigned slots from 800 up) or a stock name, so:
+stock id (1..799, packs are assigned slots from 800 up) or a stock name, so:
 
 - a stock pose (`sheepwlk`) is kept, WA animates it, and its id goes to
   `sb.flight{ walk = … }`;
@@ -1795,12 +1808,12 @@ animal does not point its nose along the ground. In practice that reads as "the
 main missile has no track animation": the Super Queen Bee stays upright for the
 whole ground phase and only starts tracking once the turn player takes off, so
 the weapon looks broken even though nothing is. The pose is no longer special-
-cased — `track`/`rotation`/the frame cycle are exactly the role's own.
+cased, `track`/`rotation`/the frame cycle are exactly the role's own.
 
 The `roam` option became a table to carry the ids: `roam = { walk = 153, fly =
 699 }`. `walk` is the stock ground pose WA draws (and the one nonzero
 `m.sprite` that means *primary*), `fly` is the sentinel in `sheep.flight_1`
-that WA moves into the render slot at the takeoff — an exact takeoff signal
+that WA moves into the render slot at the takeoff, an exact takeoff signal
 that does not depend on catching the Space press. A weapon whose ground pose
 cannot draw passes `roam = true` and the builder owns the animal from frame 1.
 
@@ -1811,7 +1824,7 @@ role looked plausible. The pack now uses `spec/` sheets, one per role: the
 bazooka for the held art and the primary's homing window, `wicestnd` for the
 flight sheet and the digging spin, the grenade for cluster bits, the drum for
 the homing *bit* (its own 20-cell strip at 20 fps, `frames` declared), and
-`sspsheep1` for roaming — which points up-left, so WF 28's `angle = 45` is what
+`sspsheep1` for roaming, which points up-left, so WF 28's `angle = 45` is what
 stands it up and the sheet is a live test of the angle modifier. The PNG reader
 in the tool grew palette support for it (most `spec/` sheets are colour type 3).
 
@@ -1824,9 +1837,9 @@ the hold's radius, rotation or scale changes, which is why it never looked 1:1.
 
 The FAMAS does it differently and more simply: a *second hold entry* whose sheet
 is drawn by `px_hold_art` in WA's firing states, with the worm's live aim,
-facing and radius. The editor now emits exactly that — the same
+facing and radius. The editor now emits exactly that, the same
 `weap_radius`/`weap_rotation`/`weap_radial_rotation`, its own sheet,
-`size = cell × weap_scale` — and calls `hold_art.add(firing)` after the claim.
+`size = cell × weap_scale`, and calls `hold_art.add(firing)` after the claim.
 The card keeps only the upload: there is nothing to place. `px.fire_seq` is the
 dependency (it exports the helper) and the sheet is claimed in `sprites`.
 `flashOut`/`flashSide`/`flashScale`/`flashFrames` survive only to read a bundle
@@ -1853,7 +1866,7 @@ of the rest angle (a shortest-signed delta, so a heading across the wrap point
 still limits on the near side) and returns `rest` below 0.05 px/frame. The three
 angles are weapon-wide (`MissileSpriteConfig.roamTilt`, like `size`/`angle`) and
 the Hold page's **Roam Tilt** card edits them. The flight preview gained a
-**Walk** mode: the animal ambles with no velocity (art at rest), then hops — up
+**Walk** mode: the animal ambles with no velocity (art at rest), then hops, up
 leaning back, down leaning forward.
 
 ### Record values, donors and the launch power
@@ -1862,7 +1875,7 @@ Two separate bugs made every weapon look the same:
 
 1. `stockDonors.json` predated the `.wep` `fires.*` decode, so no donor carried
    `fires.launch_power_pct` at all, and the panel fell back to its hardcoded
-   `?? 100` — a grenade could never charge. The table is regenerated (70 slots,
+   `?? 100`, a grenade could never charge. The table is regenerated (70 slots,
    grenade 0, mortar 100, super sheep 5) and `recordField()` now reads the
    author's override, then the donor's (or the imported file's) value, then a
    fallback, for 19 record fields.
@@ -1971,7 +1984,7 @@ The firing sheet was also wrong in two ways. It was added on top of the hold for
 the *whole* burst, because a burst keeps WA in its firing states for its length,
 so the flash read as the gun. And it was added without the hand. The generator
 now marks it `flash = true` and hands it the weapon's own sequencer table
-(`shots = seq.shot_at`) — not a `require`, because an exported library module is
+(`shots = seq.shot_at`), not a `require`, because an exported library module is
 instanced per pack and the helper's instance would see a different table than
 the one firing the weapon. `fire_seq` writes that mark on every shot (the first
 one included); the helper draws the flash for the two frames after a mark and
@@ -1990,8 +2003,8 @@ flash that sticks or never lights is visible. 36 weapons.
 `fx.install` left the burst on the effects SDK's `EFFECTS` band (`0xC0000`).
 `wa.depth` documents that band as *behind* worms, objects and WA's own effects,
 so in `effect` mode (where the record's native blast still plays) the ring sat
-under WA's explosion animation. By the time the boom played out — around a
-second — the burst's `1 - timer/duration` envelope had already dropped close to
+under WA's explosion animation. By the time the boom played out, around a
+second, the burst's `1 - timer/duration` envelope had already dropped close to
 zero, which is exactly the "appears about a second late" report. The generator
 now passes `depth = { burst = wa.depth.FRONT }` to `fx.install` (the nearest band
 WA's front water still covers); the smoke keeps its own band behind the ring, and
@@ -2002,7 +2015,7 @@ key (the Core slider) that the SDK had no key for, so a sharp core line existed
 only on the site. `BURST_KEYS`/`burst_state`/`draw_burst` now read `core` as the
 sharp pass's half-width (floored at 1.25 half, 2.5 px full) for both the ring and
 the lens, and fall back to PX's `0.9 x thickness` / `1 x thickness` derivation
-when it is absent or zero — every existing bundle draws exactly as before.
+when it is absent or zero, every existing bundle draws exactly as before.
 `effects.sdk` 0.3.5.
 
 ### Porting the Gemini Hydrogen redesign (branch `redesign/hydrogen-port`)
@@ -2027,7 +2040,7 @@ new layout rather than merged the other way round.
 Layout decisions worth keeping: the sidebar is workspace navigation only (one
 navigation, one `aria-current`), the family-scoped tab bar lives inside
 `RecordEditor`, and the mines/guns/arrows/specials pages carry only the groups
-their family can actually reach — a mine has no custom art (`mine.rs` hardcodes
+their family can actually reach, a mine has no custom art (`mine.rs` hardcodes
 `mineon`/`mineoff`) and a hitscan weapon has no missile body.
 
 ### Fine Tuning was a junk drawer, so it is gone
@@ -2045,7 +2058,7 @@ Projectile and strike weapons now have five tabs.
 ### Terrain stamp: `wa.land.stamp` is a verb, not a library
 
 Sticking a weapon into the land is WA's own girder routine, so the editor needs
-no bundle for it — only `wa.land.stamp{ sprite, frame, x, y, buried }` inside the
+no bundle for it, only `wa.land.stamp{ sprite, frame, x, y, buried }` inside the
 claim's `on_explode`. The frame is an **index into a pre-rotated strip**, which is
 why the card bakes instead of rotating at runtime: 32 cells, frame 0 the
 untouched upload pointing up, turning clockwise, exactly the PX
@@ -2054,7 +2067,7 @@ launcher all carry.
 
 What the engine actually enforces (read before changing the pipeline):
 `spawn.rs::bind_land` takes `sprite` (a name, resolved through the claim's
-`sprites` — a bundle path works), an optional `frame` (default 0), `x`/`y`
+`sprites`, a bundle path works), an optional `frame` (default 0), `x`/`y`
 required, `buried = { soften = 1..32, blend = "dither"|"mix" }` and
 `true_colour` (`true` or `{ blend }`). `sprite.rs::terrain_frames` keeps the
 source pixels of a sheet only when **every** frame is 1..256 px, so a 200×200
@@ -2072,10 +2085,68 @@ leaves a stamp visible. The card warns and points at the burst tab rather than
 switching the mode itself: flipping to `blast` changes damage, push and crater
 radius, which is the author's decision, not a side effect of enabling a stamp.
 
-The stamp goes **last** in the merged callback — after the custom WAV, the burst
-and the author's own Lua — because the PX ports scan for a worm and `return`
+The stamp goes **last** in the merged callback, after the custom WAV, the burst
+and the author's own Lua, because the PX ports scan for a worm and `return`
 before stamping (the star is not supposed to stick into a creature). Emitting it
 first would have made every port stamp anyway.
+
+### Copy rules: commas, not em dashes
+
+A sweep replaced every em dash in the sources, the SDK docs and the hand-off
+files with commas (about 230 of them). The reasons are practical rather than
+stylistic: the character is easy to introduce by accident, some editors render
+it as a wide bar in a mono font, and it survives copy-paste between the JSX copy,
+the Lua comments and the markdown worse than a comma does. A dash at the end of a
+line was dropped rather than joined to the next line, because in a block comment
+that would have pulled the next line's ` * ` prefix into the sentence.
+
+### Zoom buttons on the flight preview
+
+The preview had a `2x..6x` preset row, which is not how anyone reads sprite
+size. It is now `-`, a percentage and `+`: `missileZoom / 4` is WA's own pixel
+size, so the readout is a percentage of game pixels, the middle button resets to
+100%, and the steps are whole `missileZoom` units (25%) so the number lands on
+round values. The oil-drum reference already divided by 4, which is why 100% is
+the setting that matches the drum's "1x" label.
+
+### Frames must divide the height, or the loader drops the sheet
+
+The engine's sheet slicing is `height / frames`, so a strip whose height is not a
+multiple of the declared frame count has no rectangle for its last frame. The
+loader gives up on the image rather than rounding, `initgraphic` fails, and the
+symptom in game is a weapon whose sprite simply never appears, with nothing in
+the editor having complained. The math is one `%`, so the editor does it while
+the author is still looking at the sheet: `frameFit` returns the floored cell,
+the remainder and the frame counts that do divide, and the warning offers both
+fixes (crop to the nearest divisible height, or change the count). It is a
+warning, not a block: a sheet can be finished elsewhere, and the number is the
+author's.
+
+Three places need it because three features declare a frame count:
+`sprites."…" frames` in `mod.toml` (pack art, roam strips, builder sheets), the
+hold sheet's `frames`, and the builder's `cyclical`. The hold sheet already
+stores its pixel size on upload (`px_hold_art` needs the cell), so that check is
+synchronous; everything else measures the preview object URL once.
+
+### PingPong: reversing a sheet without a second sheet
+
+Animation strips in PX loop, which is all a spinning wheel needs. Anything that
+opens and closes (a jaw, a piston, a hook that swings out and back) is a single
+strip on screen, so landing directly from the last frame on the first looks like
+a snap. The builder now takes `pingpong = true` and maps the cycle index over a
+`2n-2` span: `cyclical = 6` gives 0,1,2,3,4,5,4,3,2,1. The phase still runs
+`anim_speed * 30/1000` per 50 Hz tick and wraps at 0.99, so one forwards-and-back
+pass takes exactly as long as one loop did, `anim_speed` keeps its meaning, and
+neither endpoint is drawn twice. `M.cyclical_frame` grew a fourth argument rather
+than a second function, so an existing three-argument call (a bundle written
+before this existed) loops as it always did.
+
+Two details that are easy to get wrong: the key is only emitted when
+`frames > 1` (one frame has nothing to reverse, and emitting it would be a lie in
+the Lua), and the editor's 50 Hz preview had to copy the same mapping, otherwise
+the canvas and the game disagree the moment somebody ticks the box. The control
+is a checkbox whose whole explanation lives in the tooltip, because the card is a
+four-column grid and a paragraph would push the generated-Lua box off-screen.
 
 ### Impact damage: why the blast has to go
 
@@ -2084,7 +2155,7 @@ false)` for a worm, mine, crate or oil drum within 20 px, throws the target alon
 the spear (`vx / 4`) and hits it (`hurt(20)` for a worm, `hit(20, vx / 2, vy / 2,
 "bullet")` for an object), then `return`s so nothing is stamped. Our card carries
 the same shape with the numbers exposed (`STAMP_HIT`), and hits *everything*
-damageable inside the square — graves are left out by the `false`, and
+damageable inside the square, graves are left out by the `false`, and
 `spare_shooter` keeps the firing worm out of it, so a spear that bursts in your
 hands stabs nothing.
 
@@ -2094,20 +2165,20 @@ crater it carves erases the stamp that was just written. Turning the option on
 therefore zeroes `missile.explosion.power` / `push_pct` exactly as the burst
 card's `blast` mode does (`silencesBlast`), which is the documented "no
 explosion" record (`missile = { explosion = { power = 0 } }`). With no blast there
-is also no crater, so the stamp survives — the burst card's `blast` mode and this
+is also no crater, so the stamp survives, the burst card's `blast` mode and this
 option are two ways of settling the same problem (a crater drawn over the stamp),
 not layers to stack.
 
 `kind` is the engine's list, not a free string: `hit_kind_arg` accepts
 `hit_kind::NATIVE` (`prod, fire, drill, bullet, kamikaze, dragon_ball,
 baseball_bat, blow_torch, fire_punch, arrow, percent`) plus the scripted `taze`,
-and anything else fails the bundle at load. **`blast` is not a kind** — a blast is
+and anything else fails the bundle at load. **`blast` is not a kind**, a blast is
 what a hit event *is*, not a name a pack can send, which reads like a typo until
 you hit it. Importing reads `STAMP_HIT` even when there is no stamp call, so a
 pure pierce bundle re-exports with the stamp still off.
 
 A stamp rewrites terrain, so a worm standing at the impact point is buried in it
-with no way out — WA offers no "push the worm out" for a stamp. The emitted call
+with no way out, WA offers no "push the worm out" for a stamp. The emitted call
 is therefore guarded by `if stamp_clear(ev.x, ev.y) then … end`, a square
 half-extent (`STAMP_CLEAR`, default 12 px, `0` disables) walked over
 `wa.worms.all()`, the same shape PX's ninja star tests before it sticks. The
@@ -2121,7 +2192,7 @@ Two smaller traps: `ev.vx`/`ev.vy` are the speed the missile bursts with
 is why the emitted frame reads `stamp_orientation(ev.vx or 0, ev.vy or 0)` and why
 mines are out of scope for this card for now. And a fixed angle is stored in
 degrees (0 = up, clockwise) but emitted as a frame: `90° → 8`. The importer has to
-convert back with plain `frame × 11.25` — piping the frame through
+convert back with plain `frame × 11.25`, piping the frame through
 `stampFrameForAngle` again "converted" 8 to 8, which re-exported as frame 1.
 
 Gating is by family, not by record group: a girder launcher is an ordinary missile
@@ -2135,5 +2206,5 @@ mine has no impact heading.
 (`crates/game/src/hit_kind.rs`). WA applies it as a Prod hit, but a `wa.on.hit`
 handler sees `"taze"`, which is exactly how PX's electric weapons recognise their
 own damage and chain. So the burst card's custom hit values carry an
-Explosive/Electrical toggle, and only the custom blast names a kind — `effect`
+Explosive/Electrical toggle, and only the custom blast names a kind, `effect`
 mode leaves WA's own hit untouched, and the native record has no field for it.

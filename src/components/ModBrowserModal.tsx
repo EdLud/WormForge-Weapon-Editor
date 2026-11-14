@@ -147,7 +147,7 @@ export function ModBrowserModal({ onClose, showToast, onImport }: Props) {
                 <strong className="font-semibold">WFWS weapons only, for now.</strong> Only
                 bundles this editor writes (the WFWS format) map back into the panels and
                 import reliably. A Project X port can still be read, but its own callbacks,
-                libraries and art naming are not carried — expect its record tables only.
+                libraries and art naming are not carried, expect its record tables only.
               </span>
             </p>
           </div>
@@ -203,7 +203,7 @@ export function ModBrowserModal({ onClose, showToast, onImport }: Props) {
           )}
           {phase === 'idle' && (
             <span className="ml-auto text-[11px] text-stone-400">
-              folder or zip, read locally — nothing is uploaded
+              folder or zip, read locally, nothing is uploaded
             </span>
           )}
         </div>
@@ -351,7 +351,7 @@ export function ModBrowserModal({ onClose, showToast, onImport }: Props) {
                           {selectedWeapon.componentId}
                         </div>
                         <div className="text-[10px] font-mono text-stone-400 break-all">
-                          {selectedWeapon.modulePath || '—'}
+                          {selectedWeapon.modulePath || 'none'}
                         </div>
                         <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-stone-500 pt-1">
                           {selectedWeapon.copyFrom && <span>donor: {selectedWeapon.copyFrom}</span>}
@@ -381,7 +381,7 @@ export function ModBrowserModal({ onClose, showToast, onImport }: Props) {
                                     await importBundleWeapon(selectedWeapon, files);
                                   onImport({ ...project, replaceProject });
                                   showToast(
-                                    `Imported ${selectedWeapon.name}${notes.length > 0 ? ` — ${notes.join(', ')}` : ''}`,
+                                    `Imported ${selectedWeapon.name}${notes.length > 0 ? `, ${notes.join(', ')}` : ''}`,
                                   );
                                   onClose();
                                 })();

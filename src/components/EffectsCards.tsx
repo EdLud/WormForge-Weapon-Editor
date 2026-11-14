@@ -765,7 +765,7 @@ export function SoundUpload({ id, asset, disabled, onPick, onRemove }: SoundUplo
     const file = files?.[0];
     if (!file) return;
     if (!/\.wav$/i.test(file.name)) {
-      setError('Use a .wav file — WormForge loads PCM WAVs only.');
+      setError('Use a .wav file, WormForge loads PCM WAVs only.');
       return;
     }
     if (file.size > MAX_WAV_BYTES) {

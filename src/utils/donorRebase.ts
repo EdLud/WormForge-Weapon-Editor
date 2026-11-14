@@ -7,7 +7,7 @@ import { stockDonor, stockDonorBaseline } from '../data/stockDonors';
  * The panels *are* the donor's record: a fresh project is the Grenade because
  * that is its `copy_from`, and every value it shows is a value the engine gets
  * either from the donor or from the claim. So when the donor changes, the
- * record has to follow it — otherwise the project keeps showing (and diffing
+ * record has to follow it, otherwise the project keeps showing (and diffing
  * against) the previous donor while the claim copies the new one.
  *
  * The old donor is also the generator's diff base, which turned that mismatch
@@ -37,7 +37,7 @@ function rebaseValue<T>(next: T, current: T, base: T | undefined): T {
  * `dropMissing` is for `recordOverrides`: a key the new donor does not declare
  * and the author never edited is the old donor's own value (the Grenade's
  * `missile.bounce.sound = 0`, say) and must go, or it would be written onto the
- * new record as an edit. The typed groups keep their shape instead — a body
+ * new record as an edit. The typed groups keep their shape instead, a body
  * field the new donor does not name keeps the value the panels already show.
  */
 function rebaseGroup<T extends Record<string, any>>(

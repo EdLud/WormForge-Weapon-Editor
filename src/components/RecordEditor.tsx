@@ -92,13 +92,13 @@ function toggleMaskValue(mask: CollisionMask, key: CollisionTargetKey): Collisio
 }
 
 const SPECIAL_SUBTYPES: { value: number; label: string }[] = [
-  { value: 1, label: '1 — Fire Punch' },
-  { value: 2, label: '2 — Baseball Bat' },
-  { value: 8, label: '8 — Pneumatic Drill' },
-  { value: 12, label: '12 — Parachute' },
-  { value: 19, label: '19 — Turn Utility' },
-  { value: 23, label: '23 — Jet Pack' },
-  { value: 0, label: '0 — Other / Inherited' },
+  { value: 1, label: '1, Fire Punch' },
+  { value: 2, label: '2, Baseball Bat' },
+  { value: 8, label: '8, Pneumatic Drill' },
+  { value: 12, label: '12, Parachute' },
+  { value: 19, label: '19, Turn Utility' },
+  { value: 23, label: '23, Jet Pack' },
+  { value: 0, label: '0, Other / Inherited' },
 ];
 
 const UTILITY_EFFECTS: { value: string; label: string }[] = [
@@ -452,11 +452,11 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
         className={selectClass}
       >
         {!MISSILE_ANIM_TYPES.some((type) => type.value === value) && (
-          <option value={value}>{value} — Custom / Inherited</option>
+          <option value={value}>{value}, Custom / Inherited</option>
         )}
         {MISSILE_ANIM_TYPES.map((type) => (
           <option key={type.value} value={type.value}>
-            {type.value} — {type.label}
+            {type.value}, {type.label}
           </option>
         ))}
       </select>
@@ -506,7 +506,7 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
       >
         {fireSubtypeLabel(project.specialSubtype ?? 0) === null && (
           <option value={String(project.specialSubtype ?? 0)}>
-            {project.specialSubtype ?? 0} — Custom / Inherited
+            {project.specialSubtype ?? 0}, Custom / Inherited
           </option>
         )}
         {FIRE_SUBTYPES.map((entry) => (
@@ -1115,7 +1115,7 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
 
             {(!project.action || project.action === 'none') && (
               <p className="rounded-lg bg-stone-50 px-3 py-2 text-xs text-stone-500 dark:bg-stone-950/40 dark:text-stone-400">
-                Unguided ballistic arc — detonates immediately on impact or when the fuse expires.
+                Unguided ballistic arc, detonates immediately on impact or when the fuse expires.
               </p>
             )}
 

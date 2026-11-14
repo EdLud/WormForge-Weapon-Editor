@@ -89,7 +89,7 @@ export function BundleDependencies({ project, onChange }: BundleDependenciesProp
         </span>
         {autoById.size === 0 ? (
           <p className="text-xs text-stone-500 dark:text-stone-400">
-            None — the exported weapon stands alone.
+            None, the exported weapon stands alone.
           </p>
         ) : (
           <div className="flex flex-wrap gap-2">

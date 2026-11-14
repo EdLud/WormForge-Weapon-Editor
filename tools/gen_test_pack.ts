@@ -4,25 +4,28 @@
  * Writes one WormForge bundle with one component per test plus a profile that
  * places all of them, so an engine behaviour can be checked in one match.
  *
- * Every role draws a real WA sheet from `spec/`, so a test that draws the wrong
+ * Every role draws a different sheet from `spec/`, so a test that draws the wrong
  * role is obvious in the match instead of "another grenade":
  *
- *   held / aiming      `default_blue_zook.png` (32x32)
- *   primary flight     `wicestnd.png`          (60x60)
- *   homing (primary)   `default_blue_zook.png` (the timed 0.8 s / 6 s swap)
- *   cluster bit        `default_grenade.png`   (46x46)
- *   homing bit         `oildrum1.png`          (20 cells of 90x90, 20 fps)
- *   roaming sheep      `sspsheep1.png`         (points up-LEFT: `angle`)
- *   digging            `wicestnd.png`          (spins underground)
+ *   held / aiming      `famas.png`      (90x90, the held gun)
+ *   firing sprite      `fire_famas.png` (100x100, muzzle flash on the gun)
+ *   primary flight     `fire_famas.png`
+ *   homing (primary)   `famas.png`      (the timed 0.8 s / 6 s swap)
+ *   cluster bit        `famas.png`
+ *   homing bit         `oildrum1.png`   (20 cells of 90x90, 20 fps)
+ *   roaming sheep      `sspsheep1.png`  (points up-LEFT: `angle`)
+ *
+ * The two FAMAS sheets are the author's own, so a test pack never has to ship
+ * Team17 art either.
  *
  * Multi-frame roles bake a rotation strip from their base sheet (full 360°,
- * frame 0 up, clockwise) — the same convention `src/utils/rotateSheet.ts`
- * produces in the editor — or use the strip they already ship as (the drum).
+ * frame 0 up, clockwise), the same convention `src/utils/rotateSheet.ts`
+ * produces in the editor, or use the strip they already ship as (the drum).
  * Records that cannot simply draw a stock sprite (a strike's munition, a
  * cluster bit, a claim-level body sheet) get a pack sheet instead.
  *
  * Run: `bun run tools/gen_test_pack.ts`
- * Output: `test_pack/wftest_pack/` (git-ignored) — copy that folder into
+ * Output: `test_pack/wftest_pack/` (git-ignored), copy that folder into
  * `WormForge/Mods/`, pick the "WF Test Pack" profile, and every weapon is on
  * the panel with infinite ammo.
  */
@@ -242,16 +245,16 @@ function rotationSheet(source: Bitmap, frames: number): Bitmap {
 // ---------------------------------------------------------------------------
 // Art shared by the tests.
 //
-// Every role draws a real WA sheet from `spec/`, so a test that draws the wrong
+// Every role draws a different sheet from `spec/`, so a test that draws the wrong
 // role is obvious in the match instead of "another grenade":
 //
-//   held (aiming)      default_blue_zook.png  32x32   the bazooka
-//   primary flight     wicestnd.png           60x60   (`missile.png`)
-//   homing (primary)   default_blue_zook.png  32x32   the 0.8 s / 6 s swap
-//   cluster bit        default_grenade.png    46x46
-//   homing bit         oildrum1.png           20 cells of 90x90, 20 fps
-//   roaming sheep      sspsheep1.png          60x60, points up-LEFT
-//   digging            wicestnd.png           spins underground
+//   held (aiming)      famas.png       90x90   the held gun
+//   firing sprite      fire_famas.png  100x100 muzzle flash over the gun
+//   primary flight     fire_famas.png  100x100 (`missile.png`)
+//   homing (primary)   famas.png       90x90   the 0.8 s / 6 s swap
+//   cluster bit        famas.png       90x90
+//   homing bit         oildrum1.png    20 cells of 90x90, 20 fps
+//   roaming sheep      sspsheep1.png   60x60, points up-LEFT
 //
 // Multi-frame roles bake a rotation strip from their base sheet (frame 0 up,
 // clockwise), the same convention `src/utils/rotateSheet.ts` produces.
@@ -259,16 +262,16 @@ function rotationSheet(source: Bitmap, frames: number): Bitmap {
 const specDir = join(fileURLToPath(new URL('..', import.meta.url)), 'spec');
 const specPng = (name: string) => decodePng(readFileSync(join(specDir, name)));
 
-const AIM_BMP = specPng('default_blue_zook.png');
-const GRENADE_BMP = specPng('default_grenade.png');
-const ICE_BMP = specPng('wicestnd.png');
+const AIM_BMP = specPng('famas.png');
+const GRENADE_BMP = specPng('famas.png');
+const ICE_BMP = specPng('fire_famas.png');
 const DRUM_BMP = specPng('oildrum1.png');
 const SHEEP_BMP = specPng('sspsheep1.png');
 
 /**
  * The stamp picture: an arrow pointing up, built rather than taken from `spec/`
  * (none of the shipped sheets point up). A wrong frame index is unmistakable in
- * the match — frame 8 must point right, 16 down.
+ * the match, frame 8 must point right, 16 down.
  */
 function upArrowBitmap(size = 40): Bitmap {
   const rgba = new Uint8Array(size * size * 4);
@@ -1018,7 +1021,7 @@ const TESTS: TestCase[] = [
         hideStock: true,
       },
       // Underground overrides: the round spins instead of tracking, at twice the
-      // base spin, and keeps its sheet cycling — a dig is unmistakable.
+      // base spin, and keeps its sheet cycling, a dig is unmistakable.
       behaviorArt: {
         dig: { ...DEFAULT_ROLE_ART, mode: 'inherit', anim: 'rotation', spinRate: 2, frames: 32 },
       },
@@ -1417,6 +1420,31 @@ const TESTS: TestCase[] = [
     watch:
       'A crater or push from WA\u2019s own blast (power not zeroed), no damage at all (a bad `kind` fails the whole bundle at load), an arrow burned on top of a target, or a rocket fired at your own feet doing nothing (this test turns Spare the shooter off).',
   },
+  {
+    project: makeOp({
+      id: 'wftest.40_builder_pingpong',
+      name: 'WF 40 Builder PingPong',
+      slot: 'bazooka',
+      body: { sprite: 'bazooka', damage: 40 },
+      // `anim = "none"` so the sheet cycle is the only motion: the glyph turns
+      // one way through the six frames and then unwinds, instead of snapping
+      // from the last frame back to the first.
+      missileSprite: {
+        enabled: true,
+        mode: 'custom',
+        anim: 'none',
+        frames: 6,
+        pingpong: true,
+        hideStock: true,
+      },
+    }),
+    intent:
+      '`pingpong = true` on the primary sheet: the frame strip plays 0..5 and then 5..0, so a six-frame cycle reverses instead of looping hard.',
+    expect:
+      'The rocket glyph rotates through the six orientations and then back the other way, smoothly and repeatedly, with no jump from the last frame to the first.',
+    watch:
+      'A hard loop (the glyph snapping back to frame 0), no cycle at all (`pingpong` left out of `sb.flight`), or WA’s own rocket under the sheet (`sprite = 0` not written).',
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1474,7 +1502,7 @@ for (const test of TESTS) {
     mkdirSync(join(BUNDLE, 'sprites', folder), { recursive: true });
     writeFileSync(join(BUNDLE, holdSheetPath(project)), AIM_PNG);
     // The firing-state sheet. Loaded through the hold table, so it needs no
-    // `mod.toml` declaration — only the file. The ice sprite keeps it visibly
+    // `mod.toml` declaration, only the file. The ice sprite keeps it visibly
     // different from the held gun, so a missing or stuck flash is obvious.
     if (project.hold.flashFile) {
       writeFileSync(join(BUNDLE, flashSheetPath(project)), ICE_PNG);
@@ -1661,7 +1689,7 @@ const readme: string[] = [
   `Drop \`wftest_pack/\` into \`WormForge/Mods/\`, pick the **${PROFILE}** profile, and`,
   'every test weapon is on the panel with infinite ammo.',
   '',
-  'All art is derived from `spec/default_grenade.png`: the main missile sheets are',
+  'All art is derived from the FAMAS sheets in `spec/`, not from WA: the main missile sheets are',
   'single frames for the sprite builder, cluster bits use 360° rotation strips',
   '(32 or 16 frames, frame 0 up, clockwise), and native trail puffs use a 4-frame',
   'rotation strip. Records that cannot draw stock sprite 50 (strike munitions,',

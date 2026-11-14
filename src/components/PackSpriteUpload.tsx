@@ -4,6 +4,7 @@ import { PackArtAsset, PackArtSlot, WeaponProject } from '../types/weapon';
 import { packArtPath } from '../utils/luaGenerator';
 import { buildRotationSheet } from '../utils/rotateSheet';
 import { NumberInput } from './NumberInput';
+import { SheetFrameWarning } from './SheetFrameWarning';
 
 interface PackSpriteUploadProps {
   project: WeaponProject;
@@ -165,6 +166,12 @@ export const PackSpriteUpload: React.FC<PackSpriteUploadProps> = ({
         <p className="text-[10px] text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/50 rounded-md px-2 py-1.5">
           {warning}
         </p>
+      )}
+
+      {/* A declared `frames` count is sliced as `height / frames`; a leftover
+          row makes the engine drop the whole image. */}
+      {asset?.previewUrl && !isGif && (
+        <SheetFrameWarning preview={asset.previewUrl} frames={asset.frames} />
       )}
 
       <div className="flex items-center gap-3">

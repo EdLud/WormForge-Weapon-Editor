@@ -1,5 +1,5 @@
 /**
- * One decoded stock record per panel slot — the record a `copy_from` donor
+ * One decoded stock record per panel slot, the record a `copy_from` donor
  * supplies.
  *
  * PX's default scheme, extracted one `.wep` per slot
@@ -14,7 +14,7 @@
  *   starts from WA's real record instead of a preset.
  *
  * With `copy_from = "stock.<slot>"` the engine applies the donor itself, so the
- * baseline lets the generator write only what actually differs — a weapon that
+ * baseline lets the generator write only what actually differs, a weapon that
  * declares `missile.explosion.power` exports one number, not a whole record.
  */
 import type { WepBaseline, WeaponProject } from '../types/weapon';

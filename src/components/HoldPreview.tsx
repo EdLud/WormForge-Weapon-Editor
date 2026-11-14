@@ -18,6 +18,8 @@ import {
 } from '../utils/luaGenerator';
 import { StockSpriteInput } from './StockSpriteInput';
 import { NumberInput } from './NumberInput';
+import { SheetFrameWarning } from './SheetFrameWarning';
+import { imagePixelSize } from '../utils/imagePixelSize';
 import { stockSpriteName } from '../data/stockSprites';
 import { assetUrl } from '../utils/assetUrl';
 import { defaultArtFor } from '../utils/defaultArt';
@@ -43,6 +45,8 @@ import {
   Upload,
   Play,
   Pause,
+  Minus,
+  Plus,
   ArrowLeftRight,
   Compass,
   Rocket,
@@ -257,6 +261,10 @@ const RoamSheetField: React.FC<{
         </div>
       )}
 
+      {asset?.file && !isGif && (
+        <SheetFrameWarning preview={asset.preview} frames={frames} />
+      )}
+
       {rotateError && <p className="text-[10px] text-rose-500">{rotateError}</p>}
       <p className="font-mono text-[10px] text-stone-400 truncate" title={path}>
         {path}
@@ -267,18 +275,20 @@ const RoamSheetField: React.FC<{
 
 const WORM_AIM_SRC = assetUrl('assets/worm/aim.png');
 
-/** Natural pixel size of an image URL (used for `px_hold_art`'s cell size). */
-function imagePixelSize(url: string): Promise<{ width: number; height: number }> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
-    img.onerror = () => reject(new Error('That image could not be decoded.'));
-    img.src = url;
-  });
-}
 const HAND_MID_SRC = assetUrl('assets/worm/hand_rad.png');
 const HAND_LOWER_SRC = assetUrl('assets/worm/hand_rad_lower.png');
 const HAND_UPPER_SRC = assetUrl('assets/worm/hand_rad_upper.png');
+
+/**
+ * Flight preview zoom. The canvas draws the sheet at `missileZoom / 4`, so 4 is
+ * WA's own pixel size (the oil-drum reference says the same thing) and the
+ * readout is a percentage of it. Whole steps keep the readout on round numbers
+ * (25%, 50%, ... 300%) instead of 112.5%.
+ */
+const MISSILE_ZOOM_1X = 4;
+const MISSILE_ZOOM_STEP = 1;
+const MISSILE_ZOOM_MIN = 1;
+const MISSILE_ZOOM_MAX = 12;
 
 export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) => {
   // ---------------------------------------------------------------------------
@@ -468,7 +478,9 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
 
   // Missile interactive simulation state
   const [isMissilePlaying, setIsMissilePlaying] = useState(true);
-  const [missileZoom, setMissileZoom] = useState<number>(4);
+  // `missileZoom / 4` is drawn at WA's own pixel size, so 4 is 1:1 and the
+  // readout below is a percentage of that. The step is 0.5 (12.5%).
+  const [missileZoom, setMissileZoom] = useState<number>(MISSILE_ZOOM_1X);
   const [flightAngleDeg, setFlightAngleDeg] = useState<number>(25); // trajectory launch angle
   const [flightSpeed, setFlightSpeed] = useState<number>(14); // velocity magnitude
   const [flightMode, setFlightMode] = useState<'orbit' | 'arc' | 'static' | 'walk'>('arc');
@@ -865,7 +877,7 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
 
     // 3b. Firing-state sprite. PX's FAMAS pattern, which the generator emits: a
     // second hold entry (`px_hold_art`) drawn in WA's firing states with the
-    // same placement as the gun — same pivot, radius, rotation and `weap_scale`,
+    // same placement as the gun, same pivot, radius, rotation and `weap_scale`,
     // mirrored by the worm's facing with the rest of the cell. It has its own
     // picture, so it is drawn at its own pixel size, not stretched to the gun.
     const flashImg = flashLoadedImg || flashImgRef.current;
@@ -1036,7 +1048,7 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
         vy = Math.cos(angle) * radius * dAngle;
       } else if (flightMode === 'walk') {
         // The roaming animal's own two states, on one loop: it ambles in place
-        // (no velocity — WA walks it, so the art has to rest), then hops (up
+        // (no velocity, WA walks it, so the art has to rest), then hops (up
         // leaning back, down leaning forward). This is what makes `roam` tilt
         // readable in the editor.
         animStateRef.current.arcT = (animStateRef.current.arcT + STEP) % 1.0;
@@ -1125,10 +1137,18 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
       }
 
       // `cyclical_frame`: phase += anim_speed * 30 / 1000, wraps at 0.99.
+      // PingPong plays 0..n-1 and back over a `2n-2` span, so one pass takes the
+      // same time as one loop and the endpoints are not held twice.
       if (numFrames > 1) {
         phase += userAnimSpeed * 30 / 1000;
         if (phase > 0.99) phase = 0;
-        frame = Math.floor(phase * numFrames) % numFrames;
+        if (activeRolePreviewCfg.pingpong) {
+          const span = 2 * numFrames - 2;
+          const i = Math.floor(phase * span) % span;
+          frame = i < numFrames ? i : span - i;
+        } else {
+          frame = Math.floor(phase * numFrames) % numFrames;
+        }
       } else {
         phase = 0;
         frame = 0;
@@ -1686,6 +1706,7 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
   const roleRowsForPreview = (r: FlightRoleArt, indent: string) => {
     const out: string[] = [`${indent}anim = "${r.anim || 'rotation'}",`];
     if ((r.frames || 1) > 1) out.push(`${indent}cyclical = ${r.frames},`);
+    if (r.pingpong && (r.frames || 1) > 1) out.push(`${indent}pingpong = true,`);
     if (r.animSpeed && r.animSpeed !== 1) out.push(`${indent}anim_speed = ${r.animSpeed},`);
     if (r.spinRate && r.spinRate !== 1) out.push(`${indent}spin = ${r.spinRate},`);
     if (r.scale && r.scale !== 1) out.push(`${indent}scale = ${r.scale},`);
@@ -1718,6 +1739,7 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
       `  anim = "${missile.anim || 'rotation'}",`,
     ];
     if ((missile.frames || 1) > 1) modLines.push(`  cyclical = ${missile.frames},`);
+    if (missile.pingpong && (missile.frames || 1) > 1) modLines.push(`  pingpong = true,`);
     if (missile.animSpeed && missile.animSpeed !== 1) modLines.push(`  anim_speed = ${missile.animSpeed},`);
     if (missile.spinRate && missile.spinRate !== 1) modLines.push(`  spin = ${missile.spinRate},`);
     if (missile.scale && missile.scale !== 1) modLines.push(`  scale = ${missile.scale},`);
@@ -2242,6 +2264,15 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
                   </div>
                 </div>
               </div>
+
+              {/* The engine slices `hold.png` by `frames` too, so the same
+                  divisibility rule applies to the held sheet. */}
+              <SheetFrameWarning
+                preview={hold.sheetPreview}
+                width={hold.sheetWidth}
+                height={hold.sheetHeight}
+                frames={hold.frames}
+              />
             </div>
           </div>
         </div>
@@ -2256,7 +2287,7 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
               </span>
               <p className="mt-0.5 max-w-2xl text-[11px] text-stone-500 dark:text-stone-400">
                 Optional still drawn over the worm while WA is in its firing states
-                (0x6A / 0x6B), at the gun&apos;s muzzle — a muzzle flash, or an extra
+                (0x6A / 0x6B), at the gun&apos;s muzzle, a muzzle flash, or an extra
                 overlay on the firing frame. It only shows while{' '}
                 <span className="font-mono">keep_while_firing</span> holds the gun on those
                 frames.
@@ -2310,7 +2341,7 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
           {hold.flashPreview && (
             <p className="rounded-lg border border-stone-200 bg-white/70 px-2.5 py-2 text-[11px] text-stone-600 dark:border-stone-700 dark:bg-stone-900/60 dark:text-stone-400">
               Drawn like PX&apos;s FAMAS firing sheet: the same pivot, radius, rotation and
-              scale as the held art above, on WA&apos;s two firing frames (0x6A / 0x6B) — so
+              scale as the held art above, on WA&apos;s two firing frames (0x6A / 0x6B), so
               it needs no offset or scale of its own. Its own picture is drawn at its own
               pixel size; a <span className="font-mono">90×90</span> sheet with the gun is
               the usual case.
@@ -2496,6 +2527,11 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
           : isSecondaryRole && !roamInheritsPrimary
             ? secondaryRoleObj!.animSpeed || 1.0
             : missile.animSpeed || 1.0;
+        const activePingpong = isDigRole
+          ? digRole.pingpong === true
+          : isSecondaryRole && !roamInheritsPrimary
+            ? secondaryRoleObj!.pingpong === true
+            : missile.pingpong === true;
         const activeSpinRate = isDigRole
           ? digRole.spinRate || 1.0
           : isSecondaryRole && !roamInheritsPrimary
@@ -2518,7 +2554,12 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
             : missile.z ?? 5.0;
 
         const updateActiveRoleParams = (
-          patch: Partial<Pick<FlightRoleArt, 'anim' | 'frames' | 'animSpeed' | 'spinRate' | 'scale' | 'mirror' | 'z'>>
+          patch: Partial<
+            Pick<
+              FlightRoleArt,
+              'anim' | 'frames' | 'pingpong' | 'animSpeed' | 'spinRate' | 'scale' | 'mirror' | 'z'
+            >
+          >
         ) => {
           if (isDigRole) {
             updateBehaviorArt('dig', patch);
@@ -2626,7 +2667,7 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
                       title={
                         slot.enabled
                           ? `Slot ${slot.slotNum}: ${slot.badge}`
-                          : `${slot.badge} — ${slot.disabledHint}`
+                          : `${slot.badge}, ${slot.disabledHint}`
                       }
                       className={`relative w-14 h-14 rounded-xl border-2 transition-all overflow-hidden group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-forge-500 ${
                         !slot.enabled
@@ -2712,7 +2753,7 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
                       className="text-xs text-stone-500 dark:text-stone-400 truncate"
                       title={assetPathHint}
                     >
-                      Sheetless — cycles {digOwningSheetIsBit ? 'Cluster Bits' : 'Primary Round'} sheet on terrain contact
+                      Sheetless, cycles {digOwningSheetIsBit ? 'Cluster Bits' : 'Primary Round'} sheet on terrain contact
                     </span>
                   ) : activeSheetFile ? (
                     <span
@@ -2725,9 +2766,9 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
                     <span className="text-xs text-stone-500 dark:text-stone-400 truncate">
                       {secondaryRoleObj?.mode === 'inherit'
                         ? activeFlightRole === 'homing_bit' && bitFlight.mode === 'builder'
-                          ? 'Inheriting Cluster Bits art — upload a PNG to switch to Builder'
-                          : 'Inheriting Primary Round art — upload a PNG to switch to Builder'
-                        : 'Using Native WA sprite — upload a PNG to switch to Builder'}
+                          ? 'Inheriting Cluster Bits art, upload a PNG to switch to Builder'
+                          : 'Inheriting Primary Round art, upload a PNG to switch to Builder'
+                        : 'Using Native WA sprite, upload a PNG to switch to Builder'}
                     </span>
                   ) : (
                     <span
@@ -2736,7 +2777,7 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
                     >
                       {isSecondaryRole
                         ? `Default fallback art → ${assetPathHint}`
-                        : `Using default ${defaultArt.label} art — upload a PNG to replace it`}
+                        : `Using default ${defaultArt.label} art, upload a PNG to replace it`}
                     </span>
                   )}
                   {activeSheetPreview && (
@@ -2891,7 +2932,7 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
                 {/* Global Size (All Roles) Slider */}
                 <div
                   className="space-y-1 p-3 rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50/70 dark:bg-stone-800/40"
-                  title="Multiplies every role's own scale — primary, cluster bits, and behaviour sheets."
+                  title="Multiplies every role's own scale, primary, cluster bits, and behaviour sheets."
                 >
                   <div className="flex justify-between items-center text-xs">
                     <label
@@ -3181,21 +3222,40 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
                     <span>{isMissilePlaying ? 'Pause Flight' : 'Resume Flight'}</span>
                   </button>
 
-                  <div className="flex items-center gap-1 bg-stone-100 dark:bg-stone-800 p-1 rounded-lg border border-stone-200 dark:border-stone-700 text-xs">
-                    {[2, 3, 4, 5, 6].map((z) => (
-                      <button
-                        key={z}
-                        type="button"
-                        onClick={() => setMissileZoom(z)}
-                        className={`px-1.5 py-0.5 rounded text-[11px] font-mono font-semibold cursor-pointer ${
-                          missileZoom === z
-                            ? 'bg-forge-600 text-white'
-                            : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-white'
-                        }`}
-                      >
-                        {z}x
-                      </button>
-                    ))}
+                  <div className="flex items-center gap-0.5 bg-stone-100 dark:bg-stone-800 p-1 rounded-lg border border-stone-200 dark:border-stone-700">
+                    <button
+                      type="button"
+                      aria-label="Zoom out"
+                      title="Zoom out (25% steps)"
+                      disabled={missileZoom <= MISSILE_ZOOM_MIN}
+                      onClick={() =>
+                        setMissileZoom((z) => Math.max(MISSILE_ZOOM_MIN, z - MISSILE_ZOOM_STEP))
+                      }
+                      className="p-1 rounded text-stone-600 dark:text-stone-400 hover:bg-white hover:text-stone-900 dark:hover:bg-stone-700 dark:hover:text-white disabled:opacity-40 disabled:hover:bg-transparent cursor-pointer"
+                    >
+                      <Minus className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Reset zoom to 1:1"
+                      title="Game pixels: 100% is WA's own sprite size. Click to reset."
+                      onClick={() => setMissileZoom(MISSILE_ZOOM_1X)}
+                      className="min-w-[46px] px-1 py-0.5 rounded text-[11px] font-mono font-semibold text-stone-700 dark:text-stone-300 hover:bg-white dark:hover:bg-stone-700 hover:text-stone-900 dark:hover:text-white cursor-pointer"
+                    >
+                      {Math.round((missileZoom / MISSILE_ZOOM_1X) * 100)}%
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Zoom in"
+                      title="Zoom in (25% steps)"
+                      disabled={missileZoom >= MISSILE_ZOOM_MAX}
+                      onClick={() =>
+                        setMissileZoom((z) => Math.min(MISSILE_ZOOM_MAX, z + MISSILE_ZOOM_STEP))
+                      }
+                      className="p-1 rounded text-stone-600 dark:text-stone-400 hover:bg-white hover:text-stone-900 dark:hover:bg-stone-700 dark:hover:text-white disabled:opacity-40 disabled:hover:bg-transparent cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                    </button>
                   </div>
                 </div>
               </div>
@@ -3755,6 +3815,42 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
                       />
                     </div>
                   </div>
+
+                  {/* `height % frames` must be 0 or the engine fails the load.
+                      Only an uploaded sheet can be wrong: the default art is
+                      stacked from the file, so it always divides. */}
+                  <SheetFrameWarning preview={activeSheetPreview} frames={activeFrames} />
+
+                  {/* PingPong: one checkbox, the explanation lives in the tooltip
+                      so the card stays a compact row. */}
+                  <label
+                    title="Plays the strip forwards and then back (0, 1, 2, 1, 0, ...) instead of snapping to frame 0, so art authored to reverse itself animates smoothly. One pass forwards and back takes the same time one loop used to, so Anim Speed keeps its meaning. Needs more than one frame; emitted as pingpong = true."
+                    className={`flex items-center gap-2 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 px-2.5 py-1.5 ${
+                      activeSheetLocked
+                        ? 'opacity-50 pointer-events-none'
+                        : 'cursor-pointer hover:border-stone-300 dark:hover:border-stone-600'
+                    }`}
+                  >
+                    <input
+                      id="flight-pingpong"
+                      type="checkbox"
+                      checked={activePingpong}
+                      disabled={activeSheetLocked}
+                      onChange={(e) => updateActiveRoleParams({ pingpong: e.target.checked })}
+                      className="h-3.5 w-3.5 cursor-pointer rounded text-forge-600 focus:ring-forge-500"
+                    />
+                    <span className="text-[11px] font-medium text-stone-700 dark:text-stone-200">
+                      PingPong
+                    </span>
+                    <span className="font-mono text-[10px] text-stone-400">
+                      {activePingpong && activeFrames > 1 ? 'pingpong = true' : 'off'}
+                    </span>
+                    {activeFrames <= 1 && (
+                      <span className="ml-auto text-[10px] text-stone-400">
+                        needs 2+ frames
+                      </span>
+                    )}
+                  </label>
                 </div>
 
                 {/* 4. Generated Lua Code Box + Copy Button */}

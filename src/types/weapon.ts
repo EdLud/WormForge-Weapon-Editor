@@ -281,7 +281,7 @@ export type ExplosionMode = 'effect' | 'blast';
 /**
  * What the custom blast's damage reads as to whoever is hit. `electric` sends
  * the scripted `taze` kind (`crates/game/src/hit_kind.rs`), which WA receives as
- * a Prod hit but `wa.on.hit` sees as electric — that is how PX's electric
+ * a Prod hit but `wa.on.hit` sees as electric, that is how PX's electric
  * weapons tell their hits apart.
  */
 export type ExplosionDamageType = 'blast' | 'electric';
@@ -405,7 +405,7 @@ export interface ExplosionEffectConfig {
 }
 
 /**
- * `wa.land.stamp` — burns the round's picture into the terrain when it explodes
+ * `wa.land.stamp`, burns the round's picture into the terrain when it explodes
  * (the ninja star / javelin / girder pattern). The engine stamps one frame out
  * of a vertical strip: frame 0 points up and the strip turns clockwise, so the
  * upload is baked into 32 cells by `buildRotationSheet`.
@@ -414,7 +414,7 @@ export interface ExplosionEffectConfig {
  * The hit kinds a scripted hit may name (`crates/game/src/hit_kind.rs`): the
  * eleven kinds WA itself sends, plus the scripted `taze` (sent to WA as the
  * Prod's kind). `percent` is the Battle Axe's: damage means that percentage of
- * the worm's health. `blast` is **not** a kind — a blast is what a hit event is,
+ * the worm's health. `blast` is **not** a kind, a blast is what a hit event is,
  * not a name a pack may send.
  */
 export type StampHitKind =
@@ -499,6 +499,12 @@ export interface FlightRoleArt {
   sheetPreview?: string;
   anim: MissileAnimType;
   frames: number;
+  /**
+   * Play the strip forwards then backwards instead of looping it. Only means
+   * anything with more than one frame, and it is what art authored to reverse
+   * itself needs (a piston, a swinging hook, an opening jaw).
+   */
+  pingpong?: boolean;
   fps: number;
   animSpeed: number;
   spinRate: number;
@@ -529,6 +535,8 @@ export interface MissileSpriteConfig {
   sheetPreview?: string;
   anim: MissileAnimType;
   frames: number;
+  /** Forwards then backwards instead of a hard loop (see `FlightRoleArt`). */
+  pingpong?: boolean;
   fps: number;
   animSpeed: number;
   spinRate: number;
@@ -548,8 +556,8 @@ export interface MissileSpriteConfig {
   angle?: number;
   /**
    * The `anim = "roam"` preset: how far the art may tilt away from `rest`, in
-   * degrees. A roaming animal walks with no velocity — `track` would leave it
-   * pointing at the last heading — so the builder points it along the velocity
+   * degrees. A roaming animal walks with no velocity, `track` would leave it
+   * pointing at the last heading, so the builder points it along the velocity
    * only while it moves, clamps that to `±up`/`-down` from `rest`, and sits at
    * `rest` when it stops. Emitted as `tilt` on the `sb.flight` call.
    */

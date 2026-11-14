@@ -6,12 +6,18 @@ import {
 } from './placeholderSprites';
 
 /**
- * The two stock-style sprites supplied in `spec/` are the fallback held/flight
- * art while no PNG has been uploaded. They live in `public/` so both the
- * builder previews and the exported bundle use the exact same pixels.
+ * The fallback held/flight art while no PNG has been uploaded. This sprite is
+ * drawn for this project (`spec/holyhandgrenade.png`), not taken from WA: a
+ * bundle that has no uploaded art still ships a sprite, and it has to be one the
+ * editor may actually redistribute. It lives in `public/` so both the builder
+ * previews and the exported bundle use the exact same pixels.
+ *
+ * One sprite covers every weapon on purpose. There used to be a bazooka for
+ * barrel donors and a grenade for the rest, both cut from WA's own art, which
+ * meant every untouched export carried Team17 pixels.
  */
 
-export type DefaultArtKey = 'blue_zook' | 'grenade';
+export type DefaultArtKey = 'hand_grenade';
 
 export interface DefaultArt {
   key: DefaultArtKey;
@@ -23,32 +29,18 @@ export interface DefaultArt {
 }
 
 const ART: Record<DefaultArtKey, DefaultArt> = {
-  blue_zook: {
-    key: 'blue_zook',
-    label: 'Bazooka',
-    url: assetUrl('assets/defaults/default_blue_zook.png'),
-    width: 32,
-    height: 32,
-  },
-  grenade: {
-    key: 'grenade',
-    label: 'Grenade',
-    url: assetUrl('assets/defaults/default_grenade.png'),
-    width: 46,
-    height: 46,
+  hand_grenade: {
+    key: 'hand_grenade',
+    label: 'hand-drawn grenade',
+    url: assetUrl('assets/defaults/default_hand_grenade.png'),
+    width: 64,
+    height: 64,
   },
 };
 
-// Barrel weapons read better as the blue bazooka; throwables and everything
-// else fall back to the grenade. Only the donor/slot names matter here, since
-// the imported record does not carry art.
-const BARREL_DONOR =
-  /bazooka|zook|rocket|launcher|missile|minigun|uzi|shotgun|sniper|rifle|crossbow|gun/;
-
-export function defaultArtFor(project: WeaponProject): DefaultArt {
-  const donor = `${project.based_on ?? ''} ${project.slot ?? ''}`.toLowerCase();
-  const barrel = BARREL_DONOR.test(donor) || project.fireType === 'hitscan';
-  return barrel ? ART.blue_zook : ART.grenade;
+/** The fallback art, whatever the donor or fire type is. */
+export function defaultArtFor(_project: WeaponProject): DefaultArt {
+  return ART.hand_grenade;
 }
 
 function loadImage(src: string): Promise<HTMLImageElement> {

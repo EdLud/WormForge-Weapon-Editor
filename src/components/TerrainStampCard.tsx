@@ -77,7 +77,7 @@ const StripFrame: React.FC<{
 );
 
 /**
- * `wa.land.stamp` — the round's picture is burned into the terrain where it
+ * `wa.land.stamp`, the round's picture is burned into the terrain where it
  * bursts (PX's ninja star / javelin / girder launcher). The engine stamps one
  * frame of a vertical strip, so the upload is baked into 32 cells: frame 0 up,
  * clockwise, and the frame is picked from the impact heading.
@@ -362,7 +362,7 @@ export const TerrainStampCard: React.FC<Props> = ({ project, onChange }) => {
             <SubSectionTitle
               title="Damage On Impact"
               code="stamp_hit"
-              desc="PX's javelin: the round damages whatever is at the impact point — worms, mines, crates and oil drums — instead of exploding, and only sticks in the land when it hit nothing. The record's own blast is zeroed so nothing blasts twice."
+              desc="PX's javelin: the round damages whatever is at the impact point, worms, mines, crates and oil drums, instead of exploding, and only sticks in the land when it hit nothing. The record's own blast is zeroed so nothing blasts twice."
               right={
                 <label
                   title={buildTooltip(
@@ -590,7 +590,7 @@ export const TerrainStampCard: React.FC<Props> = ({ project, onChange }) => {
             </p>
             <p className="text-[11px] text-stone-500 dark:text-stone-400">
               WA's blast runs after <code className="font-mono">on_explode</code>, so a stamp only
-              survives a crater carved inside the callback — or no blast at all:{' '}
+              survives a crater carved inside the callback, or no blast at all:{' '}
               <strong>Damage On Impact</strong> zeroes the record's own explosion.{' '}
               Custom <code className="font-mono">on_explode</code> code (Record page) runs before the
               stamp and before the pierce: a <code className="font-mono">return</code> in it skips
@@ -645,7 +645,7 @@ export const TerrainStampCard: React.FC<Props> = ({ project, onChange }) => {
             {stamp.onImpact
               ? 'Impact angle: a round flying right stamps frame 8, falling frame 16, climbing frame 0.'
               : `Fixed angle: every impact stamps frame ${fixedFrame}.`}{' '}
-            Stamping needs a round WA blasts — mines and airstrike munitions are not offered.
+            Stamping needs a round WA blasts, mines and airstrike munitions are not offered.
           </p>
         </div>
       </div>

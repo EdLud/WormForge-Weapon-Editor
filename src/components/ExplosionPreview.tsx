@@ -9,7 +9,7 @@ import frozenWormSrc from '../../spec/wicestnd.png';
  * `utils_red/px_effects.c`).
  *
  * The game draws the ring and the squashed lens as `wa.draw.ribbon` passes over
- * the SDK's own sheets — `beam.png` for the sharp core and `beam_glow.png` for
+ * the SDK's own sheets, `beam.png` for the sharp core and `beam_glow.png` for
  * the soft halo, both additive, so the art is white-on-black. This preview
  * draws the same sheets the same way: each polygon edge becomes a textured quad
  * stretched along the edge, tinted by the effect colour and composited with

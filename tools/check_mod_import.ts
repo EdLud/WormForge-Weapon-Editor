@@ -57,7 +57,7 @@ const files: ModFile[] = walk(BUNDLE).map((full) => {
 const bundles = readBundles(files);
 const weapons = readWeapons(bundles, files);
 check('test pack has one bundle', bundles.length === 1, String(bundles.length));
-check('test pack has 39 weapons', weapons.length === 39, String(weapons.length));
+check('test pack has 40 weapons', weapons.length === 40, String(weapons.length));
 
 const byName = new Map(weapons.map((weapon) => [weapon.name, weapon]));
 const projects = new Map<string, WeaponProject>();
@@ -118,7 +118,9 @@ for (const weapon of weapons) {
   near('WF 31: hold put away', p.hold.putAway, true);
   near('WF 31: hold hand type', p.hold.handType, 'mid');
   near('WF 31: hold rotation', p.hold.weapRotation, 0);
-  near('WF 31: hold sheet width kept', p.hold.sheetWidth, 32);
+  // `spec/famas.png` is 90x90: the sheet's own cell, kept so `px_hold_art` draws
+  // it at the right size.
+  near('WF 31: hold sheet width kept', p.hold.sheetWidth, 90);
   near('WF 31: fire mode', p.fireSequence?.mode, 'missiles');
   near('WF 31: fire count', p.fireSequence?.count, 6);
   near('WF 31: fire delay', p.fireSequence?.delay, 4);
@@ -480,7 +482,7 @@ return {
   // inherits the gun's placement: only the file and its cell survive a round
   // trip, exactly like PX's FAMAS.
   check('WF 32: firing sheet attached', !!p.hold.flashFile, 'no file attached');
-  near('WF 32: firing sheet width', p.hold.flashWidth, 60);
+  near('WF 32: firing sheet width', p.hold.flashWidth, 100);
   near('WF 32: keep while firing', p.hold.keepWhileFiring, true);
   check('WF 32: old overlay geometry gone', p.hold.flashOut === undefined, 'flashOut set');
 }
@@ -610,6 +612,20 @@ return {
     lua.indexOf('if stamp_hit(ev) then return end') < lua.indexOf('wa.land.stamp{') &&
       lua.split('on_explode = ').length === 2,
     'order or hook count changed',
+  );
+}
+
+// ---- PingPong sheet animation (WF 40) ------------------------------------
+{
+  const p = project('WF 40 Builder PingPong')!;
+  near('WF 40: pingpong read back', p.missileSprite?.pingpong, true);
+  near('WF 40: frames', p.missileSprite?.frames, 6);
+  near('WF 40: anim', p.missileSprite?.anim, 'none');
+  const lua = generateLuaCode(fullProject(p, 'WF 40 Builder PingPong'));
+  check(
+    'WF 40: pingpong emitted after cyclical',
+    /cyclical = 6,\s*\n\s*pingpong = true,/.test(lua),
+    'pingpong row missing',
   );
 }
 

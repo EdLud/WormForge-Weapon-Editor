@@ -5,14 +5,14 @@
  *
  * Three passes:
  *
- * 1. **Coverage** — every group/field a corpus record declares, checked against
+ * 1. **Coverage**, every group/field a corpus record declares, checked against
  *    what the editor's model can express. Anything outside `missile`,
  *    `clusters`, `handling`, `gun`, `mine`, `strike` is a field the editor
  *    cannot 设计 or re-emit.
- * 2. **Invariants** — the engine's own rules: an action needs its group, a burst
+ * 2. **Invariants**, the engine's own rules: an action needs its group, a burst
  *    needs its table, masks must not overlap, record sprite fields take stock
  *    ids or pack paths only, and so on.
- * 3. **Implicit behaviour** — the stock slots whose native behaviour implies a
+ * 3. **Implicit behaviour**, the stock slots whose native behaviour implies a
  *    shape (a sheep roams and does not gas, a petrol bomb spreads fire, the
  *    utilities toggle an effect) checked against the donor records.
  */
@@ -144,7 +144,7 @@ for (const weapon of weapons) {
     if (!/sprite$/.test(key) || typeof value !== 'string' || !value) continue;
     if (value.includes('/')) {
       if (!/trail\.sprite$/.test(key)) {
-        note(where, `${key} is a path ("${value}") — the engine reads this field as a sprite name`);
+        note(where, `${key} is a path ("${value}"), the engine reads this field as a sprite name`);
       }
       continue;
     }
@@ -273,9 +273,9 @@ for (const expectation of EXPECT) {
   for (const [key, want] of Object.entries(expectation.want)) {
     const got = donor[key];
     if (got === undefined) {
-      donorProblems.push(`${expectation.slot}: ${key} not decoded (want ${String(want)} — ${expectation.why})`);
+      donorProblems.push(`${expectation.slot}: ${key} not decoded (want ${String(want)}, ${expectation.why})`);
     } else if (!matches(want, got)) {
-      donorProblems.push(`${expectation.slot}: ${key} = ${JSON.stringify(got)}, expected ${String(want)} — ${expectation.why}`);
+      donorProblems.push(`${expectation.slot}: ${key} = ${JSON.stringify(got)}, expected ${String(want)}, ${expectation.why}`);
     }
   }
 }

@@ -428,11 +428,43 @@ export default function App() {
         </main>
 
         <footer className="border-t border-stone-200/80 bg-white/60 py-4 dark:border-stone-800 dark:bg-stone-900/40">
-          <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-2 px-4 text-[11px] text-stone-500 sm:px-6 lg:px-8 dark:text-stone-400">
-            <span>WormForge Weapon Studio</span>
-            <span className="font-mono">
-              WormForge/Mods/{sanitizeModFolder(project.id)}/
-            </span>
+          <div className="mx-auto w-full max-w-6xl space-y-2 px-4 sm:px-6 lg:px-8">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-stone-500 dark:text-stone-400">
+              <span>WormForge Weapon Studio</span>
+              <span className="font-mono">
+                WormForge/Mods/{sanitizeModFolder(project.id)}/
+              </span>
+            </div>
+
+            {/* Legal note. The stock art this editor shows is Team17's, and the
+                tools it drives are unofficial, so both facts are stated where a
+                reader of the page will actually see them. */}
+            <details className="text-[11px] leading-relaxed text-stone-400 dark:text-stone-500">
+              <summary className="cursor-pointer font-semibold text-stone-500 hover:text-stone-700 dark:text-stone-400 dark:hover:text-stone-200">
+                Unofficial fan tool, credits and disclaimer
+              </summary>
+              <div className="mt-2 max-w-4xl space-y-1.5">
+                <p>
+                  Worms Armageddon and its artwork belong to Team17. The stock art this page
+                  displays is Team17&apos;s, borrowed only to preview a mod: the sprite-builder tab
+                  icons (Main, Home, Bits, HomeBit, Sheep, Dig), the frozen worm preview, and the
+                  terrain preview backdrop. The fallback sprite that fills an untouched export is
+                  hand-drawn for this project instead, not taken from the game. WormForge itself is
+                  a separate community project, and this editor is a separate fan tool again.
+                </p>
+                <p>
+                  This is unofficial and unaffiliated: not made by, endorsed by, sponsored by or
+                  supported by Team17. A bundle carries the art you upload, and this project's own
+                  hand-drawn fallback sprite when you leave it as it is; no game art is copied into
+                  your mod, and nothing is uploaded anywhere.
+                </p>
+                <p>
+                  Weapons, bundles and any other content you build here are yours, and you are
+                  responsible for them and for how you use them. The page is provided as is, with no
+                  warranty: check an export in game before you rely on it.
+                </p>
+              </div>
+            </details>
           </div>
         </footer>
       </div>

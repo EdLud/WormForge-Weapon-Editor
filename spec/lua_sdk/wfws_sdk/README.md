@@ -1,4 +1,4 @@
-# wfws.sdk — WFWS Sprite Builder
+# wfws.sdk, WFWS Sprite Builder
 
 The editor's own flight-art builder. It is a **library bundle**: it has no
 components and never appears on the weapon panel. A weapon bundle depends on it
@@ -39,6 +39,15 @@ roaming animal's flight.
 
 ## API
 
+`pingpong` plays a multi-frame sheet forwards and then backwards instead of
+looping it hard back to frame 0, which is what art authored to reverse itself
+needs (a piston, a swinging hook, an opening jaw). One forwards-and-back pass
+takes the same time one loop used to, so `anim_speed` keeps its meaning, and the
+two endpoints are not held for a double frame: `cyclical = 6` plays 0, 1, 2, 3,
+4, 5, 4, 3, 2, 1 and repeats. It is a builder feature only (WA has no equivalent
+on a native sprite), needs `cyclical > 1`, and is available on the primary, the
+bits, each role and the `dig` overrides.
+
 `size` and `angle` are the weapon-level knobs the editor's Hold page shows
 under **Builder Parameters**: one multiplier for every sheet so one number
 resizes the whole weapon, and a rotation offset for art that does not point up
@@ -55,6 +64,7 @@ sb.flight(ctx, {
   sheet  = "sprites/<mod>/missile.png",
   anim   = "track",              -- track | rotation | slow | medium | fast | none
   cyclical = 32,                 -- frames in the sheet (optional)
+  pingpong = true,               -- play the frames forwards then back (optional)
   anim_speed = 1.0, spin = 1.0, scale = 1.0, mirror = true, z = 5.0,
 
   -- weapon-wide, applied to every role (primary, bits, states, roles):
@@ -123,7 +133,7 @@ the nose every frame (four samples across the heading, two hits = digging, PX's
 Bunker Buster test) and cycle the role's own sheet frames while it is in the
 land, keeping the heading locked. You can tune the probe or override the
 underground animation and transform (`anim`, `spin`, `anim_speed`, `cyclical`,
-`scale`, `mirror`, `z`) while digging, reverting cleanly in open air:
+`pingpong`, `scale`, `mirror`, `z`) while digging, reverting cleanly in open air:
 `dig = { anim = "fast", spin = 2.5, anim_speed = 1.8, probe = 6, spread = 3, hold = 3, need = 2 }`.
 
 A weapon cannot start digging later in its life: the action is fixed when the
@@ -145,7 +155,7 @@ sb.flight(ctx, {
 })
 ```
 
-The game is a 50 Hz lockstep, so one frame is exactly 20 ms on every machine —
+The game is a 50 Hz lockstep, so one frame is exactly 20 ms on every machine
 no guessing and no desync. The generator zeroes `missile.homing.sprite` /
 `clusters.bit.homing.sprite` while the builder owns the art, so WA's own homing
 sprite cannot draw underneath.
@@ -153,7 +163,7 @@ sprite cannot draw underneath.
 ### `anim = "roam"`: the walking preset
 
 WA walks a roaming animal itself, so on the ground the entity has no velocity
-and `track` leaves the art pointing at the last heading — a walking animal that
+and `track` leaves the art pointing at the last heading, a walking animal that
 looks frozen. `anim = "roam"` holds a ground pose and lets the art lean a little
 while the animal steps; **in the air it tracks the velocity exactly like
 `track`**, so a flying animal points where it flies:
@@ -180,18 +190,18 @@ roles keep their own `anim`.
 A roaming animal walks until the turn's player presses Space, and only then
 flies. The walk pose is the record `sprite` (normal-flight art only) and the
 flown art is `sheep.flight_1/2`, which the generator zeroes (to the unassigned
-sentinel 699 — a zero would disable the takeoff) so WA's flown sprites do not
+sentinel 699, a zero would disable the takeoff) so WA's flown sprites do not
 draw underneath.
 
 The walk has two routes:
 
-- **`roam = { walk = <id>, fly = <sentinel> }`** — WA can draw the ground pose
+- **`roam = { walk = <id>, fly = <sentinel> }`**, WA can draw the ground pose
   (it is a stock sprite), so the record keeps it and its id is passed along. It
   is the one nonzero `m.sprite` that means *primary*, not bit, so the classifier
   needs it, and the builder leaves the animal to WA until the takeoff: the turn
   player's synchronized Space edge, or WA moving the flown sentinel into the
   render slot.
-- **`roam = true`** — the pose cannot draw (unset, a bundle path, or an imported
+- **`roam = true`**, the pose cannot draw (unset, a bundle path, or an imported
   Project X number such as `34464`, which WA reads as an unassigned pack slot).
   The generator zeroes the record `sprite` and the builder draws the animal from
   the first frame with the role's own animation.
@@ -202,7 +212,7 @@ the art along the vector, `rotation` spins it, the strip cycles. Only
 air). A "walking" pose that stood upright would ignore `track` for however long
 it took to take off, which looks like the animation being broken.
 
-A roaming animal can also fly on art of its own instead of the primary sheet —
+A roaming animal can also fly on art of its own instead of the primary sheet
 `roam` carries the role's keys when it does:
 
 ```lua

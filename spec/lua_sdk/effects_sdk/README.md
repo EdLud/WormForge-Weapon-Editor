@@ -57,7 +57,7 @@ game frames.
 
 ## Modules
 
-- `libs/trail.lua` — PX's effect-manager trail; one trail per round, sampled in
+- `libs/trail.lua`, PX's effect-manager trail; one trail per round, sampled in
   game frames from a WA missile or a Lua actor and drawn with `wa.draw.ribbon`.
 - `libs/px_effects.lua` - PX's effect manager: reach arcs, the electric
   explosion, spark, glow, smoke and crater. Its spark, glow and smoke sheets
