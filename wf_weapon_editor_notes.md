@@ -2100,14 +2100,40 @@ the Lua comments and the markdown worse than a comma does. A dash at the end of 
 line was dropped rather than joined to the next line, because in a block comment
 that would have pulled the next line's ` * ` prefix into the sentence.
 
-### Zoom buttons on the flight preview
+### Zoom buttons on both previews
 
-The preview had a `2x..6x` preset row, which is not how anyone reads sprite
-size. It is now `-`, a percentage and `+`: `missileZoom / 4` is WA's own pixel
-size, so the readout is a percentage of game pixels, the middle button resets to
-100%, and the steps are whole `missileZoom` units (25%) so the number lands on
-round values. The oil-drum reference already divided by 4, which is why 100% is
-the setting that matches the drum's "1x" label.
+The flight preview had a `2x..6x` preset row, which is not how anyone reads
+sprite size. It is now `-`, a percentage and `+`: `missileZoom / 4` is WA's own
+pixel size, so the readout is a percentage of game pixels, the middle button
+resets to 100%, and the steps are whole `missileZoom` units (25%) so the number
+lands on round values. The oil-drum reference already divided by 4, which is why
+100% is the setting that matches the drum's "1x" label.
+
+The aiming preview got the same bar (`aimZoom`, 50% to 400% in 25% steps), where
+100% is the framing the reference art was laid out for: the scene is a 300 px map
+drawn at `VIEW_SCALE = 2`, so the multiplier rides on top of that. The one thing
+that is easy to get wrong is the origin: scaling a fixed scene from (0, 0) pushes
+the worm out of the canvas as soon as you zoom in, so the transform translates by
+`WORM_X * VIEW_SCALE * (1 - zoom)` first and the worm stays where it sits at
+100%. Scales below 100% show the sky and hill around it, which is useful for
+checking the stance against the map.
+
+### Tap-to-read tooltips: the component was never mounted
+
+`TooltipTap.tsx` existed, was documented as "mounted once in App", and was not
+rendered anywhere, so on a phone every help icon was dead: a `title` attribute
+has no touch equivalent and nothing else was listening. Mounting it was most of
+the fix. The rest came out of testing on a 390 px viewport:
+
+- the first tap on a help icon *inside a checkbox card's label* also toggled the
+  checkbox, because label activation rides on the click, not the pointerdown that
+  the handler could cancel (`preventDefault` there only stops the focus). The
+  click is now swallowed once, in the capture phase.
+- tapping the checkbox itself opened the card's tip, since `closest('[title]')`
+  resolved to the label around it. A tap that starts on a real control is now
+  the control's, and no tip opens.
+- the help glyph was a 14 px target, which is a coin toss with a thumb. The
+  clickable span carries `-m-1.5 p-1.5`, so it is 26 px without moving the icon.
 
 ### Frames must divide the height, or the loader drops the sheet
 

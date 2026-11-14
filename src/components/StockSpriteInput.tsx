@@ -67,7 +67,7 @@ export const StockSpriteInput: React.FC<{
         </label>
         {tooltip && (
           <span
-            className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-200 cursor-help shrink-0 transition-colors"
+            className="-m-1.5 p-1.5 text-stone-400 hover:text-stone-600 dark:hover:text-stone-200 cursor-help shrink-0 transition-colors"
             title={tooltip}
           >
             <HelpCircle className="w-3.5 h-3.5" />

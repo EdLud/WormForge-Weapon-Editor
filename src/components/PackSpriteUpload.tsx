@@ -142,7 +142,7 @@ export const PackSpriteUpload: React.FC<PackSpriteUploadProps> = ({
           </div>
           {headerTooltip && (
             <span
-              className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-200 cursor-help shrink-0 transition-colors"
+              className="-m-1.5 p-1.5 text-stone-400 hover:text-stone-600 dark:hover:text-stone-200 cursor-help shrink-0 transition-colors"
               title={headerTooltip}
             >
               <HelpCircle className="w-3.5 h-3.5" />
@@ -237,7 +237,7 @@ export const PackSpriteUpload: React.FC<PackSpriteUploadProps> = ({
                 Frames
               </label>
               <span
-                className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-200 cursor-help shrink-0"
+                className="-m-1.5 p-1.5 text-stone-400 hover:text-stone-600 dark:hover:text-stone-200 cursor-help shrink-0"
                 title={
                   isGif
                     ? 'GIF files use their built-in frame timing.'
@@ -267,7 +267,7 @@ export const PackSpriteUpload: React.FC<PackSpriteUploadProps> = ({
                 FPS
               </label>
               <span
-                className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-200 cursor-help shrink-0"
+                className="-m-1.5 p-1.5 text-stone-400 hover:text-stone-600 dark:hover:text-stone-200 cursor-help shrink-0"
                 title="Playback rate written to mod.toml."
               >
                 <HelpCircle className="w-3 h-3" />
@@ -299,7 +299,7 @@ export const PackSpriteUpload: React.FC<PackSpriteUploadProps> = ({
                 Rotation sheet
               </label>
               <span
-                className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-200 cursor-help shrink-0"
+                className="-m-1.5 p-1.5 text-stone-400 hover:text-stone-600 dark:hover:text-stone-200 cursor-help shrink-0"
                 title={`Bakes a 360° directional strip of ${rotateFrames} frames (frame 0 pointing up, rotating clockwise) and sets animation mode to follow flight direction.`}
               >
                 <HelpCircle className="w-3 h-3" />

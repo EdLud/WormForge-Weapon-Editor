@@ -671,6 +671,11 @@ Reference implementation: `WormForgeNew/crates/weapons/src/record.rs`,
 
 ## 8. Hold and flight preview math (`HoldPreview.tsx`)
 
+The aiming preview has the same **-, `%`, +** zoom bar over the canvas
+(`aimZoom`, a multiplier on the scene's own 2x: 100% is the framing the reference
+art was laid out for). It scales about the worm's own map point, so a close look
+frames the hand and the held sprite rather than pushing them off the canvas.
+
 The hold preview mirrors `worm_hold.rs`:
 
 - worm cell 60×60; the 32-frame `aim.png` posture strip is flipped inside the
@@ -861,12 +866,18 @@ edits the suffix only, so no id can collide with a mod the reader shows.
   defaults live in `WeaponSettings.tsx`, rendered above the workbench on the
   record page. The record sections are chosen by the workbench tab bar, not by
   the sidebar.
-- **Tooltips are tappable** (`TooltipTap.tsx`, mounted once in `App`). Most
-  explanations are `title` attributes, which a phone can never show: a tap on any
-  element with a `title` opens the same text in a bubble (the attribute is moved
-  to `data-tip-tap` while it is open so the native tooltip cannot double up; a
-  tap on a `<label>` is swallowed so the input does not take focus; real controls
-  keep their click).
+- **Tooltips are tappable** (`TooltipTap.tsx`, mounted once in `App` next to the
+  toast; it was written but never mounted at one point, which left every help
+  icon dead on a phone). Most explanations are `title` attributes, which a phone
+  can never show: a tap on any element with a `title` opens the same text in a
+  bubble. The attribute is moved to `data-tip-tap` while open so the native
+  tooltip cannot double up. A tap that lands on a real control (`button`,
+  `input`, `select`, `textarea`, `a`) is the control's own, so a checkbox still
+  toggles. A tap on a `<label>`, or on a titled element inside one (the help icon
+  on a checkbox card), shows the tip and cancels the activation: the pointer
+  event only stops the focus, so the click that follows is swallowed once in the
+  capture phase. The help icons themselves carry `-m-1.5 p-1.5`, a 26 px target
+  instead of the 14 px glyph.
 - **A declared frame count must divide the sheet's height.** The engine slices a
   vertical strip as `height / frames` and refuses an image that leaves a
   remainder (`initgraphic` fails, so the sprite never loads). `SheetFrameWarning`

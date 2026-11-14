@@ -47,6 +47,13 @@ export const TooltipTap: React.FC = () => {
 
     const onPointerDown = (event: Event) => {
       const target = event.target as HTMLElement | null;
+      // A tap that lands on a control is that control's, even when a wrapped
+      // `label` or row carries the explanation: tapping a checkbox must toggle
+      // it rather than open the tip its card happens to hold.
+      if (target?.closest?.('button, input, select, textarea, a, option')) {
+        close();
+        return;
+      }
       const element = target?.closest?.('[title], [data-tip-tap]') as HTMLElement | null;
       if (!element) {
         close();
@@ -60,8 +67,25 @@ export const TooltipTap: React.FC = () => {
       if (CONTROLS.has(element.tagName)) return;
       const text = element.getAttribute('title') ?? element.getAttribute('data-tip-tap') ?? '';
       if (!text.trim()) return;
-      // A label's own click would focus its input; the tip is what was tapped.
-      if (element.tagName === 'LABEL') event.preventDefault();
+      // A label's own click would focus its input (or toggle a checkbox card);
+      // the tip is what was tapped, so the activation is cancelled. This covers
+      // the help icon inside a label too, not just the label itself. Stopping
+      // `pointerdown` only suppresses the focus: label activation rides on the
+      // click that follows, so that click is swallowed once, in the capture
+      // phase, before the label can see it.
+      if (element.tagName === 'LABEL' || element.closest('label')) {
+        event.preventDefault();
+        const swallow = (clickEvent: Event) => {
+          clickEvent.preventDefault();
+          clickEvent.stopPropagation();
+        };
+        document.addEventListener('click', swallow, { capture: true, once: true });
+        // A cancelled gesture sends no click, so the listener is dropped again.
+        window.setTimeout(
+          () => document.removeEventListener('click', swallow, true),
+          500,
+        );
+      }
       element.setAttribute('data-tip-tap', text);
       element.removeAttribute('title');
       const box = element.getBoundingClientRect();

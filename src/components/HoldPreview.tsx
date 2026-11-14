@@ -290,6 +290,15 @@ const MISSILE_ZOOM_STEP = 1;
 const MISSILE_ZOOM_MIN = 1;
 const MISSILE_ZOOM_MAX = 12;
 
+/**
+ * Aiming preview zoom, a multiplier on the scene's own 2x scale, so 1 is the
+ * framing the reference art was laid out for and 200% is a close look at the
+ * hand and the held sprite.
+ */
+const AIM_ZOOM_STEP = 0.25;
+const AIM_ZOOM_MIN = 0.5;
+const AIM_ZOOM_MAX = 4;
+
 export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) => {
   // ---------------------------------------------------------------------------
   // 1. WORM HOLD REFS & STATE
@@ -481,6 +490,7 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
   // `missileZoom / 4` is drawn at WA's own pixel size, so 4 is 1:1 and the
   // readout below is a percentage of that. The step is 0.5 (12.5%).
   const [missileZoom, setMissileZoom] = useState<number>(MISSILE_ZOOM_1X);
+  const [aimZoom, setAimZoom] = useState<number>(1);
   const [flightAngleDeg, setFlightAngleDeg] = useState<number>(25); // trajectory launch angle
   const [flightSpeed, setFlightSpeed] = useState<number>(14); // velocity magnitude
   const [flightMode, setFlightMode] = useState<'orbit' | 'arc' | 'static' | 'walk'>('arc');
@@ -910,7 +920,14 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.save();
-    ctx.scale(VIEW_SCALE, VIEW_SCALE);
+    // Zoom keeps the worm where it sits at 100%: the scene is scaled about the
+    // worm's own map point, so a close look frames the hand and the held sprite
+    // instead of pushing them off the canvas.
+    ctx.translate(
+      WORM_X * VIEW_SCALE * (1 - aimZoom),
+      WORM_Y * VIEW_SCALE * (1 - aimZoom),
+    );
+    ctx.scale(VIEW_SCALE * aimZoom, VIEW_SCALE * aimZoom);
     ctx.imageSmoothingEnabled = false;
 
     // The simulator's sky.
@@ -935,7 +952,7 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
       ctx.drawImage(offscreen, 0, 0, SIZE, SIZE, cellX, cellY, SIZE, SIZE);
     }
     ctx.restore();
-  }, [hold, aimAngleIndex, currentFrame, facingRight, assetsLoaded, weaponLoadedImg, defaultHoldLoaded, putAwayCounter, flashLoadedImg, flashLeft]);
+  }, [hold, aimAngleIndex, currentFrame, facingRight, assetsLoaded, weaponLoadedImg, defaultHoldLoaded, putAwayCounter, flashLoadedImg, flashLeft, aimZoom]);
 
   // Derive active preview role settings for the 50 Hz simulation canvas
   const activeRolePreviewCfg = (() => {
@@ -2015,6 +2032,44 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
                 <span>Aim Angle: {aimAngleIndex}/31</span>
                 <span>·</span>
                 <span>{aimAngleIndex === 16 ? 'Horizontal' : aimAngleIndex < 16 ? 'Down' : 'Up'}</span>
+              </div>
+
+              {/* Zoom: the scene is laid out at 2x, so 100% is the framing below
+                  and the percentages are relative to it. */}
+              <div className="absolute top-2 right-2 flex items-center gap-0.5 rounded border border-white/10 bg-black/70 p-0.5 backdrop-blur-xs">
+                <button
+                  type="button"
+                  aria-label="Zoom aiming preview out"
+                  title="Zoom out (25% steps)"
+                  disabled={aimZoom <= AIM_ZOOM_MIN}
+                  onClick={() =>
+                    setAimZoom((z) => Math.max(AIM_ZOOM_MIN, Math.round((z - AIM_ZOOM_STEP) * 100) / 100))
+                  }
+                  className="cursor-pointer rounded p-1 text-stone-300 hover:bg-white/10 hover:text-white disabled:opacity-40 disabled:hover:bg-transparent"
+                >
+                  <Minus className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  aria-label="Reset aiming preview zoom"
+                  title="Reset to the default framing"
+                  onClick={() => setAimZoom(1)}
+                  className="min-w-[44px] cursor-pointer rounded px-1 py-0.5 font-mono text-[10px] font-semibold text-stone-200 hover:bg-white/10 hover:text-white"
+                >
+                  {Math.round(aimZoom * 100)}%
+                </button>
+                <button
+                  type="button"
+                  aria-label="Zoom aiming preview in"
+                  title="Zoom in (25% steps)"
+                  disabled={aimZoom >= AIM_ZOOM_MAX}
+                  onClick={() =>
+                    setAimZoom((z) => Math.min(AIM_ZOOM_MAX, Math.round((z + AIM_ZOOM_STEP) * 100) / 100))
+                  }
+                  className="cursor-pointer rounded p-1 text-stone-300 hover:bg-white/10 hover:text-white disabled:opacity-40 disabled:hover:bg-transparent"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </button>
               </div>
             </div>
 

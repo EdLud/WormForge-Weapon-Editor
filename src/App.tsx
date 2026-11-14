@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { WeaponProject } from './types/weapon';
 import { Sidebar, MobileBar } from './components/Sidebar';
+import { TooltipTap } from './components/TooltipTap';
 import { WeaponSettings } from './components/WeaponSettings';
 import { RecordEditor } from './components/RecordEditor';
 import { HoldPreview } from './components/HoldPreview';
@@ -482,6 +483,11 @@ export default function App() {
         onClose={() => setIsWepModalOpen(false)}
         onApply={handleApplyWepImport}
       />
+
+      {/* Tap-to-read tooltips: most field explanations are `title` attributes,
+          which a phone can never hover, so one global listener turns a tap on
+          any of them into the same bubble. */}
+      <TooltipTap />
 
       {toastMessage && (
         <div

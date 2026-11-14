@@ -191,7 +191,7 @@ export const TooltipLabel: React.FC<{
         <span
           tabIndex={0}
           role="tooltip"
-          className="shrink-0 cursor-help text-stone-400 transition-colors hover:text-stone-600 dark:hover:text-stone-200"
+          className="-m-1.5 shrink-0 cursor-help p-1.5 text-stone-400 transition-colors hover:text-stone-600 dark:hover:text-stone-200"
           title={tip}
         >
           <HelpCircle className="h-3.5 w-3.5" aria-hidden="true" />
@@ -263,7 +263,7 @@ export const SectionHeader: React.FC<{
             tabIndex={0}
             role="tooltip"
             title={tip}
-            className="shrink-0 cursor-help text-stone-400 transition-colors hover:text-stone-600 dark:hover:text-stone-200"
+            className="-m-1.5 shrink-0 cursor-help p-1.5 text-stone-400 transition-colors hover:text-stone-600 dark:hover:text-stone-200"
           >
             <HelpCircle className="h-3.5 w-3.5" aria-hidden="true" />
           </span>
@@ -291,7 +291,7 @@ export const SubSectionTitle: React.FC<{
             tabIndex={0}
             role="tooltip"
             title={tip}
-            className="shrink-0 cursor-help font-normal normal-case text-stone-400 transition-colors hover:text-stone-600 dark:hover:text-stone-200"
+            className="-m-1.5 shrink-0 cursor-help p-1.5 font-normal normal-case text-stone-400 transition-colors hover:text-stone-600 dark:hover:text-stone-200"
           >
             <HelpCircle className="h-3.5 w-3.5" aria-hidden="true" />
           </span>
@@ -329,7 +329,7 @@ const CheckboxCard: React.FC<{
       {tip && (
         <span
           title={tip}
-          className="shrink-0 cursor-help text-stone-400 transition-colors hover:text-stone-600 dark:hover:text-stone-200"
+          className="-m-1.5 shrink-0 cursor-help p-1.5 text-stone-400 transition-colors hover:text-stone-600 dark:hover:text-stone-200"
         >
           <HelpCircle className="h-3.5 w-3.5" aria-hidden="true" />
         </span>
