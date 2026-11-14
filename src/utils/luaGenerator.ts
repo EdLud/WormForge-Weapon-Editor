@@ -13,6 +13,7 @@ import { getStockPanelPosition } from '../data/stockWeapons';
 import { stockDonorBaseline } from '../data/stockDonors';
 import { resolveStockSprite, stockSpriteId } from '../data/stockSprites';
 import { supportsFireSequence } from '../data/fireSequence';
+import { STAMP_FRAMES, stampFrameForAngle, supportsTerrainStamp } from '../data/terrainStamp';
 import { COLLISION_FLAGS } from '../data/recordSchema';
 import { defaultArtFor } from './defaultArt';
 import {
@@ -205,6 +206,17 @@ export function holdSheetPath(project: WeaponProject): string {
  */
 export function flashSheetPath(project: WeaponProject): string {
   return `sprites/${sanitizeModFolder(project.id)}/flash.png`;
+}
+
+/**
+ * The terrain stamp's baked 32-frame strip, or null when the card is off or has
+ * no sheet. `wa.land.stamp` names this path inside the claim `sprites`, and the
+ * engine keeps the source pixels so it can write terrain with them.
+ */
+export function terrainStampPath(project: WeaponProject): string | null {
+  const stamp = project.terrainStamp;
+  if (!stamp?.enabled || !stamp.sheet?.file) return null;
+  return `sprites/${sanitizeModFolder(project.id)}/stamp.png`;
 }
 
 
@@ -676,14 +688,37 @@ export function generateLuaCode(project: WeaponProject): string {
   // PX-style blast replacement, and the smoke and re-buffer passes.
   const explosionEffect = project.explosionEffect;
   const usesExplosionEffect = !!explosionEffect?.enabled && explodesNatively;
-  // Replacing WA's blast needs the claim to own the blast, which a missile and
-  // a mine do; the custom explosion supplies damage, push, crater and sound.
-  const silencesBlast = usesExplosionEffect && explosionEffect!.mode === 'blast';
   // Uploaded WAVs.
   const customSounds = project.customSounds;
   const explosionSoundPath = customSoundPath(project, 'explosion');
   const intervalSoundPath = customSoundPath(project, 'interval');
   const usesExplosionSound = !!explosionSoundPath && explodesNatively;
+  // `wa.land.stamp` is a built-in verb, not a library: the round's picture is
+  // burned into the terrain at the blast point. It only works on a family whose
+  // rounds WA blasts (`on_explode` never runs for a strike's bombs) and it needs
+  // the baked strip, which is the file the exporter writes.
+  const terrainStamp = project.terrainStamp;
+  const stampSheetPath = terrainStampPath(project);
+  const usesTerrainStamp = !!stampSheetPath && supportsTerrainStamp(project);
+  // A worm inside the stamp would be sealed into the land (WA's stamp is the
+  // girder routine: the terrain is rewritten around it), so the emitted call is
+  // skipped when one is at the impact point. 0 keeps the plain call.
+  const stampClearance = usesTerrainStamp
+    ? Math.max(0, Math.min(64, Math.round(terrainStamp?.wormClearance ?? 0)))
+    : 0;
+  // Impact damage (PX's javelin): the round pierces what it hits instead of
+  // exploding. It does not need a stamp sheet, so a pure "pierce" weapon works
+  // too, and it zeroes the record's blast just as the burst replacement does.
+  // `stamp_hit` walks `wa.world.electrical_nearby`, which is only valid in a
+  // simulation callback: `on_explode` is one.
+  const stampImpact = terrainStamp?.impact;
+  const usesImpactDamage = !!stampImpact?.enabled && supportsTerrainStamp(project);
+  // Replacing WA's blast needs the claim to own the blast, which a missile and
+  // a mine do; the custom explosion supplies damage, push, crater and sound.
+  // Impact damage silences it for the same reason: a power left in the record
+  // would blast once more on top of the pierce (and crater over a stamp).
+  const silencesBlast =
+    (usesExplosionEffect && explosionEffect!.mode === 'blast') || usesImpactDamage;
   const usesIntervalSound =
     !!intervalSoundPath &&
     (project.fireType === 'power' || (project.fireType === 'drop' && !!project.body.fuse));
@@ -735,6 +770,81 @@ export function generateLuaCode(project: WeaponProject): string {
     lines.push('  local ang = (1 - w.aim) * math.pi');
     lines.push('  if w.facing < 0 then ang = 2 * math.pi - ang end');
     lines.push('  return wa.math.sin(ang), -wa.math.cos(ang)');
+    lines.push('end');
+  }
+  if (usesTerrainStamp && terrainStamp!.onImpact) {
+    // PX's 32 stamp orientations (`px_ninja_star` / `javelin` / the girder
+    // launcher share it): the sheet's frame 0 points up and turns clockwise, so
+    // a heading maps straight to a frame. Screen space, y down, so 8 is right
+    // and 16 is down. It sits outside the callback to keep `on_explode` flat.
+    lines.push('-- PX\'s 32 stamp orientations: frame 0 points up, clockwise.');
+    lines.push('local function stamp_orientation(vx, vy)');
+    lines.push('  local function trunc(n) return n < 0 and math.ceil(n) or math.floor(n) end');
+    lines.push('  if vx == 0 then return vy > 0 and 16 or 0 end');
+    lines.push('  if vy == 0 then return vx > 0 and 8 or 24 end');
+    lines.push('  if vx > 0 and vy < 0 then return math.min(trunc(3 * vx / -vy), 7) end');
+    lines.push('  if vx > 0 then return math.min(trunc(8 + 3 * vy / vx), 15) end');
+    lines.push('  if vy > 0 then return math.min(trunc(16 + 3 * -vx / vy), 23) end');
+    lines.push('  return math.min(trunc(24 + 3 * -vy / -vx), 31)');
+    lines.push('end');
+  }
+  if (usesTerrainStamp && stampClearance > 0) {
+    // The worm check runs in the callback (below), but the list walk and the
+    // radius live here so `on_explode` stays one statement per feature.
+    //
+    // `wa.worms.all()` is WA's own live list: a worm with no health left is not
+    // in it, so a corpse under the impact does not block the stamp. The test is
+    // a square half-extent, the same shape PX's ninja star uses to decide
+    // whether the impact hit a creature.
+    lines.push('-- A worm inside the stamp would be sealed into the land.');
+    lines.push(`local STAMP_CLEAR = ${stampClearance}`);
+    lines.push('local function stamp_clear(x, y)');
+    lines.push('  for _, w in ipairs(wa.worms.all()) do');
+    lines.push('    if math.abs(w.x - x) < STAMP_CLEAR and math.abs(w.y - y) < STAMP_CLEAR then');
+    lines.push('      return false');
+    lines.push('    end');
+    lines.push('  end');
+    lines.push('  return true');
+    lines.push('end');
+  }
+  if (usesImpactDamage) {
+    // PX's javelin: pierce what is at the impact point, and stick in the land
+    // only when nothing was there. `electrical_nearby` is the engine's broad
+    // prefilter (the javelin scans 29 px for a 20 px test), then our own square
+    // decides: the same shape `within()` uses in px_javelin.
+    //
+    // Graves are left out by the `false`: there is nothing there to damage.
+    // `spare_shooter` keeps the worm that fired out of it, which is why a spear
+    // that bursts in your hands stabs nothing (PX's javelin does the same).
+    const hit = stampImpact!;
+    const damage = Math.max(0, Math.round(hit.damage));
+    const radius = Math.max(1, Math.min(64, Math.round(hit.radius)));
+    const impulse = Math.max(0, Math.min(1, Number(hit.impulse) || 0));
+    lines.push('-- Damage instead of a blast (PX\'s javelin): the round pierces what it hits.');
+    lines.push(
+      `local STAMP_HIT = { damage = ${damage}, radius = ${radius}, impulse = ${formatNumber(impulse)}, kind = ${luaQuote(hit.kind)}, spare_shooter = ${hit.spareShooter ? 'true' : 'false'} }`,
+    );
+    lines.push('local function stamp_hit(ev)');
+    lines.push('  local vx, vy = ev.vx or 0, ev.vy or 0');
+    lines.push('  local mine = ev.worm and ev.worm.id');
+    lines.push('  local scan = STAMP_HIT.radius + 16');
+    lines.push('  for _, o in ipairs(wa.world.electrical_nearby(ev.x, ev.y, scan, false)) do');
+    lines.push('    local worm = o.kind == "worm"');
+    lines.push('    if (worm or o.kind == "mine" or o.kind == "crate" or o.kind == "oil")');
+    lines.push('      and not (worm and STAMP_HIT.spare_shooter and mine and o.id == mine)');
+    lines.push('      and math.abs(o.x - ev.x) < STAMP_HIT.radius');
+    lines.push('      and math.abs(o.y - ev.y) < STAMP_HIT.radius then');
+    lines.push('      if worm then');
+    lines.push('        o:hurt{ amount = STAMP_HIT.damage, vx = vx * STAMP_HIT.impulse,');
+    lines.push('                 vy = vy * STAMP_HIT.impulse, kind = STAMP_HIT.kind }');
+    lines.push('      else');
+    lines.push('        o:hit(STAMP_HIT.damage, vx * STAMP_HIT.impulse, vy * STAMP_HIT.impulse,');
+    lines.push('          STAMP_HIT.kind)');
+    lines.push('      end');
+    lines.push('      return true');
+    lines.push('    end');
+    lines.push('  end');
+    lines.push('  return false');
     lines.push('end');
   }
   if (usesRibbonTrail) {
@@ -1014,6 +1124,9 @@ export function generateLuaCode(project: WeaponProject): string {
     // claim, exactly as the electric mine does.
     if (!usesRibbonTrail) packSprites.push('trail.BEAM', 'trail.GLOW');
     if (explosionEffect!.smoke) packSprites.push('fx.SMOKE');
+  }
+  if (stampSheetPath) {
+    packSprites.push(luaQuote(stampSheetPath));
   }
   if (packSprites.length > 0) {
     lines.push(`      sprites = { ${packSprites.join(', ')} },`);
@@ -2576,12 +2689,19 @@ export function generateLuaCode(project: WeaponProject): string {
   // `effect` mode leaves the native blast alone, `blast` mode has already
   // silenced it in the record above, so the custom explosion does the damage,
   // push, crater and sound and then draws the same burst.
-  const hasExplodeHook = usesExplosionEffect || usesExplosionSound || hasCustomExplodeCode;
+  const hasExplodeHook =
+    usesExplosionEffect ||
+    usesExplosionSound ||
+    hasCustomExplodeCode ||
+    usesImpactDamage ||
+    usesTerrainStamp;
   if (hasExplodeHook) {
     const parts = [
       usesExplosionEffect ? 'effects-SDK burst' : '',
       usesExplosionSound ? 'custom WAV' : '',
       hasCustomExplodeCode ? 'custom Lua logic' : '',
+      usesImpactDamage ? 'impact damage' : '',
+      usesTerrainStamp ? 'terrain stamp' : '',
     ].filter(Boolean).join(' + ');
     lines.push(`      -- Explosion hook: merged ${parts}.`);
     lines.push('      on_explode = { on = function(ev)');
@@ -2686,6 +2806,50 @@ export function generateLuaCode(project: WeaponProject): string {
       }
       for (const line of reindentCode(parsedLua.onExplodeBody, '        ')) {
         lines.push(line);
+      }
+    }
+    if (usesImpactDamage) {
+      // A hit is the whole point of a pierce, so the stamp is skipped when the
+      // round found something: this is PX's javelin `return`, and it also keeps
+      // a worm that survived the hit from being buried. The explanation rides on
+      // the same line on purpose: `customExplodeBody` drops the statement, and a
+      // comment of its own would be left behind in the author's custom Lua.
+      lines.push(
+        '        if stamp_hit(ev) then return end -- a hit means no stamp: the round pierced it',
+      );
+    }
+    if (usesTerrainStamp) {
+      // Last on purpose: a custom `on_explode` that returns early (PX's ninja
+      // star does, so it never sticks into a worm) must skip the stamp too.
+      //
+      // `ev.vx`/`ev.vy` are the round's speed as it bursts (`weapon_emit`'s
+      // speed, `ENT_SPEED_X/Y`) and are absent for a mine, which has no flight
+      // velocity — hence `or 0`, which keeps a real zero because 0 is truthy
+      // in Lua. A mine therefore wants the fixed angle.
+      const frame = terrainStamp!.onImpact
+        ? 'stamp_orientation(ev.vx or 0, ev.vy or 0)'
+        : String(stampFrameForAngle(terrainStamp!.fixedAngle));
+      const stampRows = (indent: string) => {
+        lines.push(`${indent}wa.land.stamp{`);
+        lines.push(`${indent}  sprite = ${luaQuote(stampSheetPath)},`);
+        lines.push(`${indent}  frame = ${frame},`);
+        lines.push(`${indent}  x = ev.x, y = ev.y,`);
+        lines.push(
+          `${indent}  buried = { soften = ${Math.min(
+            32,
+            Math.max(1, Math.round(terrainStamp!.soften)),
+          )}, blend = ${luaQuote(terrainStamp!.blend === 'dither' ? 'dither' : 'mix')} },`,
+        );
+        if (terrainStamp!.trueColour) lines.push(`${indent}  true_colour = true,`);
+        lines.push(`${indent}}`);
+      };
+      if (stampClearance > 0) {
+        // Sealing a worm under the picture is worse than losing the stamp.
+        lines.push('        if stamp_clear(ev.x, ev.y) then');
+        stampRows('          ');
+        lines.push('        end');
+      } else {
+        stampRows('        ');
       }
     }
     lines.push('      end },');
@@ -3006,6 +3170,10 @@ export function generateModToml(project: WeaponProject): string {
   const behaviorStates = resolveBehaviorStates(project);
   // A roaming animal's flown art can be its own role (its own sheet).
   const roamRole = wfwsRoleFlags(project).roam;
+  // The terrain stamp's strip is a claim sheet the engine slices into 32
+  // frames and keeps the pixels of, so `land.stamp` can write terrain with it.
+  const stampSheet =
+    supportsTerrainStamp(project) ? terrainStampPath(project) : null;
   // The ribbon trail lives in its own library bundle (`effects.sdk`), which
   // exports `wf-lib/effects/trail` and the beam/glow sheets.
   const usesRibbonTrail =
@@ -3137,6 +3305,17 @@ export function generateModToml(project: WeaponProject): string {
     if (state.art.frames > 1) lines.push(`frames = ${state.art.frames}`);
     lines.push(`fps = ${state.art.fps || 15}`);
     lines.push('play = "loop"');
+  }
+
+  // The terrain stamp's strip: 32 cells, frame 0 up and clockwise. `frames` is
+  // the only key it needs -- nothing animates it, the frame is the argument --
+  // but the engine slices by it, and a declared path must be a file the ZIP
+  // carries (see `modExporter`).
+  if (stampSheet && !emitted.has(stampSheet)) {
+    emitted.add(stampSheet);
+    lines.push('');
+    lines.push(`[sprites.${luaQuote(stampSheet)}]`);
+    lines.push(`frames = ${STAMP_FRAMES}`);
   }
 
   if (usesHold && project.hold.frames > 1) {

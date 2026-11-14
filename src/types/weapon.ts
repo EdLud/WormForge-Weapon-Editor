@@ -404,6 +404,75 @@ export interface ExplosionEffectConfig {
   smoke: boolean;
 }
 
+/**
+ * `wa.land.stamp` — burns the round's picture into the terrain when it explodes
+ * (the ninja star / javelin / girder pattern). The engine stamps one frame out
+ * of a vertical strip: frame 0 points up and the strip turns clockwise, so the
+ * upload is baked into 32 cells by `buildRotationSheet`.
+ */
+/**
+ * The hit kinds a scripted hit may name (`crates/game/src/hit_kind.rs`): the
+ * eleven kinds WA itself sends, plus the scripted `taze` (sent to WA as the
+ * Prod's kind). `percent` is the Battle Axe's: damage means that percentage of
+ * the worm's health. `blast` is **not** a kind — a blast is what a hit event is,
+ * not a name a pack may send.
+ */
+export type StampHitKind =
+  | 'bullet'
+  | 'fire'
+  | 'drill'
+  | 'arrow'
+  | 'prod'
+  | 'percent'
+  | 'taze';
+
+/**
+ * PX's javelin behaviour: the round **pierces** whatever is at the impact point
+ * (a worm, a mine, a crate, an oil drum) instead of exploding, and sticks in the
+ * land only when it hit nothing. The record's own blast is zeroed, so this
+ * table is where the damage comes from.
+ */
+export interface TerrainStampImpactConfig {
+  enabled: boolean;
+  /** Damage dealt to whatever is at the impact point (HP, or % for `percent`). */
+  damage: number;
+  /** Half-extent of the square the target is looked for in, in px. */
+  radius: number;
+  /** Knockback given to the target, as a fraction of the round's speed (0..1). */
+  impulse: number;
+  /** The kind the hit is reported as (and what WA is told for objects). */
+  kind: StampHitKind;
+  /** Spare the worm that fired: PX's javelin does, so a spear in your hands stabs nothing. */
+  spareShooter: boolean;
+}
+
+export interface TerrainStampConfig {
+  enabled: boolean;
+  /** The baked 32-frame strip. `file` is what the exporter writes; `sourceFile`
+   *  is the single up-pointing upload, kept so the strip can be rebuilt. */
+  sheet?: PackArtAsset;
+  /** Pick the frame from the impact velocity's heading. */
+  onImpact: boolean;
+  /** Fixed angle in degrees, 0 = up, clockwise. Emitted as a frame 0..31. */
+  fixedAngle: number;
+  /** 1..32 px, `buried.soften`. */
+  soften: number;
+  /** `buried.blend`: `dither` is the engine default, `mix` blends into the land. */
+  blend: 'dither' | 'mix';
+  /** `true_colour`: burn the sprite's own colours in instead of mapping them to
+   *  the terrain palette (which is what makes a stamp read as carved land). */
+  trueColour: boolean;
+  /**
+   * Half-extent of the square around the impact point the stamp refuses to fill
+   * when a worm is inside it (px). A worm sealed under the picture cannot get
+   * out, so the round simply leaves the terrain alone there. `0` stamps over
+   * worms. Worms with no health left are not listed by `wa.worms.all()`.
+   */
+  wormClearance: number;
+  /** Damage everything at the impact point instead of blasting (PX's javelin). */
+  impact: TerrainStampImpactConfig;
+}
+
 export type MissileAnimType =
   | 'track'
   | 'rotation'
@@ -582,6 +651,9 @@ export interface WeaponProject {
   ribbonTrail: RibbonTrailConfig;
   /** Effects-SDK explosion burst, added to or replacing WA's own blast. */
   explosionEffect: ExplosionEffectConfig;
+  /** `wa.land.stamp`: the round's picture burned into the terrain. Optional for
+   *  older projects, which need no migration. */
+  terrainStamp?: TerrainStampConfig;
   /** `wf-lib/fire_seq` burst from one `on_fire`. Optional for older projects. */
   fireSequence?: FireSequenceConfig;
   /** Uploaded WAVs played with `wa.sound.play` (blast and flight interval). */

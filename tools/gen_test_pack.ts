@@ -43,11 +43,13 @@ import {
   sanitizeModFolder,
   wfwsRoleFlags,
   flashSheetPath,
+  terrainStampPath,
 } from '../src/utils/luaGenerator';
 import { DEFAULT_EXPLOSION_EFFECT, EXPLOSION_PRESETS } from '../src/data/explosionPresets';
 import { stockDonor } from '../src/data/stockDonors';
 import { DEFAULT_CUSTOM_SOUNDS } from '../src/data/soundPresets';
 import { DEFAULT_FIRE_SEQUENCE } from '../src/data/fireSequence';
+import { DEFAULT_TERRAIN_STAMP, STAMP_FRAMES } from '../src/data/terrainStamp';
 import {
   DEFAULT_ROAM_ROLE_ART,
   DEFAULT_ROLE_ART,
@@ -263,6 +265,37 @@ const ICE_BMP = specPng('wicestnd.png');
 const DRUM_BMP = specPng('oildrum1.png');
 const SHEEP_BMP = specPng('sspsheep1.png');
 
+/**
+ * The stamp picture: an arrow pointing up, built rather than taken from `spec/`
+ * (none of the shipped sheets point up). A wrong frame index is unmistakable in
+ * the match — frame 8 must point right, 16 down.
+ */
+function upArrowBitmap(size = 40): Bitmap {
+  const rgba = new Uint8Array(size * size * 4);
+  const mid = size / 2;
+  const put = (x: number, y: number, r: number, g: number, b: number) => {
+    if (x < 0 || y < 0 || x >= size || y >= size) return;
+    const i = (y * size + x) * 4;
+    rgba[i] = r;
+    rgba[i + 1] = g;
+    rgba[i + 2] = b;
+    rgba[i + 3] = 255;
+  };
+  for (let y = 0; y < size; y += 1) {
+    // Head (a triangle over the top half) then shaft, both around the centre.
+    const halfWidth = y < mid ? (y / mid) * (size * 0.4) : size * 0.12;
+    for (let x = Math.round(mid - halfWidth); x <= Math.round(mid + halfWidth); x += 1) {
+      if (y < size * 0.3) put(x, y, 220, 60, 40);
+      else put(x, y, 230, 230, 200);
+    }
+  }
+  return { width: size, height: size, rgba };
+}
+
+const STAMP_BMP = upArrowBitmap();
+/** 32 cells, frame 0 up, clockwise: the strip `wa.land.stamp` indexes into. */
+const STAMP_PNG = encodePng(rotationSheet(STAMP_BMP, STAMP_FRAMES));
+
 const AIM_PNG = encodePng(AIM_BMP);
 const GRENADE_PNG = encodePng(GRENADE_BMP);
 const ICE_PNG = encodePng(ICE_BMP);
@@ -330,6 +363,25 @@ function wavTone(freq: number, ms: number, volume = 0.35): Buffer {
 
 const EXPLOSION_WAV = wavTone(180, 420);
 const INTERVAL_WAV = wavTone(880, 70);
+
+/**
+ * A baked stamp strip as the project's `terrainStamp.sheet`. The 32 cells are
+ * what `frames` declares, and `sourceFile` is the single up-pointing frame the
+ * editor would have baked from.
+ */
+function stampAsset() {
+  return {
+    file: file(STAMP_PNG, 'stamp_rot32.png'),
+    fileName: 'stamp_rot32.png',
+    previewUrl: '',
+    frames: STAMP_FRAMES,
+    fps: 15,
+    play: 'loop' as const,
+    sourceFile: file(encodePng(STAMP_BMP), 'stamp.png'),
+    sourceName: 'stamp.png',
+    rotationFrames: STAMP_FRAMES,
+  };
+}
 
 function soundAsset(bytes: Buffer, name: string) {
   return {
@@ -438,6 +490,8 @@ function makeOp(partial: {
   fireSequence?: Partial<NonNullable<WeaponProject['fireSequence']>>;
   /** Held art (`hold`), e.g. the repeat-fire draw with `px_hold_art`. */
   hold?: Partial<WeaponProject['hold']>;
+  /** `wa.land.stamp` picture burned into the terrain (`terrainStamp`). */
+  terrainStamp?: Partial<WeaponProject['terrainStamp']>;
   defaults?: Partial<WeaponProject['defaults']>;
 }): WeaponProject {
   return {
@@ -511,6 +565,7 @@ function makeOp(partial: {
     },
     ribbonTrail: { ...DEFAULTS.ribbon, ...partial.trailer },
     explosionEffect: { ...DEFAULT_EXPLOSION_EFFECT, ...partial.explosion },
+    terrainStamp: { ...DEFAULT_TERRAIN_STAMP, ...partial.terrainStamp },
     customSounds: { ...DEFAULT_CUSTOM_SOUNDS, ...partial.customSounds },
     fireSequence: { ...DEFAULT_FIRE_SEQUENCE, ...partial.fireSequence },
     extraDependencies: [],
@@ -1271,6 +1326,97 @@ const TESTS: TestCase[] = [
     watch:
       'The firing sheet stuck on for the whole burst (the `flash` gate missing), the gun blinking out between shots (the plain hold not added), or the hand disappearing on firing frames.',
   },
+  {
+    project: makeOp({
+      id: 'wftest.37_stamp_impact',
+      name: 'WF 37 Stamp Impact',
+      slot: 'bazooka',
+      body: { sprite: 'bazooka', damage: 35 },
+      // The crater has to be carved inside `on_explode`, before the stamp: WA's
+      // own blast runs after the callback and would erase a stamp that is
+      // already in the land.
+      explosion: { enabled: true, mode: 'blast', damage: 35, push: 100, hole: 40, sound: 'none' },
+      terrainStamp: {
+        enabled: true,
+        onImpact: true,
+        soften: 3,
+        blend: 'mix',
+        trueColour: false,
+        // A live worm within 12 px of the impact point cancels the stamp
+        // (`stamp_clear`), so nothing is sealed under the picture.
+        wormClearance: 12,
+        sheet: stampAsset(),
+      },
+    }),
+    intent:
+      '`wa.land.stamp` at the impact angle: the arrow is burned into the terrain where the rocket bursts, turned to the heading it came in at.',
+    expect:
+      'A crater appears and the arrow stays inside it, pointing the way the rocket was travelling (a rocket flying right leaves a right-pointing arrow). Hitting a worm leaves no stamp, so the worm is never sealed in.',
+    watch:
+      'No arrow at all (the stamp is not claimed, or the sheet frame count is not 32), the arrow erased by the crater (native blast instead of the custom one), the arrow always pointing up (the heading helper missing), or no arrow when the blast lands away from worms (the clearance check too wide).',
+  },
+  {
+    project: makeOp({
+      id: 'wftest.38_stamp_fixed',
+      name: 'WF 38 Stamp Fixed',
+      slot: 'grenade',
+      body: { sprite: 'grenade', damage: 30 },
+      explosion: { enabled: true, mode: 'blast', damage: 30, push: 80, hole: 34, sound: 'none' },
+      terrainStamp: {
+        enabled: true,
+        onImpact: false,
+        // Frame 8: a quarter turn clockwise, so the arrow always points right,
+        // whichever way the grenade arrived.
+        fixedAngle: 90,
+        soften: 5,
+        blend: 'dither',
+        trueColour: true,
+        // Off, so the same test covers the unguarded call too.
+        wormClearance: 0,
+        sheet: stampAsset(),
+      },
+    }),
+    intent:
+      'Fixed stamp angle (frame 8) with `buried.blend = "dither"` and `true_colour`: the same orientation, and the upload colours rather than the terrain palette, on every impact.',
+    expect:
+      'Every grenade leaves a right-pointing arrow in its crater, with a hard dithered edge, the red tip and pale shaft of the upload instead of terrain colours.',
+    watch:
+      'The arrow following the throw direction (fixed frame ignored), a soft mixed edge (`blend` not written), or terrain-coloured pixels (`true_colour` missing).',
+  },
+  {
+    project: makeOp({
+      id: 'wftest.39_stamp_pierce',
+      name: 'WF 39 Stamp Pierce',
+      slot: 'bazooka',
+      body: { sprite: 'bazooka', damage: 35 },
+      terrainStamp: {
+        enabled: true,
+        onImpact: true,
+        soften: 3,
+        blend: 'mix',
+        trueColour: false,
+        wormClearance: 12,
+        sheet: stampAsset(),
+        // PX's javelin shape: pierce what the rocket lands on, stick in the
+        // ground only when nothing was there. Non-default numbers so the
+        // round-trip proves the mapping rather than a default reading back.
+        impact: {
+          enabled: true,
+          damage: 25,
+          radius: 18,
+          impulse: 0.25,
+          kind: 'fire',
+          spareShooter: false,
+        },
+      },
+    }),
+    intent:
+      '`stamp_hit` (PX\u2019s javelin): the rocket damages every worm, mine, crate and oil drum inside 18 px of where it lands, and only burns the arrow into the ground when it hit nothing. The record\u2019s own blast is zeroed.',
+    expect:
+      'A rocket that lands on a worm or object damages it and throws it along the flight (no crater, no arrow there); one that lands on bare ground leaves the arrow and no burst at all.',
+    watch:
+      'A crater or push from WA\u2019s own blast (power not zeroed), no damage at all (a bad `kind` fails the whole bundle at load), an arrow burned on top of a target, or a rocket fired at your own feet doing nothing (this test turns Spare the shooter off).',
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1410,6 +1556,17 @@ for (const test of TESTS) {
       usedSheets.add(path);
       if (frames > 1) spriteDecls.set(path, { frames, fps: 15, play: 'loop' });
     }
+  }
+
+  // The terrain stamp strip. `wa.land.stamp` names the claimed sheet, and the
+  // engine slices it by the declared frame count, so both halves are written
+  // from the same project state.
+  const stampPath = terrainStampPath(project);
+  if (stampPath) {
+    mkdirSync(join(BUNDLE, 'sprites', folder), { recursive: true });
+    writeFileSync(join(BUNDLE, stampPath), STAMP_PNG);
+    usedSheets.add(stampPath);
+    spriteDecls.set(stampPath, { frames: STAMP_FRAMES, fps: 15, play: 'loop' });
   }
 
   // Custom WAVs the claim declares in `sounds`. The editor writes these bytes

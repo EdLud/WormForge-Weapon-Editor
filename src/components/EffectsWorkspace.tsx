@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Blocks, ListOrdered, Sparkles, Volume2, Zap } from 'lucide-react';
+import { Blocks, ListOrdered, Sparkles, Stamp, Volume2, Zap } from 'lucide-react';
 import type { WeaponProject } from '../types/weapon';
 import {
   CustomSoundsCard,
@@ -11,14 +11,16 @@ import {
   supportsRibbonTrail,
 } from './EffectsCards';
 import { FireSequenceCard } from './FireSequenceCard';
+import { TerrainStampCard } from './TerrainStampCard';
 import { supportsFireSequence } from '../data/fireSequence';
+import { supportsTerrainStamp } from '../data/terrainStamp';
 
 interface Props {
   project: WeaponProject;
   onChange: (updated: Partial<WeaponProject>) => void;
 }
 
-type EffectTabId = 'trail' | 'explosion' | 'sounds' | 'sequence';
+type EffectTabId = 'trail' | 'explosion' | 'sounds' | 'sequence' | 'stamp';
 
 interface EffectTabDef {
   id: EffectTabId;
@@ -61,6 +63,16 @@ export const EffectsWorkspace: React.FC<Props> = ({ project, onChange }) => {
         hint: 'Import PCM WAV audio for detonations and in-flight loops',
         icon: Volume2,
         active: !!(project.customSounds?.explosionEnabled || project.customSounds?.intervalEnabled),
+        tone: 'sky',
+      });
+    }
+    if (supportsTerrainStamp(project)) {
+      list.push({
+        id: 'stamp',
+        label: 'Terrain Stamp',
+        hint: 'Burn the round’s picture into the land where it bursts (wa.land.stamp)',
+        icon: Stamp,
+        active: !!project.terrainStamp?.enabled,
         tone: 'sky',
       });
     }
@@ -161,6 +173,7 @@ export const EffectsWorkspace: React.FC<Props> = ({ project, onChange }) => {
             {currentTab === 'explosion' && <ExplosionEffectCard project={project} onChange={onChange} />}
             {currentTab === 'sounds' && <CustomSoundsCard project={project} onChange={onChange} />}
             {currentTab === 'sequence' && <FireSequenceCard project={project} onChange={onChange} />}
+            {currentTab === 'stamp' && <TerrainStampCard project={project} onChange={onChange} />}
           </div>
         </>
       )}

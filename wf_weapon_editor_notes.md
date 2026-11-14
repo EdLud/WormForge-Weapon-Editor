@@ -2041,3 +2041,99 @@ Random Motion** in Physics & Blast, `missile.explosion_sound.*` to
 was previously a "Homing sprite & trail →" jump into the other tab). The bounce
 extras it duplicated were already in Bounce Settings, so nothing was lost.
 Projectile and strike weapons now have five tabs.
+
+### Terrain stamp: `wa.land.stamp` is a verb, not a library
+
+Sticking a weapon into the land is WA's own girder routine, so the editor needs
+no bundle for it — only `wa.land.stamp{ sprite, frame, x, y, buried }` inside the
+claim's `on_explode`. The frame is an **index into a pre-rotated strip**, which is
+why the card bakes instead of rotating at runtime: 32 cells, frame 0 the
+untouched upload pointing up, turning clockwise, exactly the PX
+`orientation(vx, vy)` arithmetic that the ninja star, the javelin and the girder
+launcher all carry.
+
+What the engine actually enforces (read before changing the pipeline):
+`spawn.rs::bind_land` takes `sprite` (a name, resolved through the claim's
+`sprites` — a bundle path works), an optional `frame` (default 0), `x`/`y`
+required, `buried = { soften = 1..32, blend = "dither"|"mix" }` and
+`true_colour` (`true` or `{ blend }`). `sprite.rs::terrain_frames` keeps the
+source pixels of a sheet only when **every** frame is 1..256 px, so a 200×200
+upload padded to a 283 px diagonal cell makes the whole sheet unstampable and
+`land.stamp` answers "frame out of range or sheet exceeds 256x256". The baker
+therefore scales to fit (`maxCell`) rather than rejecting, and the card turns
+canvas smoothing off: terrain is written where a pixel is at least half opaque, so
+a blurred edge loses the tips of thin art.
+
+Ordering is the part that bites. `on_explode` runs **before** WA's own blast, so a
+native explosion carves its crater after the stamp is already in the land and
+wipes it. Only the effects-SDK blast replacement (`blast.explode`, which zeroes
+`missile.explosion.power`/`push_pct` and cuts the crater inside the callback)
+leaves a stamp visible. The card warns and points at the burst tab rather than
+switching the mode itself: flipping to `blast` changes damage, push and crater
+radius, which is the author's decision, not a side effect of enabling a stamp.
+
+The stamp goes **last** in the merged callback — after the custom WAV, the burst
+and the author's own Lua — because the PX ports scan for a worm and `return`
+before stamping (the star is not supposed to stick into a creature). Emitting it
+first would have made every port stamp anyway.
+
+### Impact damage: why the blast has to go
+
+PX's javelin does not explode. It scans `wa.world.electrical_nearby(x, y, 29,
+false)` for a worm, mine, crate or oil drum within 20 px, throws the target along
+the spear (`vx / 4`) and hits it (`hurt(20)` for a worm, `hit(20, vx / 2, vy / 2,
+"bullet")` for an object), then `return`s so nothing is stamped. Our card carries
+the same shape with the numbers exposed (`STAMP_HIT`), and hits *everything*
+damageable inside the square — graves are left out by the `false`, and
+`spare_shooter` keeps the firing worm out of it, so a spear that bursts in your
+hands stabs nothing.
+
+The important half is in the record: leaving `explosion.power` alone means WA blasts
+*after* the callback, so the target takes the pierce **and** a blast, and the
+crater it carves erases the stamp that was just written. Turning the option on
+therefore zeroes `missile.explosion.power` / `push_pct` exactly as the burst
+card's `blast` mode does (`silencesBlast`), which is the documented "no
+explosion" record (`missile = { explosion = { power = 0 } }`). With no blast there
+is also no crater, so the stamp survives — the burst card's `blast` mode and this
+option are two ways of settling the same problem (a crater drawn over the stamp),
+not layers to stack.
+
+`kind` is the engine's list, not a free string: `hit_kind_arg` accepts
+`hit_kind::NATIVE` (`prod, fire, drill, bullet, kamikaze, dragon_ball,
+baseball_bat, blow_torch, fire_punch, arrow, percent`) plus the scripted `taze`,
+and anything else fails the bundle at load. **`blast` is not a kind** — a blast is
+what a hit event *is*, not a name a pack can send, which reads like a typo until
+you hit it. Importing reads `STAMP_HIT` even when there is no stamp call, so a
+pure pierce bundle re-exports with the stamp still off.
+
+A stamp rewrites terrain, so a worm standing at the impact point is buried in it
+with no way out — WA offers no "push the worm out" for a stamp. The emitted call
+is therefore guarded by `if stamp_clear(ev.x, ev.y) then … end`, a square
+half-extent (`STAMP_CLEAR`, default 12 px, `0` disables) walked over
+`wa.worms.all()`, the same shape PX's ninja star tests before it sticks. The
+worm list is WA's live one, so a corpse does not block the stamp. Importing has
+to strip the guard with the call: `customExplodeBody` skips a balanced
+`if`/`end` block, because removing only the `wa.land.stamp{ … }` table would
+leave a dangling `then` in the author's custom body.
+
+Two smaller traps: `ev.vx`/`ev.vy` are the speed the missile bursts with
+(`weapon_emit` passes `ENT_SPEED_X/Y`), and they are **absent for a mine**, which
+is why the emitted frame reads `stamp_orientation(ev.vx or 0, ev.vy or 0)` and why
+mines are out of scope for this card for now. And a fixed angle is stored in
+degrees (0 = up, clockwise) but emitted as a frame: `90° → 8`. The importer has to
+convert back with plain `frame × 11.25` — piping the frame through
+`stampFrameForAngle` again "converted" 8 to 8, which re-exported as frame 1.
+
+Gating is by family, not by record group: a girder launcher is an ordinary missile
+that stamps instead of blasting, so `power` is the gate. Strikes never reach the
+hook at all (their munitions are built from the strike's own record copy), and a
+mine has no impact heading.
+
+### Electrical blast damage is a hit kind, not a separate library
+
+`blast.explode` takes a `kind`, and `"taze"` is the scripted electric kind
+(`crates/game/src/hit_kind.rs`). WA applies it as a Prod hit, but a `wa.on.hit`
+handler sees `"taze"`, which is exactly how PX's electric weapons recognise their
+own damage and chain. So the burst card's custom hit values carry an
+Explosive/Electrical toggle, and only the custom blast names a kind — `effect`
+mode leaves WA's own hit untouched, and the native record has no field for it.

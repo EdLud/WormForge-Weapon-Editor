@@ -699,6 +699,41 @@ export function ExplosionEffectCard({ project, onChange }: CardProps) {
                   )}
                 </div>
               </div>
+
+              {/* The hit kind the blast sends. `taze` is the scripted electric
+                  kind (`crates/game/src/hit_kind.rs`): WA applies it as a Prod
+                  hit, but a `wa.on.hit` handler sees "taze", which is how PX's
+                  electric weapons recognise their own damage. */}
+              <div>
+                <TooltipLabel
+                  label="Damage Type"
+                  code="kind"
+                  desc="Explosive is a plain blast hit. Electrical sends the scripted taze kind: WA hurts the worm as a Prod, and any wa.on.hit handler can tell the two apart (PX's electric ring chains on its own taze hits)."
+                />
+                <div className="grid grid-cols-2 gap-1 rounded-xl border border-stone-200 bg-stone-100 p-1 dark:border-stone-800 dark:bg-stone-950/60">
+                  {(
+                    [
+                      { id: 'blast', label: 'Explosive' },
+                      { id: 'electric', label: 'Electrical' },
+                    ] as const
+                  ).map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onClick={() => update({ damageType: option.id })}
+                      className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                        fx.damageType === option.id
+                          ? option.id === 'electric'
+                            ? 'bg-sky-600 text-white shadow-xs'
+                            : 'bg-forge-600 text-white shadow-xs'
+                          : 'text-stone-600 hover:text-stone-900 dark:text-stone-400 dark:hover:text-white'
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
           )}
         </div>

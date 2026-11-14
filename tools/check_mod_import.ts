@@ -57,7 +57,7 @@ const files: ModFile[] = walk(BUNDLE).map((full) => {
 const bundles = readBundles(files);
 const weapons = readWeapons(bundles, files);
 check('test pack has one bundle', bundles.length === 1, String(bundles.length));
-check('test pack has 36 weapons', weapons.length === 36, String(weapons.length));
+check('test pack has 39 weapons', weapons.length === 39, String(weapons.length));
 
 const byName = new Map(weapons.map((weapon) => [weapon.name, weapon]));
 const projects = new Map<string, WeaponProject>();
@@ -330,6 +330,7 @@ function fullProject(p: WeaponProject, name: string): WeaponProject {
     fireConfig: { ...DEFAULT_FIRE, ...(p.fireConfig ?? {}) },
     ribbonTrail: p.ribbonTrail ?? RIBBON_OFF,
     explosionEffect: p.explosionEffect ?? DEFAULT_EXPLOSION_EFFECT,
+    terrainStamp: p.terrainStamp,
     fireSequence: p.fireSequence ?? DEFAULT_FIRE_SEQUENCE,
     customSounds: p.customSounds ?? DEFAULT_CUSTOM_SOUNDS,
     extraDependencies: p.extraDependencies ?? [],
@@ -503,6 +504,112 @@ return {
     'WF 36: the firing sheet is gated to the shot',
     lua.includes('flash = true,'),
     'firing table not marked as a flash',
+  );
+}
+
+// ---- terrain stamp (WF 37 impact / WF 38 fixed) -------------------------
+{
+  const impact = project('WF 37 Stamp Impact')!;
+  check('WF 37: stamp read back', !!impact.terrainStamp?.enabled, 'not enabled');
+  near('WF 37: impact angle mode', impact.terrainStamp?.onImpact, true);
+  near('WF 37: soften', impact.terrainStamp?.soften, 3);
+  near('WF 37: blend', impact.terrainStamp?.blend, 'mix');
+  near('WF 37: true colours off', impact.terrainStamp?.trueColour, false);
+  near('WF 37: strip frames', impact.terrainStamp?.sheet?.frames, 32);
+  check(
+    'WF 37: strip attached',
+    !!impact.terrainStamp?.sheet?.file,
+    'no file attached',
+  );
+  near('WF 37: worm clearance', impact.terrainStamp?.wormClearance, 12);
+  check(
+    'WF 37: the guard is not left behind as custom Lua',
+    !impact.enableCustomLua && !(impact.customLuaSnippet ?? '').includes('stamp_clear'),
+    impact.customLuaSnippet ?? '(empty)',
+  );
+  const lua = generateLuaCode(fullProject(impact, 'WF 37 Stamp Impact'));
+  check(
+    'WF 37: stamp is guarded by the worm check',
+    lua.includes('local STAMP_CLEAR = 12') && lua.includes('if stamp_clear(ev.x, ev.y) then'),
+    'guard missing',
+  );
+  check(
+    'WF 37: stamped from the impact heading',
+    lua.includes('frame = stamp_orientation(ev.vx or 0, ev.vy or 0)'),
+    'helper call missing',
+  );
+  check(
+    'WF 37: stamp is last in the one hook',
+    lua.indexOf('wa.land.stamp{') > lua.indexOf('blast.explode{') &&
+      lua.split('on_explode = ').length === 2,
+    'stamp not inside the merged on_explode',
+  );
+
+  const fixed = project('WF 38 Stamp Fixed')!;
+  near('WF 38: fixed angle mode', fixed.terrainStamp?.onImpact, false);
+  near('WF 38: angle degrees', fixed.terrainStamp?.fixedAngle, 90);
+  near('WF 38: soften', fixed.terrainStamp?.soften, 5);
+  near('WF 38: blend', fixed.terrainStamp?.blend, 'dither');
+  near('WF 38: true colours', fixed.terrainStamp?.trueColour, true);
+  near('WF 38: worm clearance off', fixed.terrainStamp?.wormClearance, 0);
+  const fixedLua = generateLuaCode(fullProject(fixed, 'WF 38 Stamp Fixed'));
+  check('WF 38: fixed frame 8', fixedLua.includes('frame = 8,'), 'frame missing');
+  check('WF 38: true colours emitted', fixedLua.includes('true_colour = true,'), 'missing');
+  check(
+    'WF 38: no heading helper for a fixed frame',
+    !fixedLua.includes('stamp_orientation'),
+    'helper emitted without impact mode',
+  );
+  check(
+    'WF 38: no worm guard at clearance 0',
+    !fixedLua.includes('stamp_clear'),
+    'guard emitted for clearance 0',
+  );
+  check(
+    'WF 38: mod.toml declares the strip',
+    /stamp\.png"\]\nframes = 32/.test(
+      generateModToml(fullProject(fixed, 'WF 38 Stamp Fixed')),
+    ),
+    'declaration missing',
+  );
+}
+
+// ---- impact damage / pierce (WF 39) -------------------------------------
+{
+  const p = project('WF 39 Stamp Pierce')!;
+  check('WF 39: impact damage read back', !!p.terrainStamp?.impact?.enabled, 'not enabled');
+  near('WF 39: damage', p.terrainStamp?.impact?.damage, 25);
+  near('WF 39: search radius', p.terrainStamp?.impact?.radius, 18);
+  near('WF 39: knockback', p.terrainStamp?.impact?.impulse, 0.25);
+  near('WF 39: hit kind', p.terrainStamp?.impact?.kind, 'fire');
+  near('WF 39: spare the shooter', p.terrainStamp?.impact?.spareShooter, false);
+  near('WF 39: stamp still on', p.terrainStamp?.enabled, true);
+  check(
+    'WF 39: the pierce guard is not left behind as custom Lua',
+    !p.enableCustomLua && !(p.customLuaSnippet ?? '').includes('stamp_hit'),
+    p.customLuaSnippet ?? '(empty)',
+  );
+  const lua = generateLuaCode(fullProject(p, 'WF 39 Stamp Pierce'));
+  check(
+    'WF 39: pierce guard emitted',
+    lua.includes('if stamp_hit(ev) then return end'),
+    'guard missing',
+  );
+  check(
+    'WF 39: the record blast is zeroed',
+    /explosion = \{\s*power = 0,\s*push_pct = 0,\s*\}/.test(lua),
+    'power not zeroed',
+  );
+  check(
+    'WF 39: hit table carries the panel values',
+    lua.includes('local STAMP_HIT = { damage = 25, radius = 18, impulse = 0.25, kind = "fire", spare_shooter = false }'),
+    'STAMP_HIT rows differ',
+  );
+  check(
+    'WF 39: stamp still comes last in the one hook',
+    lua.indexOf('if stamp_hit(ev) then return end') < lua.indexOf('wa.land.stamp{') &&
+      lua.split('on_explode = ').length === 2,
+    'order or hook count changed',
   );
 }
 

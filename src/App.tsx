@@ -16,6 +16,7 @@ import { DEFAULT_EXPLOSION_EFFECT } from './data/explosionPresets';
 import { stockDonor, stockDonorBaseline } from './data/stockDonors';
 import { DEFAULT_BODY, DEFAULT_DIG, DEFAULT_FIRE, DEFAULT_ROAM } from './data/defaults';
 import { DEFAULT_CUSTOM_SOUNDS } from './data/soundPresets';
+import { DEFAULT_TERRAIN_STAMP } from './data/terrainStamp';
 import { DEFAULT_ROLE_ART } from './data/spriteBuilder';
 import { bitActionOf, visibleRecordTabs, type RecordTabId } from './data/recordTabs';
 import { CheckCircle2 } from 'lucide-react';
@@ -92,6 +93,7 @@ const INITIAL_PROJECT: WeaponProject = {
     target: 'main',
   },
   explosionEffect: { ...DEFAULT_EXPLOSION_EFFECT },
+  terrainStamp: { ...DEFAULT_TERRAIN_STAMP },
   customSounds: { ...DEFAULT_CUSTOM_SOUNDS },
   extraDependencies: [],
   hold: {

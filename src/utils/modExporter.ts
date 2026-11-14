@@ -16,6 +16,7 @@ import {
   wfwsRoleFlags,
   PACK_ART_SLOTS,
   sanitizeModFolder,
+  terrainStampPath,
   wepBundlePath,
 } from './luaGenerator';
 import {
@@ -151,6 +152,14 @@ export async function exportModZip(project: WeaponProject): Promise<Blob> {
     if (asset?.file && path) {
       zip.file(`${modFolder}/${path}`, asset.file);
     }
+  }
+
+  // The terrain stamp's baked 32-frame strip. `terrainStampPath` returns null
+  // unless the card is on with a sheet, so the declaration and the file are
+  // written from the same test and a declared path always exists.
+  const stampPath = terrainStampPath(project);
+  if (stampPath && project.terrainStamp?.sheet?.file) {
+    zip.file(`${modFolder}/${stampPath}`, project.terrainStamp.sheet.file);
   }
 
   // Custom WAVs the claim plays by path. The Lua's `sounds` list and the file

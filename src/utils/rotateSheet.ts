@@ -20,6 +20,23 @@ export interface RotationSheet {
   file: File;
   previewUrl: string;
   frames: number;
+  /** Side of one square cell, in pixels, after any `maxCell` downscale. */
+  cell: number;
+}
+
+interface RotationSheetOptions {
+  /**
+   * Largest allowed cell, in pixels. The strip is scaled down to fit instead of
+   * being rejected: the engine only keeps stampable frames up to 256 px
+   * (`terrain_frames`), and a padded diagonal is what usually overruns it.
+   */
+  maxCell?: number;
+  /**
+   * Canvas smoothing. On by default (`true`) for drawn art; a terrain stamp
+   * wants `false`: a half-transparent edge pixel writes no terrain when the
+   * frame is burned in, so a blurred silhouette loses its thin tips.
+   */
+  smooth?: boolean;
 }
 
 function loadImage(url: string): Promise<HTMLImageElement> {
@@ -45,7 +62,8 @@ function canvasToFile(canvas: HTMLCanvasElement, name: string): Promise<File> {
 
 export async function buildRotationSheet(
   source: File,
-  frames: number
+  frames: number,
+  options: RotationSheetOptions = {}
 ): Promise<RotationSheet> {
   const count = Math.max(2, Math.round(frames));
   const sourceUrl = URL.createObjectURL(source);
@@ -56,7 +74,14 @@ export async function buildRotationSheet(
     if (!width || !height) throw new Error('That image has no pixels.');
 
     // Worst-case bounding box of the rotating frame: the diagonal.
-    const cell = Math.ceil(Math.hypot(width, height));
+    const diagonal = Math.ceil(Math.hypot(width, height));
+    // A cell bigger than the target is scaled down rather than refused: the
+    // stamp sheet keeps every frame the same size, so one scale factor covers
+    // the whole strip. `floor` keeps the padded cell inside the limit.
+    const fit = options.maxCell && diagonal > options.maxCell ? options.maxCell / diagonal : 1;
+    const cell = Math.max(1, Math.floor(diagonal * fit));
+    const drawWidth = width * fit;
+    const drawHeight = height * fit;
     const canvas = document.createElement('canvas');
     canvas.width = cell;
     canvas.height = cell * count;
@@ -64,21 +89,23 @@ export async function buildRotationSheet(
     if (!ctx) throw new Error('This browser cannot build the sheet (no 2D canvas).');
 
     // Smoothing keeps thin diagonal edges of pixel art readable after WA's
-    // palette mapping; the sheet is quantized at load either way.
-    ctx.imageSmoothingEnabled = true;
+    // palette mapping; the sheet is quantized at load either way. A terrain
+    // stamp turns it off: a soft edge writes half alpha, and half alpha is
+    // below the write threshold.
+    ctx.imageSmoothingEnabled = options.smooth !== false;
     for (let i = 0; i < count; i += 1) {
       ctx.save();
       ctx.translate(cell / 2, i * cell + cell / 2);
       // Screen space (y down): positive angles turn clockwise, so an art frame
       // pointing up walks up, right, down, left as WA's airmisl order does.
       ctx.rotate((i * Math.PI * 2) / count);
-      ctx.drawImage(image, -width / 2, -height / 2);
+      ctx.drawImage(image, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
       ctx.restore();
     }
 
     const stem = (source.name || 'sheet').replace(/\.[^.]+$/, '');
     const file = await canvasToFile(canvas, `${stem}_rot${count}.png`);
-    return { file, previewUrl: URL.createObjectURL(file), frames: count };
+    return { file, previewUrl: URL.createObjectURL(file), frames: count, cell };
   } finally {
     URL.revokeObjectURL(sourceUrl);
   }

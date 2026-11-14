@@ -29,6 +29,7 @@ import type {
   PackArtSlot,
   RibbonTrailConfig,
   RoamSheetAsset,
+  TerrainStampImpactConfig,
   WeaponProject,
 } from '../../types/weapon';
 import {
@@ -40,6 +41,12 @@ import {
 import { DEFAULT_EXPLOSION_EFFECT, EXPLOSION_PRESETS } from '../../data/explosionPresets';
 import { DEFAULT_FIRE_SEQUENCE } from '../../data/fireSequence';
 import { DEFAULT_CUSTOM_SOUNDS } from '../../data/soundPresets';
+import {
+  DEFAULT_TERRAIN_STAMP,
+  STAMP_FRAMES,
+  STAMP_HIT_KINDS,
+  stampAngleForFrame,
+} from '../../data/terrainStamp';
 import {
   firstTable,
   isTable,
@@ -344,8 +351,14 @@ function readBurstRows(table: LuaTable, config: ExplosionEffectConfig): Explosio
   return { ...next, preset: presetFor(next) };
 }
 
-/** The custom part of `on_explode`, with the features' own calls removed. */
-function customExplodeBody(moduleText: string): string {
+/**
+ * The custom part of `on_explode`, with the features' own calls removed.
+ *
+ * `stripStamp` is set only when `wa.land.stamp` was recognised as this editor's
+ * own emission: a hand-written stamp call is the author's custom Lua, so it is
+ * kept (and reported) instead of being silently deleted.
+ */
+function customExplodeBody(moduleText: string, stripStamp = false): string {
   const tableForm = /on_explode\s*=\s*\{\s*on\s*=\s*function\s*\(\s*(\w*)\s*\)/.exec(
     moduleText,
   );
@@ -384,7 +397,26 @@ function customExplodeBody(moduleText: string): string {
     const trimmed = line.trim();
     // The generated burst/blast blocks and the custom-WAV play line are the
     // features' own emission; they are rebuilt from the panels on export.
-    if (trimmed.startsWith('fx.burst{') || trimmed.startsWith('blast.explode{')) {
+    // The pierce guard is one line (`if stamp_hit(ev) then return end`).
+    if (stripStamp && /^if stamp_hit\(ev\) then return end/.test(trimmed)) continue;
+    // The worm guard wraps our stamp (`if stamp_clear(ev.x, ev.y) then … end`),
+    // so the whole block goes: skipping only the call would leave a dangling
+    // `then`/`end` in the author's custom body.
+    if (stripStamp && trimmed.startsWith('if stamp_clear(')) {
+      let depth = 0;
+      for (; i < lines.length; i += 1) {
+        for (const token of lines[i].match(/\b(if|function|for|while|end)\b/g) ?? []) {
+          depth += token === 'end' ? -1 : 1;
+        }
+        if (depth <= 0) break;
+      }
+      continue;
+    }
+    const ownedCall =
+      trimmed.startsWith('fx.burst{') ||
+      trimmed.startsWith('blast.explode{') ||
+      (stripStamp && trimmed.startsWith('wa.land.stamp{'));
+    if (ownedCall) {
       let braceDepth = 0;
       for (; i < lines.length; i += 1) {
         for (const ch of lines[i]) {
@@ -879,8 +911,95 @@ export async function readBundleFeatures(args: {
     }
   }
 
+  // ---- terrain stamp ------------------------------------------------------
+  // `wa.land.stamp{ sprite, frame, x, y, buried }` inside `on_explode`. Only the
+  // shape this editor emits is read: a bundle path, `x`/`y` from the event, and
+  // a frame that is either a number or the generated `stamp_orientation(...)`.
+  // Anything else stays custom Lua.
+  const stampCall = readCallTable(moduleText, 'wa.land.stamp');
+  const stampSprite = str(stampCall?.table.sprite);
+  const generatedStamp =
+    !!stampCall &&
+    !!stampSprite &&
+    stampSprite.includes('/') &&
+    /\bx\s*=\s*ev\.x\b/.test(stampCall.text) &&
+    (typeof stampCall.table.frame === 'number' ||
+      /frame\s*=\s*stamp_orientation\s*\(/.test(stampCall.text));
+  if (generatedStamp && stampCall && stampSprite) {
+    const t = stampCall.table;
+    const onImpact = /frame\s*=\s*stamp_orientation\s*\(/.test(stampCall.text);
+    const buried = isTable(t.buried) ? t.buried : undefined;
+    // The worm guard is emitted as `local STAMP_CLEAR = <px>`; no guard means
+    // the stamp runs regardless, which is 0. `exec` hands back a string.
+    const clearMatch = /local STAMP_CLEAR = (\d+)/.exec(moduleText);
+    const wormClearance = clearMatch ? Number(clearMatch[1]) : 0;
+    const asset = await readAsset(files, bundleDir, stampSprite);
+    const decl = spriteDecl(weapon, stampSprite);
+    // The strip is 32 cells whatever its pixel size; the manifest carries the
+    // frame count, and the fallback is the height/width ratio of the file.
+    const frames =
+      numFrom(decl?.frames) ??
+      (asset?.width && asset.height
+        ? Math.max(1, Math.round(asset.height / asset.width))
+        : STAMP_FRAMES);
+    project.terrainStamp = {
+      ...DEFAULT_TERRAIN_STAMP,
+      enabled: true,
+      onImpact,
+      // A fixed frame is read back as the angle it points, so the panel shows
+      // degrees (frame × 11.25) rather than a raw index.
+      fixedAngle: stampAngleForFrame(num(t.frame) ?? 0),
+      soften: num(buried?.soften) ?? DEFAULT_TERRAIN_STAMP.soften,
+      blend: str(buried?.blend) === 'dither' ? 'dither' : 'mix',
+      trueColour: t.true_colour === true || isTable(t.true_colour),
+      wormClearance,
+      sheet: asset
+        ? {
+            file: asset.file,
+            fileName: stampSprite.split('/').pop(),
+            previewUrl: asset.preview,
+            frames,
+            fps: numFrom(decl?.fps) ?? 15,
+            play: 'loop',
+            rotationFrames: frames,
+          }
+        : undefined,
+    };
+    notes.push('terrain stamp');
+  }
+
+  // ---- impact damage (PX's javelin) ---------------------------------------
+  // `local STAMP_HIT = { … }` plus `if stamp_hit(ev) then return end`. A bundle
+  // that only pierces has the table and no `wa.land.stamp` call at all, so the
+  // two features are read apart: the stamp's `enabled` stays tied to a real
+  // stamp call, and the impact table fills in whether or not there is one.
+  const hitTable = isTable(scan.assignments['STAMP_HIT'])
+    ? scan.assignments['STAMP_HIT']
+    : undefined;
+  const pierces = !!hitTable && moduleText.includes('stamp_hit(ev)');
+  if (pierces) {
+    const base = project.terrainStamp ?? DEFAULT_TERRAIN_STAMP;
+    const kind = str(hitTable!.kind);
+    project.terrainStamp = {
+      ...base,
+      impact: {
+        enabled: true,
+        damage: num(hitTable!.damage) ?? DEFAULT_TERRAIN_STAMP.impact.damage,
+        radius: num(hitTable!.radius) ?? DEFAULT_TERRAIN_STAMP.impact.radius,
+        impulse: num(hitTable!.impulse) ?? DEFAULT_TERRAIN_STAMP.impact.impulse,
+        // An unknown name would be rejected by `object:hit` (`hit_kind_arg`), so
+        // a bundle naming one keeps the javelin's bullet instead of a broken hit.
+        kind: STAMP_HIT_KINDS.some((option) => option.id === kind)
+          ? (kind as TerrainStampImpactConfig['kind'])
+          : 'bullet',
+        spareShooter: bool(hitTable!.spare_shooter) ?? true,
+      },
+    };
+    notes.push('impact damage');
+  }
+
   // ---- custom on_explode body --------------------------------------------
-  const custom = customExplodeBody(moduleText);
+  const custom = customExplodeBody(moduleText, !!generatedStamp || pierces);
   if (custom) {
     project.enableCustomLua = true;
     project.customLuaSnippet = `on_explode = { on = function(ev)\n${custom

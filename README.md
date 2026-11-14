@@ -15,7 +15,7 @@ Maintenance and hand-off notes live in [AGENTS.md](AGENTS.md).
   - Automatically declares `dependencies = ["wf.sdk"]` for holds and `["wfws.sdk"]` for the flight sprite builder.
 - **Read installed mods**:
   - Opens a `Mods/` folder or `.zip`, lists every bundle and weapon, and reads records kept in Lua (including `copy_from`, bundled `.wep` files and the native record groups).
-  - Imports the WFWS features this editor writes: hold art, sprite-builder roles and `size`/`angle`, ribbon trail, explosion burst, sequential fire, custom WAVs and pack sheets — with the bundle's own PNG/GIF/WAV files attached for re-export.
+  - Imports the WFWS features this editor writes: hold art, sprite-builder roles and `size`/`angle`, ribbon trail, explosion burst, sequential fire, terrain stamp, custom WAVs and pack sheets — with the bundle's own PNG/GIF/WAV files attached for re-export.
 - **Project X `.wep` Binary Importer**:
   - Parses binary header `[0x06, 0xDD, 0xBB, 0x5A]`, Latin-1 name strings at `0x1E4`, and 0x1D0 bytes weapon record slabs.
   - Computes minimal diffs against stock templates (`stock.<slot>`) to prevent boilerplate noise.
@@ -36,6 +36,7 @@ Maintenance and hand-off notes live in [AGENTS.md](AGENTS.md).
   - Rotation sheets: bake a single projectile frame into a full 360° direction strip (16/32/64 frames, frame 0 pointing up and turning clockwise, WA's airmisl order) with the record's native animation set to follow the flight direction.
   - Effects-SDK ribbon trail for the main projectile: colour, core/glow width, length, sample rate and fade, emitted as `wf-lib/effects/trail` (`dependencies = ["effects.sdk"]`), with the choice of trailing only the main round or a whole cluster burst.
   - Effects-SDK explosion burst: Project X's electric-style ring + squashed lens (`wf-lib/effects/px_effects`), either drawn on top of WA's blast or replacing it with the SDK's damage/push/crater/sound (`custom_explosion`), with a 50 Hz preview.
+  - **Terrain Stamp** (`wa.land.stamp`, no library needed): an up-pointing upload is baked into 32 clockwise cells and burned into the land where the round bursts — at the impact heading or a fixed angle, with `buried.soften`/`blend` and optional true colours, and no stamp where a live worm stands (it would be sealed into the land). **Damage On Impact** turns it into PX's javelin: the round damages every worm, mine, crate and oil drum at the impact point (its own kind, knockback and search radius), sticks in the land only when it hit nothing, and zeroes the record's own blast so nothing explodes twice. A built-in verb, so it adds no dependency; a native blast's crater erases it, so the card warns until the custom blast replacement is on.
   - Bundle Code page lists the `mod.toml` dependencies the features add automatically and lets you add extra SDK/mod ids (`effects.sdk`, `wf.sdk`, or your own).
 - **Desktop Application (Tauri v2)**:
   - Native Windows desktop application with system menus, file dialogs, and native performance.

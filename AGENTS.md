@@ -44,6 +44,7 @@ different project. Do not modify it from this repository.
 │  │  ├─ FlightRoleEditor.tsx  # legacy role cards (superseded by HoldPreview hotbar)
 │  │  ├─ PackSpriteUpload.tsx  # upload for trail / cluster-bit pack art
 │  │  ├─ EffectsCards.tsx      # ribbon trail + explosion burst cards
+│  │  ├─ TerrainStampCard.tsx  # wa.land.stamp card (bake, angle, buried, strip preview)
 │  │  ├─ ExplosionPreview.tsx  # 50 Hz px_effects burst preview (canvas)
 │  │  ├─ BundleDependencies.tsx # extra mod.toml dependencies panel
 │  │  ├─ WepImportModal.tsx    # .wep drop zone and decode summary
@@ -133,8 +134,9 @@ Node 26.x, Vite 8.3.x, React 19.3.x, Tailwind 4.3.x, TypeScript 7.0.x.
 - The **Effects & Libraries** workspace (`EffectsWorkspace.tsx`) is where every
   claim hook and library bundle lives, not a record section: the ribbon trail
   (with its 50 Hz `RibbonTrailPreview`), the explosion burst with its
-  `ExplosionPreview` canvas, the custom WAVs and the sequential-fire card, as one
-  workbench tab bar filtered by weapon family. It shows an empty state for
+  `ExplosionPreview` canvas, the custom WAVs, the sequential-fire card and the
+  **Terrain Stamp** card (`wa.land.stamp`, no library bundle), as one workbench
+  tab bar filtered by weapon family. It shows an empty state for
   families with no claim-owned round or blast (guns, arrows, sprays, specials,
   air strikes) and a "More libraries" note for anything not modelled yet. A new
   library gets a tab here instead of a record tab.
@@ -502,6 +504,57 @@ Reference implementation: `WormForgeNew/crates/weapons/src/record.rs`,
   brightness into a bar at every joint). It is 1:1 by default — the game draws
   in pixels — with a `Fit` toggle, and the electric preset's radius follows
   PX's `(damage + 2) * 2`.
+- **Terrain stamp (`project.terrainStamp`).** `wa.land.stamp` burns a picture
+  into the terrain where the round bursts — the ninja star / javelin / girder
+  launcher effect. It is a built-in verb, so it adds **no dependency**. The card
+  bakes the upload into **32 cells, frame 0 up and turning clockwise**
+  (`buildRotationSheet` with `maxCell: 256` and smoothing off), because the frame
+  is an index and the engine only keeps stampable frames of 1..256 px
+  (`sprite.rs::terrain_frames` drops a bigger one). Emission: the strip in the
+  claim's `sprites`, a module-level `stamp_orientation(vx, vy)` (PX's 32-octant
+  arithmetic, only in impact mode), and one `wa.land.stamp{ sprite, frame, x, y,
+  buried }` **appended last** to the merged `on_explode` — a custom `on_explode`
+  that `return`s early (the ninja star skips worms) then skips the stamp too. A
+  fixed angle is a literal frame (`90° → 8`). `frame` reads `ev.vx`/`ev.vy`, the
+  speed the round bursts with (`weapon_emit` passes `ENT_SPEED_X/Y`); they are
+  **nil for a mine**, hence `or 0`, which keeps a real zero because 0 is truthy
+  in Lua. `mod.toml` declares the strip with `frames = 32` and the exporter
+  writes it; both come from `terrainStampPath()` so a declaration always has a
+  file. **Order matters:** WA's own blast runs *after* the callback, so its
+  crater erases the stamp; only the custom explosion in `blast` mode carves the
+  crater inside the callback first. The card warns until that mode is on
+  (warn + shortcut, never silently switch: that would change damage/push/hole).
+  **Never stamp over a worm.** WA's stamp rewrites the land, so a worm inside the
+  picture is sealed in and cannot escape. With `wormClearance` > 0 (default 12 px)
+  the generator emits `local STAMP_CLEAR = <px>` plus a `stamp_clear(x, y)` walk
+  over `wa.worms.all()` (a square half-extent, the shape PX's ninja star uses)
+  and wraps the call: `if stamp_clear(ev.x, ev.y) then wa.land.stamp{ … } end`.
+  A worm with no health left is not in that list, so a corpse never blocks it;
+  `0` emits the plain call. The importer reads the number back from
+  `STAMP_CLEAR` and **strips the whole guarded block** — skipping only the call
+  would leave a dangling `then`/`end` in the custom `on_explode`.
+  **Impact damage (`terrainStamp.impact`, PX's javelin)** makes the round pierce
+  instead: `local STAMP_HIT = { damage, radius, impulse, kind, spare_shooter }`
+  plus `stamp_hit(ev)`, which walks `wa.world.electrical_nearby(x, y, radius+16,
+  false)` and hits **everything** damageable whose centre is inside the square —
+  worms (`o:hurt{ amount, vx, vy, kind }`) and mines/crates/oil drums
+  (`o:hit(damage, vx·k, vy·k, kind)`). Graves are excluded by the `false`, and
+  `spare_shooter` keeps the firing worm out of it (the javelin does). The
+  callback gets one line, `if stamp_hit(ev) then return end`, before the stamp,
+  so a round that hit something does not stick. **It zeroes the record's own
+  blast** (`silencesBlast` now covers it), because a surviving `explosion.power`
+  would blast once more on top of the pierce — and its crater would erase the
+  stamp. It does **not** need a stamp sheet, so a pure pierce weapon works with
+  the stamp's Enable off. The only valid `kind`s are the engine's
+  (`hit_kind.rs::NATIVE` + scripted `taze`); `blast` is not one, and an unknown
+  name fails the bundle at load. `impact` is imported from `STAMP_HIT` even when
+  there is no stamp call, and the guard line (with its trailing comment on the
+  same line, so nothing is left behind in the custom body) is stripped from the
+  custom `on_explode`.
+  Only a `power` record is offered: a mine has no impact heading (out of scope
+  for now) and a strike's munitions never reach the hook. A girder launcher is a
+  missile that stamps instead of blasting, so the gate is the fire type, not a
+  `utility` record group.
 - **Explosion burst (`project.explosionEffect`).** `px_effects`' electric ring +
   squashed lens, drawn from a claim `on_explode` (the engine emits it before
   WA's own blast). `effect` mode keeps the native blast; `blast` mode zeroes
@@ -679,7 +732,11 @@ bundle, its weapon components and the record tables each one keeps in Lua.
   every burst field, preset matched back), `seq.fire_seq_mis` /
   `fire_sequential_actor` (including the expression fields `vx`/`x`/`y`), custom
   WAVs and their priorities/timing, the claim `sprites`/`cluster`/`sprite`/
-  `sheep_sprites` sheets, the custom part of `on_explode`, and any manifest
+  `sheep_sprites` sheets, `wa.land.stamp` (mode from the `frame` expression,
+  angle back as degrees, `buried.soften`/`blend`, `true_colour`, the worm
+  clearance from `STAMP_CLEAR`, the impact table from `STAMP_HIT`, and the strip
+  attached with its declared `frames`), the custom part of `on_explode`, and any
+  manifest
   dependency that is not one of the four automatic ones. The sheets and WAVs are
   read from the bundle and attached as `File`s, so a re-export writes the same
   art instead of the defaults. `unmodelledClaimKeys()` reports function-valued
@@ -831,6 +888,11 @@ edits the suffix only, so no id can collide with a mod the reader shows.
   weapon id on every export (`packArtPath`), so renaming cannot leave a stale
   folder. `packArtPath` returns null for `cluster_homing_sprite` on a strike
   (see `packArtSlotApplies`).
+- The terrain stamp strip (`project.terrainStamp`) is written as
+  `sprites/<mod>/stamp.png` and declared with `frames = 32` — the frame count is
+  what makes the engine slice the 32 direction cells, and nothing animates it, so
+  `fps`/`play` are not needed. `mod.toml` and the ZIP are written from the same
+  `terrainStampPath()` test, so a declared path always exists.
 - Uploaded WAVs (`project.customSounds`) are written as
   `sounds/<mod>/explosion.wav`, `interval.wav` and `shot.wav` whenever the role
   is enabled and has a file. The claim's `sounds` list, the `on_explode` play
@@ -866,14 +928,17 @@ Test pack for engine behaviour (dev only, output is git-ignored):
 bun run tools/gen_test_pack.ts   # -> test_pack/wftest_pack/ + test_pack/README.md
 ```
 
-It writes one bundle with 35 components, one profile ("WF Test Pack") and art
+It writes one bundle with 39 components, one profile ("WF Test Pack") and art
 derived from `spec/` sheets, one per role (the sprite builder, cluster bits, the
 homing window, the homing bit, the roaming animal and native trails). Each
 test carries its intent, expected result and failure symptom in
 `test_pack/README.md`; the profile places them on distinct stock slots with
 infinite ammo. Tests 21/22 cover the explosion burst in `blast` mode (a
 bazooka) and `effect` overlay mode (a mine); 34/35 cover the roam tilt and the
-roaming role's own sheet.
+roaming role's own sheet; 37/38 cover the terrain stamp in impact mode (custom
+blast, so the stamp survives the crater) and fixed angle / dither / true colours;
+39 covers the javelin-shaped pierce (`STAMP_HIT`, blast zeroed). The stamp art is
+a built-up arrow pointing up, so a wrong frame index is obvious in game.
 
 Stock record values (PX's default scheme, from `WormForgeNew`):
 
@@ -903,10 +968,13 @@ bun run tools/gen_test_pack.ts
 bun run tools/check_mod_import.ts
 ```
 
-It imports all 35 test weapons and asserts the features come back with their
+It imports all 39 test weapons and asserts the features come back with their
 files: held art and its scale, `sb.flight` roles and `size`/`angle`, the ribbon
 trail and its target, both explosion modes with every burst field and the preset,
-`fire_seq` counts/speed/offsets, custom WAVs, pack sheets and roaming strips.
+`fire_seq` counts/speed/offsets, custom WAVs, pack sheets, roaming strips and the
+terrain stamp's strip, mode, angle, `soften`/`blend`/`true_colour` (with the
+fixed angle read back as degrees), and the impact table's damage/radius/impulse/
+kind/`spare_shooter` with the record's blast zeroed.
 It also regenerates each weapon and checks the original feature calls survive.
 
 Compiler check (lives in the code-editor repo):
@@ -1095,15 +1163,25 @@ that `vite preview` at `/` hides).
     carries pre-resolved `out`/`side`/`scale`, which drifts from the gun the
     moment the hold's radius, rotation or scale changes (and the sheet is loaded
     as a single frame). Use the FAMAS form.
-30. **Use `bun run` (not `npx tsx`) for repo check scripts.** Scripts that
+30. **A stamp call is deleted only when it is ours.** `customExplodeBody` strips
+    the generated `wa.land.stamp{ … }` block only after `readCallTable` matched
+    the shape this editor emits (a bundle path, `x = ev.x`, and a numeric or
+    `stamp_orientation(...)` frame). A hand-written stamp is the author's custom
+    Lua: keep it in the body and let `unmodelledClaimKeys`-style reporting say so
+    rather than silently deleting it on re-export.
+31. **`stampAngleForFrame` returns degrees, not a frame.** The first version
+    piped the frame back through `stampFrameForAngle`, so importing frame 8 (90°)
+    produced 8 → re-export wrote frame 1. Angle and frame are two directions of
+    the same 11.25° step; convert once.
+32. **Zero-`vx` digging still needs to spin.** `M.spin_turn` multiplies by
+    `sign(vx)`, so a drill or saw tunneling straight up/down (`vx == 0, vy != 0`)
+    would freeze its spin unless `wfws_sprite_builder.lua` and the 50 Hz preview
+    substitute a tiny non-zero `eff_vx` while `digging` is active.
+33. **Use `bun run` (not `npx tsx`) for repo check scripts.** Scripts that
     import `src/utils/` hit Vite's `import.meta.env`, which `tsx` does not
     populate cleanly; `bun run tools/check_copyfrom.ts` works directly. Also
     `vite` imports assets from `spec/` cleanly even with `base: './'`, whereas
     bare `/assets/...` strings must go through `assetUrl()`.
-31. **Zero-`vx` digging still needs to spin.** `M.spin_turn` multiplies by
-    `sign(vx)`, so a drill or saw tunneling straight up/down (`vx == 0, vy != 0`)
-    would freeze its spin unless `wfws_sprite_builder.lua` and the 50 Hz preview
-    substitute a tiny non-zero `eff_vx` while `digging` is active.
 
 ---
 
@@ -1157,6 +1235,18 @@ Done and validated:
   preview at 50 Hz, coloured accent families, and no record tree in the sidebar.
   The four behaviour fixes from before the redesign were re-applied on top
   (`NumberInput` draft boxes, the id draft, `hold`/firing tables, burst depth).
+- **Terrain Stamp** (`wa.land.stamp`, `TerrainStampCard.tsx`): bake an up-pointing
+  upload into 32 clockwise cells (capped at 256 px, no smoothing), stamp at the
+  impact heading or a fixed angle, `buried.soften`/`blend`/`true_colour`, worm
+  clearance so nothing is sealed into the land, claim sheet + `frames = 32` + ZIP
+  file, bundle import, and the WF 37/38 tests.
+- **Damage On Impact** (PX's javelin, `terrainStamp.impact`): the round pierces
+  every worm/mine/crate/oil drum inside its search square, throws it along the
+  flight, sticks in the land only when it hit nothing, and zeroes the record's
+  own blast. Works with or without a stamp sheet; import reads `STAMP_HIT`, and
+  WF 39 covers it.
+- **Electrical blast damage** (`kind = "taze"`) is now selectable in the burst
+  card's custom hit values, not just emitted from a preset.
 - GitHub Pages workflow, `.gitignore`, Pages-subpath smoke test.
 
 Likely next steps:
