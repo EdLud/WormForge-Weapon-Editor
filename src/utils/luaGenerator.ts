@@ -711,12 +711,16 @@ export function generateLuaCode(project: WeaponProject): string {
     ? Math.max(0, Math.min(64, Math.round(terrainStamp?.wormClearance ?? 0)))
     : 0;
   // Impact damage (PX's javelin): the round pierces what it hits instead of
-  // exploding. It does not need a stamp sheet, so a pure "pierce" weapon works
-  // too, and it zeroes the record's blast just as the burst replacement does.
-  // `stamp_hit` walks `wa.world.electrical_nearby`, which is only valid in a
-  // simulation callback: `on_explode` is one.
+  // exploding. It rides the stamp card's own Enable Stamp checkbox, because the
+  // pierce is part of the same `on_explode` claim: with the card off, a ticked
+  // "Pierce Targets" is a stored preference and nothing more, so turning it on
+  // cannot silently take a weapon's blast away. It does not need a stamp sheet
+  // (the picture and the damage are separate), so a card with no sprite still
+  // pierces. `stamp_hit` walks `wa.world.electrical_nearby`, which is only valid
+  // in a simulation callback: `on_explode` is one.
   const stampImpact = terrainStamp?.impact;
-  const usesImpactDamage = !!stampImpact?.enabled && supportsTerrainStamp(project);
+  const usesImpactDamage =
+    !!stampImpact?.enabled && !!terrainStamp?.enabled && supportsTerrainStamp(project);
   // Replacing WA's blast needs the claim to own the blast, which a missile and
   // a mine do; the custom explosion supplies damage, push, crater and sound.
   // Impact damage silences it for the same reason: a power left in the record
@@ -3252,8 +3256,11 @@ export function generateModToml(project: WeaponProject): string {
   const usesElectricBlast =
     usesExplosionEffect && project.explosionEffect!.damageType === 'electric';
   const stampImpact = project.terrainStamp?.impact;
+  // The pierce only runs with the stamp card on, so the taze module is only
+  // required then (the card is the switch for the whole impact block).
   const usesElectricImpact =
     !!stampImpact?.enabled &&
+    !!project.terrainStamp?.enabled &&
     supportsTerrainStamp(project) &&
     stampImpact.kind === 'taze';
   // `wf-lib/fire_seq` is its own library bundle (`px.fire_seq`), and so is

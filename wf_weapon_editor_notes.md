@@ -2325,10 +2325,26 @@ the same boolean with one inverted, so exactly one is always ticked and the
 alternative is visible. Clicking the ticked one does nothing (a pair, not two
 switches), and the unticked box explains itself in its own tooltip.
 
-The default stays `On Explosion` on purpose. `DEFAULT_TERRAIN_STAMP` is shared by
+`impact.enabled` now defaults to true, and the reason that is safe is a second
+change: **the pierce rides the card's own Enable Stamp checkbox**
+(`usesImpactDamage` requires `terrainStamp.enabled` too). The user found the
+first version's trap first hand: ticking Pierce Targets took a weapon's blast away
+even with the stamp card switched off, which is the kind of thing that reads as a
+bug in the weapon rather than a setting. The pierce is part of the same
+`on_explode` claim as the stamp, so gating it on the card is also the honest
+model, and a ticked-but-inert checkbox now shows an amber note instead of doing
+nothing.
+
+That gate is what makes the default harmless: `DEFAULT_TERRAIN_STAMP` is shared by
 every new project, by `App`'s starter weapon and by `gen_test_pack`'s `makeOp`, so
-flipping `impact.enabled` to true would make a fresh weapon pierce with its blast
-zeroed and turn all 43 test weapons into pierce tests. "On by default" is only
-meaningful where the value is actually read, and that is exactly where it does
-damage to the defaults.
+without it a fresh weapon, and all 43 test weapons, would pierce with their blast
+zeroed. A card with the box on and no picture is still a pure pierce: the damage
+and the `wa.land.stamp` call are separate, and the exporter only writes
+`stamp.png` when there is a baked strip. That forced one more UI change: the
+`Enable Stamp` checkbox used to be disabled until a sprite was uploaded, which
+would have made the pure pierce unreachable from the card, so it is now disabled
+only when there is neither a sheet nor a piecing intent. Its tooltip follows:
+with a sprite it writes the stamp, without one it is the switch for the damage
+alone. Bundle import sets `enabled: true` when
+it reads a `STAMP_HIT`, so a pierce-only bundle keeps its damage on re-export.
 

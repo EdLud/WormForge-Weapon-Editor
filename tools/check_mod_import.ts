@@ -727,7 +727,8 @@ return {
   const p = project('WF 43 Electric Pierce')!;
   near('WF 43: impact enabled', p.terrainStamp?.impact?.enabled, true);
   near('WF 43: hit kind', p.terrainStamp?.impact?.kind, 'taze');
-  near('WF 43: stamp itself is off', p.terrainStamp?.enabled, false);
+  near('WF 43: the card is on, the impact rides it', p.terrainStamp?.enabled, true);
+  near('WF 43: no stamp sprite', !!p.terrainStamp?.sheet, false);
   const lua = generateLuaCode(fullProject(p, 'WF 43 Electric Pierce'));
   check(
     'WF 43: zap is a local before stamp_hit',

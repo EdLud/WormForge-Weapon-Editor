@@ -999,6 +999,10 @@ export async function readBundleFeatures(args: {
     const kind = str(hitTable!.kind);
     project.terrainStamp = {
       ...base,
+      // The pierce rides the card's Enable Stamp now (`usesImpactDamage`), so a
+      // bundle that only pierces, with no picture, comes back with the card on:
+      // without it the re-export would drop the damage the bundle had.
+      enabled: true,
       impact: {
         enabled: true,
         damage: num(hitTable!.damage) ?? DEFAULT_TERRAIN_STAMP.impact.damage,

@@ -47,7 +47,9 @@ export const DEFAULT_TERRAIN_STAMP: TerrainStampConfig = {
   // PX's javelin: 20 damage inside a 20 px square, throwing the target along
   // half the spear's speed, reported as a bullet, sparing the worm holding it.
   impact: {
-    enabled: false,
+    // On by default, and inert until the card's own `enabled` (Enable Stamp) is
+    // ticked: the pierce is part of the same `on_explode` claim as the stamp.
+    enabled: true,
     damage: 20,
     radius: 20,
     impulse: 0.5,

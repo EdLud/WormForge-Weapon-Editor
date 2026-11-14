@@ -544,8 +544,14 @@ Reference implementation: `WormForgeNew/crates/weapons/src/record.rs`,
   so a round that hit something does not stick. **It zeroes the record's own
   blast** (`silencesBlast` now covers it), because a surviving `explosion.power`
   would blast once more on top of the pierce, and its crater would erase the
-  stamp. It does **not** need a stamp sheet, so a pure pierce weapon works with
-  the stamp's Enable off. The only valid `kind`s are the engine's
+  stamp. It **rides the card's `enabled` (Enable Stamp)** because the pierce is
+  part of the same `on_explode` claim: a ticked `impact.enabled` with the card
+  off is a stored preference that emits nothing, so switching the pierce on can
+  never silently take a weapon's blast away. It does **not** need a stamp sheet,
+  so the card on with no picture is a pure pierce (no `wa.land.stamp` call);
+  accordingly the `Enable Stamp` checkbox is only disabled when there is neither
+  a sheet nor a piecing intent (`disabled={!sheet && !impact.enabled}`), which is
+  what keeps that combination reachable. The only valid `kind`s are the engine's
   (`hit_kind.rs::NATIVE` + scripted `taze`); `blast` is not one, and an unknown
   name fails the bundle at load. `impact` is imported from `STAMP_HIT` even when
   there is no stamp call, and the guard line (with its trailing comment on the
@@ -555,11 +561,14 @@ Reference implementation: `WormForgeNew/crates/weapons/src/record.rs`,
   `Pierce Targets` (`impact.enabled`) and `On Explosion` (its negation, the
   record's own blast). They are the same switch, but a lone "Pierce Targets"
   checkbox left a reader unable to tell that off means "the blast does it", so
-  the alternative is always visible and one of the two is always ticked. The
-  default stays **On Explosion**: `DEFAULT_TERRAIN_STAMP.impact.enabled` is
-  false because the constant is shared by every new project *and* by
-  `gen_test_pack`'s `makeOp`, so ticking it would make every new weapon and all
-  43 test weapons pierce with their blast zeroed.
+  the alternative is always visible and one of the two is always ticked.
+  `impact.enabled` defaults **true**, which is safe only because of the gate
+  above: the constant is shared by every new project and by `gen_test_pack`'s
+  `makeOp`, so without `terrainStamp.enabled` in `usesImpactDamage` a fresh
+  weapon (and all 43 test weapons) would pierce with its blast zeroed. With the
+  gate, the default is a visible preference and the enablement stays explicit.
+  The card says so while it is inert: a ticked Pierce Targets with Enable Stamp
+  off shows an amber note rather than doing nothing quietly.
   **`kind = "taze"` tazes here too:** the pierce's hit is armed with
   `zap.set_message_electric(20, 0, -4, true, 2)` (the same `px.electric` module
   the burst uses), so the worm it stabs is held in the sparking pose and then

@@ -45,8 +45,12 @@ export function BundleDependencies({ project, onChange }: BundleDependenciesProp
   if (ribbonTrail) auto.push({ id: 'effects.sdk', reason: 'ribbon trail' });
   if (explosion) auto.push({ id: 'effects.sdk', reason: 'explosion burst' });
   // The pierce arms its hit the same way, with or without a stamp or a burst.
+  // The pierce only runs with the stamp card on, so listing the library for an
+  // inert checkbox would be a lie.
   const electricPierce =
-    !!project.terrainStamp?.impact?.enabled && project.terrainStamp.impact.kind === 'taze';
+    !!project.terrainStamp?.enabled &&
+    !!project.terrainStamp?.impact?.enabled &&
+    project.terrainStamp.impact.kind === 'taze';
   if (electricBlast) auto.push({ id: 'px.electric', reason: 'electric blast taze' });
   if (electricPierce) auto.push({ id: 'px.electric', reason: 'electrical pierce taze' });
 

@@ -1500,11 +1500,12 @@ const TESTS: TestCase[] = [
       name: 'WF 43 Electric Pierce',
       slot: 'bazooka',
       body: { sprite: 'bazooka', damage: 35 },
-      // PX's javelin with an electric tip. No stamp sheet on purpose: the pierce
-      // is the whole point, and it must work with the stamp switched off. The
-      // taze is `px.electric`'s arm around the pierce's one `o:hurt`.
+      // PX's javelin with an electric tip. The card is on because the pierce
+      // rides its checkbox, but there is no sheet: the picture and the damage
+      // are separate, so this is a pure pierce with no stamp call. The taze is
+      // `px.electric`'s arm around the pierce's one `o:hurt`.
       terrainStamp: {
-        enabled: false,
+        enabled: true,
         onImpact: false,
         soften: 1,
         blend: 'dither',

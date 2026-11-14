@@ -212,26 +212,34 @@ export const TerrainStampCard: React.FC<Props> = ({ project, onChange }) => {
         right={
           <label
             className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-1.5 ${
-              sheet
+              stamp.enabled
                 ? 'border-sky-200 bg-sky-50/80 dark:border-sky-800/70 dark:bg-sky-950/30'
                 : 'border-stone-200 bg-stone-50 dark:border-stone-700 dark:bg-stone-900'
             }`}
             title={
-              sheet
-                ? 'Write the stamp into on_explode.'
-                : 'Upload a sprite first: nothing is emitted without one.'
+              stamp.enabled
+                ? sheet
+                  ? 'Write the stamp into on_explode.'
+                  : 'On without a picture: the pierce runs, nothing is stamped.'
+                : sheet
+                  ? 'Turn the card on: the stamp and the pierce both live in on_explode.'
+                  : 'Upload a sprite to stamp, or tick Pierce Targets below to use the card for damage alone.'
             }
           >
             <input
               type="checkbox"
               checked={stamp.enabled}
-              disabled={!sheet}
+              // The card is the switch for the pierce too, so it can be turned on
+              // with no picture when that is all the author wants from it.
+              disabled={!sheet && !impact.enabled}
               onChange={(e) => update({ enabled: e.target.checked })}
               className="h-3.5 w-3.5 cursor-pointer rounded text-forge-600 focus:ring-forge-500 disabled:cursor-not-allowed"
             />
             <span
               className={`text-xs font-semibold ${
-                sheet ? 'text-sky-900 dark:text-sky-200' : 'text-stone-500 dark:text-stone-400'
+                stamp.enabled
+                  ? 'text-sky-900 dark:text-sky-200'
+                  : 'text-stone-500 dark:text-stone-400'
               }`}
             >
               Enable Stamp
@@ -437,6 +445,13 @@ export const TerrainStampCard: React.FC<Props> = ({ project, onChange }) => {
                 </div>
               }
             />
+            {impact.enabled && !stamp.enabled && (
+              <p className="rounded-lg border border-amber-200 bg-amber-50/70 px-2.5 py-1.5 text-[11px] text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-100">
+                <strong>Pierce Targets is on, but nothing will pierce yet:</strong> the pierce
+                rides <strong>Enable Stamp</strong> above, so it needs that ticked too. A stamp
+                sprite is optional when the card is only used for damage.
+              </p>
+            )}
             {impact.enabled ? (
               <>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
