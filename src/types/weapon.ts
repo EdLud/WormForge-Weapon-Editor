@@ -136,7 +136,7 @@ export interface HoldConfig {
   sheet: string;
   sheetFile?: File;
   sheetPreview?: string;
-  /** Pixel size of the uploaded hold image; `px_hold_art` needs the cell. */
+  /** Pixel size of the uploaded hold image; the aim layer needs the cell. */
   sheetWidth?: number;
   sheetHeight?: number;
   /**
@@ -191,25 +191,49 @@ export interface HoldConfig {
   fireWeapRotation?: number;
   fireScale?: number;
   /**
+   * The firing sheet nudged inside its own cell, in sheet pixels, scaled with
+   * `fireScale`: the role's counterpart of `offsetX/offsetY`. The firing role
+   * is always drawn by the quad layer, so it costs nothing extra.
+   */
+  fireOffsetX?: number;
+  fireOffsetY?: number;
+  /**
    * The firing sheet's own hand, the counterpart of `handRadius` /
-   * `handRotation` / `handScale`. `px_hold_art` draws the hand on WA's firing
-   * frames from the same table, so a sheet whose grip differs from the held
-   * art can move it without moving the aiming hand. Unset means "the aim
-   * hand", which is the usual case.
+   * `handRotation` / `handScale` / `handOffsetX/Y`. The layer draws the hand on
+   * WA's firing frames from the role's own table, so a sheet whose grip differs
+   * from the held art can move it without moving the aiming hand. Unset means
+   * "the aim hand", which is the usual case.
    */
   fireHandRadius?: number;
   fireHandRotation?: number;
   fireHandScale?: number;
+  fireHandOffsetX?: number;
+  fireHandOffsetY?: number;
   /** Keep the hand on the firing frames, or hide it for this sheet only. */
   fireDrawHand?: boolean;
   /**
    * The firing sheet's own strip: how many frames it holds and the rate they
    * play at. The engine auto-slices a vertical PNG whose height divides by its
    * width, so a 36x72 upload is two 36x36 frames; the upload sets this from the
-   * image, and `px_hold_art` walks it on the 50 Hz clock.
+   * image, and the layer walks it on the 50 Hz clock.
    */
   fireFrames?: number;
   fireFps?: number;
+  /**
+   * How long the firing sheet stays up, in 50 Hz ticks, counted from the first
+   * of WA's two firing frames. WA's own firing states are two frames, so 0
+   * means "only WA's frames" (a one-frame flash); a longer window is what lets
+   * a multi-frame firing animation actually play. A gap of more than one frame
+   * between two firing states is a new shot and restarts the strip.
+   */
+  fireTicks?: number;
+  /**
+   * Hide the held weapon while the firing sheet shows. `keep_firing` otherwise
+   * fills WA's firing frames with the held art, and `keep_while_firing` makes
+   * the engine draw it there, so without this the gun sits under the firing
+   * sheet.
+   */
+  fireHideMain?: boolean;
   /**
    * The held art nudged inside its own cell, in sheet pixels, scaled with
    * `weap_scale` (the aim counterpart of `MissileSpriteConfig.offsetX/Y`).

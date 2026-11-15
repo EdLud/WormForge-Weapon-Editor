@@ -276,6 +276,13 @@ local hold = sb.hold(ctx, {
   frames = 1, anim_speed = 1, keep_while_firing = true, put_away = true,
   cell_w = 64, cell_h = 64,          -- the sheet's cell, in pixels
   offset = { x = 0, y = -4 },        -- forces the quad layer
+  keep_firing = true,                -- hold the sheet on WA's firing frames
+  fire = {                           -- the firing role, see below
+    sheet = "sprites/<mod>/fire.png", cell_w = 64, cell_h = 64, scale = 1,
+    frames = 4, anim_speed = 2, ticks = 13, hide_main = true,
+    weap_radius = 6, weap_rotation = 1, weap_radial_rotation = 1,
+    offset = { x = 0, y = -4 },      -- its own nudge, like the held art's
+  },
   silent_sheet = "sprites/<mod>/silent.png",  -- the mute, 1x1 transparent
 })
 wa.weapons.replace{ copy_from = "stock.bazooka", hold = hold }
@@ -326,6 +333,41 @@ wa.weapons.replace{ copy_from = "stock.bazooka",
 pixels and scaled by `hand_scale`, and it also forces the layer. `hand_rotation`
 needs no layer: the engine has the field (`rot + PI*hand_rotation`), so the
 editor writes `1 + degrees/180` there and only the layer's quads read it back.
+
+### Firing frames (`keep_firing`, `fire`)
+
+WA draws the held sheet on its two firing states (0x6A/0x6B) only while
+`h.firing` is set, and only the turn's own fire message sets it: a burst repeats
+the shot without one, so from the second shot the sheet blinks every other
+frame. `px_hold_art` used to patch that from outside; the layer does it now, so
+a hold needs no second library and the art follows the aim geometry exactly.
+
+- **`keep_firing = true`** keeps the held art on the firing frames: the same
+  quads as the aim pose, at full size (the engine's `grow()` only applies to the
+  aiming counter), with the strip advanced on the firing clock. It is what
+  `keep_while_firing` means once the layer draws, and the editor writes it for a
+  burst or a firearm. It forces the layer (`hold_needs_lua`).
+- **`fire = { ... }`** is a role of its own, drawn over (or instead of) the held
+  art: `sheet`, `cell_w`/`cell_h`, `scale`, `frames`, `anim_speed`, `ticks`,
+  `hide_main`, its own `weap_radius`/`weap_rotation`/`weap_radial_rotation` and
+  its own hand (`hand`, `hand_type`, `hand_radius`, `hand_rotation`,
+  `hand_scale`, `draw_hand`).
+  - `ticks` is how long the role stays up, in 50 Hz frames, counted from the
+    first firing frame of a shot. **0 means "only WA's own two frames"**, which
+    is why a firing animation used to flash for a single frame; leave the key
+    out for the same behaviour, or set it to one strip cycle
+    (`math.ceil(frames * 50 / fps)`).
+  - Every frame gap wider than one tick starts a new shot, which rewinds the
+    strip.
+  - `hide_main = true` skips the held art (and mutes the engine) while the
+    firing role shows, so the sheet replaces the gun instead of stacking on it.
+  - Frame 0 is up, as everywhere in the builder, and the art is turned by the
+    worm's live aim; `hand_size = 60` is the hand cell PX's sheets use.
+  - **`offset = { x, y }`** nudges the firing art inside its own cell, in sheet
+    pixels and scaled with the role's `scale`, the same channel the held art
+    has (`hand_offset` for the hand, scaled with `hand_scale`). The firing role
+    is always drawn as quads, so unlike the held art's offset it costs no extra
+    layer.
 
 ### The Space swing (`swing`)
 

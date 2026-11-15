@@ -253,6 +253,23 @@ async function readRoleArt(
 }
 
 /** `hold` table -> the hold panel. */
+/**
+ * The `{ x, y }` nudge channels, as `offsetX`/`offsetY` style fields: a key is
+ * only set when it is non-zero, so an untouched role keeps inheriting.
+ */
+function readOffset(
+  table: LuaValue | undefined,
+  prefix: 'fireOffset' | 'fireHandOffset',
+): Partial<HoldConfig> {
+  if (!isTable(table)) return {};
+  const out: Partial<HoldConfig> = {};
+  const x = num(table.x) ?? 0;
+  const y = num(table.y) ?? 0;
+  if (x !== 0) out[`${prefix}X`] = x;
+  if (y !== 0) out[`${prefix}Y`] = y;
+  return out;
+}
+
 function readHold(table: LuaTable, fallback: HoldConfig): HoldConfig {
   const handType =
     table.hand_type === 1
@@ -491,9 +508,9 @@ export async function readBundleFeatures(args: {
   const explosionBase = args.explosionBase ?? DEFAULT_EXPLOSION_EFFECT;
 
   // ---- hold ---------------------------------------------------------------
-  // Two emission shapes: the inline `hold = { ... }` the engine reads (and
-  // `px_hold_art` re-reads), and the aiming manager's `sb.hold(ctx, { ... })`
-  // call, which returns the same table and may attach the quad layer.
+  // Two emission shapes: the inline `hold = { ... }` the engine reads, and the
+  // aiming manager's `sb.hold(ctx, { ... })` call, which returns the same table
+  // plus the Lua-only keys its layer draws with.
   const sbHold = readCallTable(moduleText, 'sb.hold');
   const sourceHold = source?.hold;
   const holdTable = isTable(sourceHold)
@@ -509,21 +526,28 @@ export async function readBundleFeatures(args: {
     const asset = await readAsset(files, bundleDir, sheetPath);
     const hold = readHold(holdTable, args.holdBase ?? DEFAULT_IMPORT_HOLD);
     // The firing-state sprite has two emission shapes: the old `hold.flash`
-    // overlay (out/side/scale pre-resolved against the gun), and the current
-    // FAMAS-style second hold entry handed to `px_hold_art` (`local firing = {
-    // ... }` + `hold_art.add(firing)`), which inherits the gun's placement.
-    const firingTable = isTable(scan.assignments['firing'])
-      ? scan.assignments['firing']
-      : undefined;
+    // overlay (out/side/scale pre-resolved against the gun), the FAMAS-style
+    // second hold entry handed to `px_hold_art` (`local firing = { ... }`), and
+    // the current shape: the firing role inside the `sb.hold` spec
+    // (`fire = { sheet, cell_w, cell_h, scale, frames, ticks, hide_main, ... }`).
+    const holdFireTable = isTable(holdTable.fire) ? holdTable.fire : undefined;
+    const firingTable = holdFireTable
+      ? undefined
+      : isTable(scan.assignments['firing'])
+        ? scan.assignments['firing']
+        : undefined;
+    // One name for both shapes: the aim layer's `fire` role when present, the
+    // old `firing` table otherwise.
+    const fireTable = holdFireTable ?? firingTable;
     const flashTable = isTable(holdTable.flash) ? holdTable.flash : undefined;
-    const flashSource = flashTable ?? firingTable;
+    const flashSource = flashTable ?? fireTable;
     const flashAsset = flashSource
       ? await readAsset(files, bundleDir, str(flashSource.sheet))
       : undefined;
     // The firing sheet's cell, the way the generator slices it: the frame count
     // divides the height, and one frame falls back to the smaller side. `size`
     // is that cell times the role's scale, so the scale can be read back.
-    const fireFrameCount = Math.max(1, Math.round(num(firingTable?.frames) ?? 1));
+    const fireFrameCount = Math.max(1, Math.round(num(fireTable?.frames) ?? 1));
     const flashCell =
       flashAsset?.width && flashAsset.height
         ? fireFrameCount > 1
@@ -564,19 +588,19 @@ export async function readBundleFeatures(args: {
             // The FAMAS entry carries its own geometry only when the author
             // copied and changed it (`firing` for `px_hold_art`); unset means
             // "the aiming numbers", which is the common case.
-            ...(firingTable
+            ...(fireTable
               ? {
-                  ...(num(firingTable.weap_radius) !== undefined &&
-                  num(firingTable.weap_radius) !== Number(hold.weapRadius ?? 6)
-                    ? { fireWeapRadius: num(firingTable.weap_radius) }
+                  ...(num(fireTable.weap_radius) !== undefined &&
+                  num(fireTable.weap_radius) !== Number(hold.weapRadius ?? 6)
+                    ? { fireWeapRadius: num(fireTable.weap_radius) }
                     : {}),
-                  ...(num(firingTable.weap_rotation) !== undefined &&
-                  (num(firingTable.weap_rotation) as number) !==
+                  ...(num(fireTable.weap_rotation) !== undefined &&
+                  (num(fireTable.weap_rotation) as number) !==
                     Math.round((1 + (Number(hold.weapRotation) || 0) / 180) * 1e4) / 1e4
                     ? {
                         fireWeapRotation:
                           Math.round(
-                            (((num(firingTable.weap_rotation) as number) - 1) * 180 +
+                            (((num(fireTable.weap_rotation) as number) - 1) * 180 +
                               Number.EPSILON) *
                               1000,
                           ) / 1000,
@@ -585,54 +609,71 @@ export async function readBundleFeatures(args: {
                   // The firing hand: its own numbers when they differ from the
                   // aiming hand, which is the usual case (`px_hold_art` draws it
                   // from the same table, so the keys are the hand's own).
-                  ...(num(firingTable.hand_radius) !== undefined &&
-                  (num(firingTable.hand_radius) as number) !==
+                  ...(num(fireTable.hand_radius) !== undefined &&
+                  (num(fireTable.hand_radius) as number) !==
                     Number(hold.handRadius ?? 10) &&
-                  (num(firingTable.hand_radius) as number) > 0.5
-                    ? { fireHandRadius: num(firingTable.hand_radius) }
+                  (num(fireTable.hand_radius) as number) > 0.5
+                    ? { fireHandRadius: num(fireTable.hand_radius) }
                     : {}),
-                  ...(num(firingTable.hand_rotation) !== undefined &&
-                  (num(firingTable.hand_rotation) as number) !==
+                  ...(num(fireTable.hand_rotation) !== undefined &&
+                  (num(fireTable.hand_rotation) as number) !==
                     Math.round((1 + (Number(hold.handRotation) || 0) / 180) * 1e4) / 1e4
                     ? {
                         fireHandRotation:
                           Math.round(
-                            (((num(firingTable.hand_rotation) as number) - 1) * 180 +
+                            (((num(fireTable.hand_rotation) as number) - 1) * 180 +
                               Number.EPSILON) *
                               1000,
                           ) / 1000,
                       }
                     : {}),
-                  ...(num(firingTable.hand_scale) !== undefined &&
-                  (num(firingTable.hand_scale) as number) !== Number(hold.handScale ?? 1)
-                    ? { fireHandScale: num(firingTable.hand_scale) }
+                  ...(num(fireTable.hand_scale) !== undefined &&
+                  (num(fireTable.hand_scale) as number) !== Number(hold.handScale ?? 1)
+                    ? { fireHandScale: num(fireTable.hand_scale) }
                     : {}),
                   // `size` is the sheet's cell times the scale (the helper has
                   // no `weap_scale` of its own), so it is also the only place
                   // the firing scale is written.
-                  ...(num(firingTable.size) !== undefined &&
+                  ...(num(fireTable.size) !== undefined &&
                   flashCell > 0 &&
-                  Math.abs((num(firingTable.size) as number) / flashCell - Number(hold.scale ?? 1)) >
+                  Math.abs((num(fireTable.size) as number) / flashCell - Number(hold.scale ?? 1)) >
                     0.001
                     ? {
                         fireScale:
                           Math.round(
-                            ((num(firingTable.size) as number) / flashCell) * 1000,
+                            ((num(fireTable.size) as number) / flashCell) * 1000,
                           ) / 1000,
                       }
                     : {}),
-                  ...(firingTable.draw_hand === false ? { fireDrawHand: false } : {}),
+                  ...(fireTable.draw_hand === false ? { fireDrawHand: false } : {}),
+                  // The firing window and the main weapon, both new with the
+                  // `fire` role (an old `firing` table has neither).
+                  ...(holdFireTable
+                    ? {
+                        fireTicks: Math.max(0, Math.round(num(holdFireTable.ticks) ?? 0)),
+                        ...(holdFireTable.hide_main === true ? { fireHideMain: true } : {}),
+                      }
+                    : {}),
+                  // `scale` is the role's own number; the old shape only has
+                  // `size` (the cell times that scale).
+                  ...(num(holdFireTable?.scale) !== undefined
+                    ? { fireScale: num(holdFireTable?.scale) }
+                    : {}),
+                  // Its own nudge channels, read the way the held art's are
+                  // (a `{ x, y }` table the generator only writes when used).
+                  ...readOffset(fireTable?.offset, 'fireOffset'),
+                  ...readOffset(fireTable?.hand_offset, 'fireHandOffset'),
                   // The firing strip: `frames` slices the sheet, `anim_speed`
                   // is the engine's multiplier for `fps / (1.5 x frames)`.
-                  ...(num(firingTable.frames) !== undefined
+                  ...(num(fireTable.frames) !== undefined
                     ? {
-                        fireFrames: Math.max(1, Math.round(num(firingTable.frames) as number)),
+                        fireFrames: Math.max(1, Math.round(num(fireTable.frames) as number)),
                         fireFps: Math.max(
                           1,
                           Math.round(
-                            (num(firingTable.anim_speed) ?? 1) *
+                            (num(fireTable.anim_speed) ?? 1) *
                               1.5 *
-                              Math.max(1, Math.round(num(firingTable.frames) as number)),
+                              Math.max(1, Math.round(num(fireTable.frames) as number)),
                           ),
                         ),
                       }

@@ -497,9 +497,10 @@ return {
 // ---- firing-state sprite (WF 32) ---------------------------------------
 {
   const p = project('WF 32 Hold Flash')!;
-  // The firing sheet is a second hold entry handed to `px_hold_art`. PX's FAMAS
+  // The firing role is a `fire` table inside the `sb.hold` spec. PX's FAMAS
   // leaves its placement unset and inherits the gun's; this one owns every
-  // number, so the whole role has to survive the round trip.
+  // number (including its own nudge channels), so the whole role has to survive
+  // the round trip.
   check('WF 32: firing sheet attached', !!p.hold.flashFile, 'no file attached');
   near('WF 32: firing sheet width', p.hold.flashWidth, 100);
   near('WF 32: keep while firing', p.hold.keepWhileFiring, true);
@@ -512,6 +513,10 @@ return {
   near('WF 32: its own hand radius', p.hold.fireHandRadius, 14);
   near('WF 32: its own hand rotation', p.hold.fireHandRotation, -10);
   near('WF 32: its own hand scale', p.hold.fireHandScale, 0.9);
+  near('WF 32: its own offset x', p.hold.fireOffsetX, 6);
+  near('WF 32: its own offset y', p.hold.fireOffsetY, -4);
+  near('WF 32: its own hand offset x', p.hold.fireHandOffsetX, -2);
+  near('WF 32: its own hand offset y', p.hold.fireHandOffsetY, 3);
   const lua = generateLuaCode(fullProject(p, 'WF 32 Hold Flash'));
   check(
     'WF 32: the firing role is emitted with its own numbers',
@@ -519,7 +524,9 @@ return {
       lua.includes('frames = 2,') &&
       lua.includes('anim_speed = 4,') &&
       lua.includes('hand_radius = 14,') &&
-      lua.includes('hand_scale = 0.9,'),
+      lua.includes('hand_scale = 0.9,') &&
+      lua.includes('offset = { x = 6, y = -4 },') &&
+      lua.includes('hand_offset = { x = -2, y = 3 },'),
     'the firing table fell back to the aiming numbers',
   );
 }
@@ -535,14 +542,59 @@ return {
   check('WF 36: burst came back', !!p.fireSequence?.enabled, 'no fire sequence');
   const lua = generateLuaCode(fullProject(p, 'WF 36 Sequential Flash'));
   check(
-    'WF 36: the plain hold fills the burst frames',
-    lua.includes('hold_art.add(hold)'),
-    'hold never handed to px_hold_art',
+    'WF 36: the held art fills the burst frames',
+    lua.includes('keep_firing = true,'),
+    'firing frames left to WA',
   );
   check(
-    'WF 36: the firing sheet is gated to the shot',
-    lua.includes('flash = true,'),
-    'firing table not marked as a flash',
+    'WF 36: no px_hold_art at all',
+    !lua.includes('px_hold_art') && !lua.includes('hold_art.'),
+    'the old helper is still required',
+  );
+  check(
+    'WF 36: the firing sheet rides the aim layer',
+    lua.includes('fire = {') && lua.includes('ticks = '),
+    'firing role missing',
+  );
+  // The burst launches its own rounds, so it carries WA's fuse option: a
+  // grenade record holds `missile.fuse = 0`, which explodes on the first frame.
+  const seqLua = generateLuaCode(fullProject(project('WF 29 Sequential Fire')!, 'WF 29 Sequential Fire'));
+  check(
+    'WF 29: the burst carries the fuse',
+    seqLua.includes('missile = { fuse = fuse_of(ev.worm) },'),
+    'launched rounds get the record fuse (0)',
+  );
+  check(
+    'WF 29: the fuse option is sampled from the digit keys',
+    seqLua.includes('keys.digit') &&
+      seqLua.includes('fuse_by_worm[w.id] = digit * 1000') &&
+      /FUSE_DEFAULT = \d+/.test(seqLua),
+    'no fuse tracker',
+  );
+  // A record with its own fuse keeps it: WA only offers the 1-5 keys for the
+  // records that have none, so a pinned timer must not be overridden.
+  const seqBase = project('WF 29 Sequential Fire')!;
+  const pinnedLua = generateLuaCode(
+    fullProject(
+      { ...seqBase, body: { ...seqBase.body, fuse_time_ms: 5000 } } as WeaponProject,
+      'Pinned Fuse',
+    ),
+  );
+  check(
+    'WF 29: a pinned fuse is left to the record',
+    !pinnedLua.includes('fuse_of') && !pinnedLua.includes('FUSE_DEFAULT'),
+    'a pinned timer was overridden by the fuse keys',
+  );
+  const flashLua = generateLuaCode(fullProject(project('WF 32 Hold Flash')!, 'WF 32 Hold Flash'));
+  check(
+    'WF 32: the firing window is emitted',
+    flashLua.includes('ticks = 9,'),
+    'window missing',
+  );
+  check(
+    'WF 32: the main weapon yields to the firing sheet',
+    flashLua.includes('hide_main = true,'),
+    'hide_main missing',
   );
 }
 
@@ -944,6 +996,18 @@ for (const [name, p] of projects) {
     `${name}: no auto dependency leaked`,
     (p.extraDependencies ?? []).length === 0,
     (p.extraDependencies ?? []).join(', '),
+  );
+}
+
+// ---- no bundle requires the retired held-art helper ---------------------
+// `px_hold_art` is absorbed into `sb.hold` (`keep_firing` + the `fire` role), so
+// nothing the editor writes may require it or its `size` key.
+for (const [name, p] of projects) {
+  const lua = generateLuaCode(fullProject(p, name));
+  check(
+    `${name}: no px_hold_art`,
+    !lua.includes('px_hold_art') && !lua.includes('hold_art.'),
+    'the retired helper is still required',
   );
 }
 

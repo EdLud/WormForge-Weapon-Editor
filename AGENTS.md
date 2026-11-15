@@ -483,31 +483,39 @@ Reference implementation: `WormForgeNew/crates/weapons/src/record.rs`,
   gains `px.fire_seq`. A custom Lua `on_fire` owns the trigger, so the card is
   skipped then (the UI says so). Air strikes are excluded: their munitions are
   created by the strike entity, so the slot never fires.
-  **Held art needs `px_hold_art`.** WA draws the held sheet on its firing frames
-  (0x6A/0x6B) only while `h.firing` is set, and the engine sets that from the
-  turn's fire message; a burst repeats the shot without one, so from the second
-  shot the sheet blinks every other frame. When a burst or a firing sheet needs
-  it, the generator emits `local hold_art = require("wf-lib/px_hold_art")`,
-  declares the hold table as a **local before the claim** (adding `weapon =
-  ctx.id`, `size = cell × weap_scale` and `hand_size = 60`, all ignored by the
-  engine) and calls `hold_art.add(hold)` after the replace. `size` is the
-  sheet's pixel cell, the uploaded sheet's width/`height ÷ frames`, else the
-  default art's 46 or 32, because the helper draws a square quad and has no
-  scale key of its own (a wrong size is the classic "pump looks 2x" bug). The
-  helper draws the **hand** too (`hand`/`hand_radius`/`hand_rotation`/
-  `hand_radial_rotation`/`hand_scale` from the same table), because the engine
-  only draws it in the aiming states; without it the hand vanishes for the whole
-  burst. It walks a `frames`/`anim_speed` strip on the world clock at the
-  engine's own rate. `hold_art.add(hold)` is skipped when the engine already
-  draws the sheet itself (`keep_while_firing` with no burst), adding both draws
-  the gun twice, frame 0 over the engine's animation. `holds` is `wf.sdk`, so the
-  dependency set is `wf.sdk` + `px.fire_seq`; the hold sheet is auto-GPU
-  (`apply.rs`'s `hold_sheet` test), so no `gpu_prefix` is required. The claim
-  still emits `params = { gpu_prefix = "sprites/" }`, PX's own fire_seq weapons
-  pass it and it keeps the quad's pack path resolving if a build ever stops
-  claiming the hold sheet implicitly. It is skipped when the claim also has a
-  body or cluster sheet: the prefix moves every matching path to a virtual atlas
-  id, and those need the real WA slot the record points at.
+  **The fuse rides the launch.** WA's fuse option (the number keys 1 to 5 while
+  aiming, 3 s by default) lives in WA and is written into the shots WA fires
+  itself; `wa.weapons.launch` writes `missile.fuse` from the record instead, and
+  a grenade record holds **0**, so a burst without this went off on the first
+  frame. The generator therefore emits, **only when the record's own
+  `missile.fuse` is 0** (read through `recordField`, so a donor's or a `.wep`'s
+  timer counts), for a missile-family sequence in the missiles mode: a
+  module-level `FUSE_DEFAULT = 3000` (WA's default grenade fuse),
+  `FUSE_AIM = { 0x67, 0x68, 0x69 }`, a per-worm table, and inside `install` a
+  `wa.on.worm_message` sampler on `{ msgs = { wa.msg.FRAME_FINISH } }` that reads
+  `wa.world.keys().digit` (the turn player's **synchronised** keyboard, so every
+  peer reads the same digit on the same frame) while a worm aims with this
+  weapon, storing `digit * 1000` for the 1..5 keys. The launch table then carries
+  `missile = { fuse = fuse_of(ev.worm) }`, which `record_table::launch_patches`
+  maps to the fire params' fuse (`FIRE_FUSE`, 0x50 relative) and the engine
+  copies into the shot (`SHOOT_FUSE`), so every round of the burst gets the
+  player's fuse. A record with a pinned timer (dynamite 5000, bazooka 9000) emits
+  none of it: WA offers its fuse keys only for the records that have none, so
+  `launch` plays the record and the two agree.
+  **Held art on the firing frames is `sb.hold`'s now (`keep_firing`).**
+  WA draws the held sheet on its firing frames (0x6A/0x6B) only while `h.firing`
+  is set, and the engine sets that from the turn's fire message; a burst repeats
+  the shot without one, so from the second shot the sheet blinks every other
+  frame. `px_hold_art` was the patch for that (a second hold entry, a pixel
+  `size` key, a hand redraw); **it is gone from the generated bundles.** When a
+  burst or a firearm needs the gun to stay, the generator writes
+  `keep_firing = true` into the `sb.hold` spec, and the layer draws the same
+  quads as the aim pose at full size (the engine's `grow()` belongs to the
+  aiming counter) with the strip on the firing clock. So the aim layer has to be
+  on for those weapons: `holdNeedsAimLayer` returns true for
+  `fireType === 'hitscan'` and for an enabled fire sequence (unless
+  `fireHideMain`). `px.fire_seq` is now only the sequencer's dependency, and a
+  hold alone adds `wf.sdk` + `wfws.sdk`.
 - **The burst preview draws the SDK's sheets.** `ExplosionPreview.tsx` loads
   `beam.png` / `beam_glow.png` / `cloud.png` from `public/assets/effects/`
   (copied from `spec/lua_sdk/effects_sdk/sprites/px_effects/`), tints a copy by
@@ -666,36 +674,34 @@ Reference implementation: `WormForgeNew/crates/weapons/src/record.rs`,
   `drawHand === false` (while leaving `hold.handRadius` intact in editor state;
   `importFeatures.ts` restores `fallback.handRadius` if `draw_hand = false` and
   `hand_radius = 0.01`).
-- **Firing-state sprite (`hold.flashFile`), PX's FAMAS pattern.** It is not the
-  engine's `hold.flash` overlay. The generator emits a *second hold entry*, the
-  same `weap_radius` / `weap_rotation` / `weap_radial_rotation` and hand keys,
-  its own sheet, `size = cell × weap_scale`, and hands it to
-  `wf-lib/px_hold_art` after the claim (`hold_art.add(firing)`). The helper draws
-  it in WA's two firing states (0x6A / 0x6B) with the worm's live aim, facing
-  and radius, so it follows the gun 1:1 in position, rotation and scale, and it
-  needs no offsets of its own (`flashOut`/`flashSide`/`flashScale`/`flashFrames`
-  are legacy state, read from an old bundle's `hold.flash` on import and never
-  emitted). **A burst lights it per shot, not for the whole burst:** the entry
-  carries `flash = true` and `shots = seq.shot_at` (the weapon's own sequencer
-  table, an exported library module is instanced per pack, so the helper must
-  not `require` it), and the helper draws it for the two frames around a mark
-  (plus the first draw that follows one, so a skipped simulation frame cannot
-  swallow a flash). A single shot needs neither: its 0x6A/0x6B pair is the
-  shot. The dependency is `px.fire_seq` (that bundle exports the helper) and the
-  sheet goes in the claim's `sprites`.
-  **The firing sheet is its own role.** It owns `fireFrames` / `fireFps`, its
-  hand and its placement, all emitted into the `firing` table, so nothing is
-  shared with the aim entry beyond the hand art itself. A vertical PNG whose
-  height divides by its width is `height / width` cells (WA's own
-  `load_strip_bytes` rule), so the upload reads the frame count from the image;
-  the generator slices the cell as `flashHeight / fireFrames` and emits
-  `frames` + `anim_speed = fps / (1.5 × frames)`, which `px_hold_art`'s
-  `gun_frame` walks on the 50 Hz clock (one frame every `50 / fps` ticks). The
-  hand rows are the role's own (`hand_radius` / `hand_rotation` / `hand_scale` /
-  `draw_hand`, falling back to the aim hand), and `size` is the cell times
-  `fireScale`, which is the only place that scale is written, so the importer
-  reads it back as `size / cell`. The firing tab's canvas runs the strip, which
-  is why it needs no Test button.
+- **Firing-state art (`hold.flashFile`), the aim layer's `fire` role.** It is
+  not the engine's `hold.flash` overlay and no longer a second entry handed to
+  `px_hold_art`: the generator writes a **`fire = { ... }` table inside the
+  `sb.hold` spec**, and the layer draws it (see `wfws_sdk/README.md`). The keys
+  are the role's own: `sheet`, `cell_w`/`cell_h`, `scale`, `frames` +
+  `anim_speed = fps / (1.5 × frames)`, `ticks`, `hide_main`, its own
+  `weap_radius`/`weap_rotation` and its own hand. `holdNeedsAimLayer` returns
+  true for a firing sheet, so it always has `silent_sheet`, `weapon` and
+  `cell_*`.
+  **`ticks` is the window, in 50 Hz frames, from the first firing frame of a
+  shot.** WA's own firing states are just 0x6A/0x6B, so a strip used to flash for
+  a single frame; unset means one whole cycle
+  (`ceil(frames × 50 / fps)`), `0` means WA's frames only, and any gap wider
+  than one tick rewinds the strip. **`hide_main`** draws the firing art instead
+  of the gun (the layer skips the aim quads and mutes the engine) and it also
+  removes the `keep_firing` filler.
+  **The firing role owns everything the aim role does.** `fireFrames` /
+  `fireFps`, its hand (`fireHandRadius` / `fireHandRotation` / `fireHandScale` /
+  `fireHandOffsetX/Y` / `fireDrawHand`), its placement (`fireWeapRadius` /
+  `fireWeapRotation` / `fireScale`) and its own nudge (`fireOffsetX/Y`, emitted
+  as `offset = { x, y }`, `hand_offset` for the hand) are all written into the
+  same table; unset means "inherit the aim numbers", which is PX's FAMAS case,
+  and nothing shared is written. Offsets are optional: a fire role needs no
+  extra layer for them, since the layer is already drawing it. A vertical PNG whose height
+  divides by its width is `height / width` cells (WA's own `load_strip_bytes`
+  rule), so the upload reads the frame count from the image; the generator
+  slices the cell as `flashHeight / fireFrames`. The firing tab's canvas runs
+  the strip, which is why it needs no Test button.
 - **The aiming manager (`sb.hold`) and the hold offset.** The engine's
   `HoldSpec` has no offset field, so a hold whose art is not at its cell centre
   is drawn by `sb.hold` instead: the engine gets the same `hold =` table it
@@ -720,8 +726,7 @@ Reference implementation: `WormForgeNew/crates/weapons/src/record.rs`,
   the quads fail, so the weapon showed a static hold and never swung, and only
   holds with uploaded art (whose path happened to be claimed already) worked in
   game. The claim also gets `params = { gpu_prefix = "sprites/" }` on the same
-  terms as `px_hold_art`'s (skipped when a body or cluster sheet needs WA's real
-  slot).
+  terms (skipped when a body or cluster sheet needs WA's real slot).
   **The mute is `wa.weapons.hold_sheet(weapon, n)`**, pointing the engine at a
   1x1 transparent `silent.png` (appended to `hold.sheets`, which the claim loads
   by itself, so it needs no `sprites` entry and no `mod.toml` line) **only while
@@ -777,24 +782,27 @@ Reference implementation: `WormForgeNew/crates/weapons/src/record.rs`,
   with the tab, the way every flight-builder role has the same complete control
   set: the middle column keeps the shared canvas and posture, and the left and
   right columns become that role's hand and art.
-  **Aim & Swing** owns the held sheet, `frames`/`fps`, the hand (scale, radius,
-  rotation, offset), the weapon (radius, rotation, scale, offset), put-away and
-  keep-while-firing, and the Space clip; its canvas carries the **SPACE** pill
-  and listens for the real key. **Firing Frames** owns the firing sheet, its
-  `fireFrames`/`fireFps` strip, its own hand (`fireHandRadius`,
-  `fireHandRotation`, `fireHandScale`, `fireDrawHand`) and its own placement
-  (`fireWeapRadius`, `fireWeapRotation`, `fireScale`); its canvas draws what the
-  game blits on 0x6A/0x6B with the strip looping at `fireFps` and no clip, so
-  the tab shows the firing animation instead of a still. Uploading a firing
+  **Both tabs run the same four blocks in the same order**, the way the flight
+  builder gives every sprite role one complete control set: the role's sheet
+  (upload row, swapped with the tab), its animation (`frames`/`fps`/current),
+  its placement (radius, rotation, scale) and its offset (X/Y plus a line saying
+  which draw is in use). The hand column mirrors it: Draw Hand, Hand Type, then
+  hand scale, radius, rotation and hand offset. Only the behaviour blocks differ,
+  because they are different things: **Aim & Swing** adds Launchable/Throwable,
+  put-away, keep-while-firing and the Space clip (its canvas carries the
+  **SPACE** pill and listens for the real key); **Firing Frames** adds Show For,
+  Hide Main Weapon and the copy/follow-aim note (its canvas blits what the game
+  draws on 0x6A/0x6B, strip looping at `fireFps`, no clip). Uploading a firing
   sheet snapshots the aim numbers into the `fire*` fields, so the role is
   independent from the moment it exists; **Copy aiming parameters** does the
   same later and **Follow the aim** clears them (unset = inherit, which is PX's
   FAMAS case and writes no numbers).
 - **A firearm's held art keeps drawing through its burst.** A gun fires several
   shots from one trigger and the engine drops the hold (and with it the hand)
-  after the first, so `usesHoldArt` now also holds for `fireType === 'hitscan'`:
-  `px_hold_art` fills WA's repeat-fire frames with the same sheet and the same
-  hand. The dependency is `px.fire_seq`, which ships the helper.
+  after the first, so the generator writes `keep_firing = true` for
+  `fireType === 'hitscan'` and for a fire sequence: the aim layer draws the same
+  sheet and the same hand on WA's repeat-fire frames. That is `px_hold_art`'s job
+  absorbed into `sb.hold`; the dependency is just `wf.sdk` + `wfws.sdk`.
 - **Hold animation:** `worm_hold.rs` does
   `phase += anim_speed * 0.03` once per 50 Hz game frame, so the sheet plays
   `1.5 × frames × anim_speed` frames per second. The UI asks for the real
@@ -1413,12 +1421,15 @@ that `vite preview` at `/` hides).
     fixes `draw_hand = false`, disabling **Draw Hand** must also emit
     `hand_radius = 0.01` as a fallback alongside `draw_hand = false` while
     preserving the user's `hold.handRadius` in UI state.
-29. **A firing sprite should be a hold entry, not an overlay.** PX's FAMAS does
-    it with `px_hold_art`: a second hold spec with its own sheet and the gun's
-    geometry, drawn in WA's firing states. The engine's `hold.flash` instead
-    carries pre-resolved `out`/`side`/`scale`, which drifts from the gun the
-    moment the hold's radius, rotation or scale changes (and the sheet is loaded
-    as a single frame). Use the FAMAS form.
+29. **A firing sprite is a role of the held art, not an overlay.** PX's FAMAS
+    proved it: the firing art takes the gun's own geometry (radius, rotation,
+    scale, hand) and is drawn in WA's firing states. The engine's `hold.flash`
+    instead carries pre-resolved `out`/`side`/`scale`, which drifts from the gun
+    the moment the hold's radius, rotation or scale changes, and loads the sheet
+    as a single frame. It is the aim layer's `fire` role now (`sb.hold`), which
+    also owns the window (`ticks`): WA's two firing frames are not enough to show
+    an animation, and that was the "it flashes once" bug. The external
+    `px_hold_art` helper is no longer required by anything the generator writes.
 30. **A stamp call is deleted only when it is ours.** `customExplodeBody` strips
     the generated `wa.land.stamp{ … }` block only after `readCallTable` matched
     the shape this editor emits (a bundle path, `x = ev.x`, and a numeric or
@@ -1443,7 +1454,7 @@ that `vite preview` at `/` hides).
     Declare `local zap` at module level where a module-level function needs it
     as an upvalue, and assign it inside `install`. The other modules the
     generator requires (`px_effects`, `trail`, `custom_explosion`, `fire_seq`,
-    `px_hold_art`, the WFWS builder) are safe at load; check a new one with
+    the WFWS builder) are safe at load; check a new one with
     `grep -n '^wa\.' <module>.lua` first.
 34. **Use `bun run` (not `npx tsx`) for repo check scripts.** Scripts that
     import `src/utils/` hit Vite's `import.meta.env`, which `tsx` does not
@@ -1476,8 +1487,8 @@ Done and validated:
   gun/mine/strike fields, collision masks.
 - Hold builder (3-column compact layout, PX posture/hand, continuous loop when
   `frames > 1`, `weap_scale`, `-35..35` px radius range, `draw_hand = false` ->
-  `hand_radius = 0.01` fallback, FAMAS-style firing sprite through
-  `px_hold_art`, put-away, thrown, keep-while-firing) and 50 Hz flight preview.
+  `hand_radius = 0.01` fallback, two mirrored role tabs, put-away, thrown,
+  keep-while-firing) and 50 Hz flight preview.
 - Sidebar UI, light default, forge palette, WormForge logo, mobile layout,
   accessibility pass; Gemini/Antigravity and "API 4.0" copy removed.
 - Default Grenade/Bazooka art used by previews and exports; no dangling sheets.
@@ -1495,8 +1506,9 @@ Done and validated:
   `size`/`angle`, ribbon trail, both explosion modes, sequential fire, custom
   WAVs, pack sheets and roaming strips, with the bundle's files attached and
   `tools/check_mod_import.ts` guarding it.
-- `px_hold_art` + `fire_seq` kept the held sheet on the repeat-fire frames, and
-  the exporter now writes the `shot.wav` that `on_shot` names.
+- The held sheet stays on the repeat-fire frames through `sb.hold`'s
+  `keep_firing` (px_hold_art absorbed, so a hold only needs `wf.sdk` +
+  `wfws.sdk`), and the exporter writes the `shot.wav` that `on_shot` names.
 - **Redesigned record workbench** (branch `redesign/hydrogen-port`, ported from
   Gemini Hydrogen's mock-up): one Weapon Loadout card above a family-scoped
   tab bar, Effects & Libraries as one filtered workbench, an in-page ribbon-trail
@@ -1519,8 +1531,18 @@ Done and validated:
   angle, nudge, size, frame and fade over 50 Hz ticks with the editor's easing
   set; `sb.hold` plays it on the held art from a synchronised Space edge, the
   claim eats WA's fire, and the turn ends when the clip does. `holdRotation` and
-  `handOffsetX/Y` joined it, and a firearm's gun and hand now keep drawing
-  through its burst via `px_hold_art`. Test Pack WF 47 covers the swing.
+  `handOffsetX/Y` joined it, and a firearm's gun and hand keep drawing through
+  its burst via `keep_firing`. Test Pack WF 47 covers the swing.
+- **The firing role (wfws.sdk 0.10.0).** WA's firing states are two frames, so a
+  firing sheet used to blink once. `sb.hold` now owns them: `fire = { sheet,
+  cell_w, cell_h, scale, frames, anim_speed, ticks, hide_main, geometry, hand }`
+  runs a strip for a real window from the first firing frame, with its own hand
+  and placement, and draws it instead of the gun when asked. `keep_firing` keeps
+  the held art on those frames for a burst or a firearm, which retires
+  `px_hold_art` from everything the generator writes (a hold now only needs
+  `wf.sdk` + `wfws.sdk`). The Hold page's **Firing Frames** tab is a complete
+  role: sheet, strip, window, hand and placement, with the main weapon hideable.
+  Test Pack WF 32/36 and `tools/check_mod_import.ts` cover it.
 - **Hold offset through `sb.hold` (wfws.sdk 0.8.0), the first half of the aiming
   plan.** A held sheet whose art is not at its cell centre is nudged with
   `hold.offsetX/offsetY` (sheet pixels, scaled with the art, mirrored with the

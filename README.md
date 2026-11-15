@@ -24,6 +24,7 @@ Maintenance and hand-off notes live in [AGENTS.md](AGENTS.md).
   - Uses the PX posture strip (`aim.png`, 32 frames of 60×60) and hand radius textures (`hand_rad_lower.png`, `hand_rad.png`, `hand_rad_upper.png`) from `wf.sdk`.
   - Before a PNG is uploaded, the preview and the exported bundle use one hand-drawn fallback sprite (`spec/holyhandgrenade.png`, 64x64), so a bundle never points at a missing sprite and never carries anyone else's art.
   - Hold geometry is the engine's `worm_hold.rs` math verbatim: aim 0 is down, 31 is up, `weap_radius`/`weap_rotation`/`weap_radial_rotation` and the hand offsets, plus the put-away swing and shrink.
+  - Two roles, each a complete editor tab: **Aim & Swing** (held sheet, strip, hand and weapon placement, offsets, put-away, the Space swing clip) and **Firing Frames** (the sheet WA draws on its two firing frames, with its own strip, window, hand and placement, and the option to replace the held weapon). Both are drawn by `sb.hold`, which also keeps the gun on a burst's repeat-fire frames, so a hold needs no external helper.
   - The `spec/pre_weapon_preview.png` landscape is the preview backdrop, with 1x–5x pixelated zoom and a true left/right facing flip.
 - **50 Hz Missile Flight Sprite Preview**:
   - Reimplements the WFWS builder's `sb.flight` animation at a fixed 50 Hz game frame: `track`, `rotation`, `slow`/`medium`/`fast`, `none`, `cyclical` frames, `anim_speed`, `spin`, `mirror` and `scale`.

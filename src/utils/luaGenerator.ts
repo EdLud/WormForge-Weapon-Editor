@@ -15,6 +15,7 @@ import { resolveStockSprite, stockSpriteId } from '../data/stockSprites';
 import { supportsFireSequence } from '../data/fireSequence';
 import { STAMP_FRAMES, stampFrameForAngle, supportsTerrainStamp } from '../data/terrainStamp';
 import { COLLISION_FLAGS } from '../data/recordSchema';
+import { recordField } from './recordField';
 import { defaultArtFor } from './defaultArt';
 import {
   DEFAULT_ROAM_TILT,
@@ -229,6 +230,16 @@ export function holdNeedsAimLayer(project: WeaponProject): boolean {
   if (!h?.enabled) return false;
   if ((h.offsetX ?? 0) !== 0 || (h.offsetY ?? 0) !== 0) return true;
   if ((h.handOffsetX ?? 0) !== 0 || (h.handOffsetY ?? 0) !== 0) return true;
+  // The firing role is ours: WA draws nothing after its two firing frames, so a
+  // firing sheet that has to be seen for longer (or replace the gun) is a window
+  // the aim layer owns.
+  if (h.flashFile) return true;
+  // The held art on WA's firing frames: a burst repeats the shot without the
+  // fire message that keeps `h.firing` set, which is what px_hold_art used to
+  // patch around. The layer draws it instead.
+  if (!h.fireHideMain && (project.fireType === 'hitscan' || !!project.fireSequence?.enabled)) {
+    return true;
+  }
   // The swing is a clip on the held art, which only the quad layer can draw.
   return !!project.aimClip?.enabled;
 }
@@ -782,32 +793,48 @@ export function generateLuaCode(project: WeaponProject): string {
     project.enableCustomLua && /(?:^|\n)[ \t]*on_fire\s*=/.test(project.customLuaSnippet || '');
   const usesFireSequence =
     !!fireSequence?.enabled && !hasCustomOnFire && supportsFireSequence(project);
-  // A held weapon loses its sheet on the repeat-fire frames (WA state 0x6A/0x6B
-  // alternate) from the second shot of a burst: the engine's `hold` only draws
-  // them while `h.firing` is set, and only the turn's fire message sets it.
-  // `wf-lib/px_hold_art` redraws those two states through `wa.on.draw`.
+  // A sequentially fired round is launched by us (`wa.weapons.launch`), so WA's
+  // fuse option never reaches it: the launch writes the record's own
+  // `missile.fuse`, and a weapon that relies on the option (every grenade) keeps
+  // 0 there, which explodes on the first frame. The burst carries the fuse
+  // itself, read off the turn player's synchronised digit keys, so the timer
+  // matches what the player picked while aiming.
   //
-  // The firing-state sprite (`hold.flash`) rides the same helper, the way PX's
-  // FAMAS does it: a second hold entry whose sheet is drawn in those states with
-  // the worm's live aim, facing, radius, rotation and `weap_scale`. That is what
-  // makes it follow the held gun 1:1, the engine's `flash` overlay carried its
-  // own pre-resolved out/side/scale and could drift from it.
+  // Only when the record holds no fuse: an author who pinned one (dynamite's
+  // 5000, a bazooka's 9000) is left alone, and WA offers its 1-5 keys only for
+  // the records that have none, so the two agree.
+  const recordFuse = Math.max(
+    0,
+    Math.round(Number(recordField(project, 'missile.fuse', project.body.fuse_time_ms ?? 0)) || 0),
+  );
+  const carriesFuse =
+    usesFireSequence &&
+    fireSequence!.mode !== 'actors' &&
+    recordFuse === 0 &&
+    (project.fireType === 'power' || (project.fireType === 'drop' && !!project.body.fuse));
+  // WA's fuse keys are seconds, 1 to 5, and the option starts at 3.
+  const fuseFallback = 3000;
+  // The firing role (`fire` in the `sb.hold` spec): the art WA draws on its two
+  // firing frames, with its own sheet, strip, window and hand. The firing-state
+  // sprite used to be a second hold entry handed to `px_hold_art`; the aim layer
+  // owns it now, so a firing animation can stay up for more than WA's two frames.
   const usesFiringArt = !!usesHold && !!project.hold?.flashFile;
-  // `px_hold_art` fills WA's repeat-fire frames (0x6A/0x6B) with the held art.
-  // A firearm fires several shots from one trigger, and the engine drops the
-  // hold after the first, which is why a machine gun's gun and hand used to
-  // vanish mid-burst. A fire sequence and a firing sheet need it for the same
-  // reason, and so does every other held weapon the engine hides while firing.
-  const usesHoldArt =
+  // `keep_firing`: the held art stays on WA's repeat-fire frames (0x6A/0x6B). A
+  // firearm fires several shots from one trigger, and the engine drops the hold
+  // after the first, which is why a machine gun's gun and hand used to vanish
+  // mid-burst. This is the aim layer's own draw now, not px_hold_art's: one
+  // geometry, one clock, no second library.
+  const usesFiringHold =
     !!usesHold &&
-    (usesFireSequence || usesFiringArt || project.fireType === 'hitscan');
+    (usesFireSequence || project.fireType === 'hitscan') &&
+    !project.hold?.fireHideMain;
   // The aiming manager (`sb.hold`): the engine's `HoldSpec` has no offset, so a
   // hold with one is drawn as quads in `wa.on.draw` over the engine's aiming
   // poses, with the engine pointed at a 1x1 silent sheet while it draws. Every
   // other hold stays the engine's own table, with no extra atlas slot.
   const usesAimLayer = holdNeedsAimLayer(project);
   const usesSwing = usesAimLayer && !!project.aimClip?.enabled;
-  const usesHoldLocal = usesHoldArt || usesAimLayer;
+  const usesHoldLocal = usesAimLayer;
   const shotSoundPath = usesFireSequence ? customSoundPath(project, 'shot') : null;
   // The effects SDK's ribbon trail follows a missile WA builds from this
   // record, so it only applies to the missile families (a strike's bombs are
@@ -819,10 +846,6 @@ export function generateLuaCode(project: WeaponProject): string {
 
   if (usesHold) {
     lines.push('local holds = require("wf-lib/holds")');
-  }
-  if (usesHoldArt) {
-    // Part of the px.fire_seq bundle: covers WA's two repeat-fire frames.
-    lines.push('local hold_art = require("wf-lib/px_hold_art")');
   }
   if (usesMissileSprite || usesAimLayer) {
     // WFWS's fork: flight art (primary + cluster-bit + per-behaviour) and the
@@ -837,6 +860,23 @@ export function generateLuaCode(project: WeaponProject): string {
     lines.push('  local ang = (1 - w.aim) * math.pi');
     lines.push('  if w.facing < 0 then ang = 2 * math.pi - ang end');
     lines.push('  return wa.math.sin(ang), -wa.math.cos(ang)');
+    lines.push('end');
+  }
+  if (carriesFuse) {
+    // WA's fuse option lives in WA, not in the record: it is the number key the
+    // player holds while aiming (1 to 5 seconds), and WA writes it into the
+    // shots it fires itself. A burst we launch has to carry it, or every round
+    // gets the record's timer (0, which is the fuse the grenade record holds).
+    // `wa.world.keys()` is the turn player's synchronised keyboard, so every
+    // peer reads the same digit on the same frame.
+    lines.push('local FUSE_DEFAULT = ' + String(fuseFallback));
+    lines.push('local FUSE_AIM = { [0x67] = true, [0x68] = true, [0x69] = true }');
+    lines.push('local fuse_by_worm = {} -- worm id -> milliseconds the player picked');
+    lines.push('local fuse_frame = -1');
+    lines.push('local function fuse_of(w)');
+    lines.push('  local ms = fuse_by_worm[w.id]');
+    lines.push('  if ms then return ms end');
+    lines.push('  return FUSE_DEFAULT');
     lines.push('end');
   }
   if (usesZap) {
@@ -997,16 +1037,14 @@ export function generateLuaCode(project: WeaponProject): string {
     lines.push('');
   }
 
-  // The held-art table. Computed once: with `px_hold_art` it has to exist as a
-  // local before the claim (the helper keeps the table and reads it on every
+  // The held-art table. Computed once: with the aim layer it has to exist as a
+  // local before the claim (`sb.hold` keeps the table and reads it on every
   // draw), otherwise it stays inline in the claim.
   const holdRows: string[] = [];
-  // The hand art and its live placement, shared by the hold table and the
-  // firing-state table: `px_hold_art` redraws both during WA's 0x6A/0x6B
-  // frames, and the engine only draws the hand in the aiming states, so
-  // without this it disappears for the whole burst.
+  // The hand art and its live placement, shared by the hold table and the firing
+  // role. The engine only draws the hand in the aiming states, so the layer
+  // draws it on the firing frames too or it disappears for the whole burst.
   const handRows: string[] = [];
-  let holdArtSize = 0;
   if (usesHold) {
     const h = project.hold;
     const handIdx = h.handType === 'lower' ? 1 : h.handType === 'upper' ? 3 : 2;
@@ -1025,7 +1063,7 @@ export function generateLuaCode(project: WeaponProject): string {
       },`,
     );
     handRows.push('hand_radial_rotation = 1,');
-    // `px_hold_art` draws explicit quads, so it needs the hand cell's pixel
+    // The quad layer measures the hand's cell itself, so it needs the pixel
     // size; the engine scales each sheet natively and ignores this key. PX's
     // three hand sheets are 60x60.
     handRows.push('hand_size = 60,');
@@ -1049,15 +1087,15 @@ export function generateLuaCode(project: WeaponProject): string {
     }
     if (h.handScale && h.handScale !== 1) handRows.push(`hand_scale = ${h.handScale},`);
     if (!drawHand) handRows.push('draw_hand = false,');
-    // The engine reads the hand keys off the claim's hold table; `px_hold_art`
-    // reads them again from the local table it draws with.
+    // The engine reads the hand keys off the claim's hold table; `sb.hold`
+    // draws the same numbers from the local table.
     for (const row of handRows) holdRows.push(row);
     if (h.keepWhileFiring) holdRows.push('keep_while_firing = true,');
     if (h.thrown) holdRows.push('thrown = true,');
     if (h.putAway) holdRows.push('put_away = true,');
-    // `px_hold_art` and the aiming manager both need the weapon id, and the
-    // engine ignores the key.
+    // The aiming manager needs the weapon id, and the engine ignores the key.
     if (usesHoldLocal) holdRows.push('weapon = ctx.id,');
+    if (usesFiringHold) holdRows.push('keep_firing = true,');
     if (usesAimLayer) {
       // The quad layer draws the cell itself, so it needs the sheet's own pixel
       // size (the engine scales the sheet natively and ignores these keys). It
@@ -1110,28 +1148,111 @@ export function generateLuaCode(project: WeaponProject): string {
         holdRows.push('  },');
         holdRows.push('},');
       }
-    }
-    if (usesHoldArt) {
-      // `px_hold_art` takes the same table plus these two presentation keys
-      // (the engine ignores them). It has no scale key: `weap_scale` is folded
-      // into `size`, the cell's pixel extent, or the firing frames would draw
-      // at a different size from the aiming frames.
-      const fallback = defaultArtFor(project);
-      const frames = Math.max(1, h.frames || 1);
-      const width = h.sheetWidth ?? fallback.width;
-      // An uploaded sheet is already a strip; the exporter stacks the default
-      // art to `frames`, so its cell is the original image.
-      const cellHeight = h.sheetFile
-        ? (h.sheetHeight ?? fallback.height) / frames
-        : fallback.height;
-      holdArtSize =
-        Math.max(1, Math.round(Math.min(width, cellHeight) * (h.scale ?? 1) * 100) / 100);
-      holdRows.push(`size = ${holdArtSize},`);
+      // The firing role. Its own sheet, cell, size, strip, window and hand, so
+      // the aim entry and the firing entry never share a number by accident.
+      if (usesFiringArt) {
+        const fallback = defaultArtFor(project);
+        const holdFrames = Math.max(1, h.frames || 1);
+        const holdCell = Math.min(
+          h.sheetWidth ?? fallback.width,
+          h.sheetFile ? (h.sheetHeight ?? fallback.height) / holdFrames : fallback.height,
+        );
+        const fireFrames = Math.max(1, Math.round(h.fireFrames ?? 1));
+        const flashHeight = h.flashHeight ?? 0;
+        const cellH = Math.max(
+          1,
+          fireFrames > 1 && flashHeight > 0
+            ? Math.floor(flashHeight / fireFrames)
+            : Math.min(h.flashWidth ?? 0, flashHeight) || holdCell,
+        );
+        const cellW = Math.max(
+          1,
+          Math.round(
+            fireFrames > 1 && h.flashWidth
+              ? h.flashWidth
+              : Math.min(h.flashWidth ?? 0, flashHeight) || holdCell,
+          ),
+        );
+        const fireFps = Math.max(1, Number(h.fireFps) || 15);
+        const fireScale = h.fireScale ?? h.scale ?? 1;
+        const fireRadius = h.fireWeapRadius ?? h.weapRadius ?? 6;
+        const fireRotation = h.fireWeapRotation ?? h.weapRotation ?? 0;
+        const fireHandDeg = h.fireHandRotation ?? h.handRotation ?? 0;
+        const fireHandScale = h.fireHandScale ?? h.handScale ?? 1;
+        const fireHandIdx = h.handType === 'lower' ? 1 : h.handType === 'upper' ? 3 : 2;
+        const rotation = (deg: number) =>
+          (1 + deg / 180).toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
+        holdRows.push('fire = {');
+        holdRows.push(`  sheet = ${luaQuote(flashSheetPath(project))},`);
+        holdRows.push(`  cell_w = ${cellW},`);
+        holdRows.push(`  cell_h = ${cellH},`);
+        holdRows.push(`  scale = ${formatNumber(fireScale)},`);
+        if (fireFrames > 1) {
+          holdRows.push(`  frames = ${fireFrames},`);
+          holdRows.push(`  anim_speed = ${formatNumber(fireFps / (1.5 * fireFrames))},`);
+        }
+        // Unset means one whole strip cycle (WA's own two firing frames are too
+        // short to see anything else), which is the default the panel shows too.
+        const fireTicks = Math.max(
+          0,
+          Math.round(h.fireTicks ?? Math.max(2, Math.ceil((fireFrames * 50) / fireFps))),
+        );
+        holdRows.push(`  ticks = ${fireTicks},`);
+        if (h.fireHideMain) holdRows.push('  hide_main = true,');
+        // The role's own nudge, the same channel the held art has.
+        if ((h.fireOffsetX ?? 0) !== 0 || (h.fireOffsetY ?? 0) !== 0) {
+          holdRows.push(
+            `  offset = { x = ${formatNumber(h.fireOffsetX ?? 0)}, y = ${formatNumber(h.fireOffsetY ?? 0)} },`,
+          );
+        }
+        holdRows.push(`  weap_radius = ${fireRadius},`);
+        holdRows.push(`  weap_rotation = ${rotation(fireRotation)},`);
+        holdRows.push('  weap_radial_rotation = 1,');
+        holdRows.push(`  hand = holds.PX_HANDS[${fireHandIdx}],`);
+        holdRows.push(`  hand_type = ${fireHandIdx},`);
+        holdRows.push(`  hand_radius = ${h.fireHandRadius ?? h.handRadius ?? 10},`);
+        holdRows.push(`  hand_rotation = ${rotation(fireHandDeg)},`);
+        holdRows.push('  hand_radial_rotation = 1,');
+        holdRows.push('  hand_size = 60,');
+        if (fireHandScale !== 1) holdRows.push(`  hand_scale = ${formatNumber(fireHandScale)},`);
+        if ((h.fireHandOffsetX ?? 0) !== 0 || (h.fireHandOffsetY ?? 0) !== 0) {
+          holdRows.push(
+            `  hand_offset = { x = ${formatNumber(h.fireHandOffsetX ?? 0)}, y = ${formatNumber(h.fireHandOffsetY ?? 0)} },`,
+          );
+        }
+        if (h.fireDrawHand === false) holdRows.push('  draw_hand = false,');
+        holdRows.push('},');
+      }
     }
   }
 
   // Install function
   lines.push('  install = function(ctx)');
+  if (carriesFuse) {
+    // A statement, so it sits above the claim rather than inside it: the fuse
+    // the player picks while aiming is sampled once per 50 Hz frame, and the
+    // burst reads the last pick off it.
+    lines.push("    -- The fuse the player picked while aiming (WA's fuse option), sampled");
+    lines.push('    -- once per 50 Hz frame: the digit keys are the turn player\'s, from the');
+    lines.push('    -- lockstep keyboard, so every peer sees the same value.');
+    lines.push('    wa.on.worm_message(function()');
+    lines.push('      local now = wa.world.frame() or 0');
+    lines.push('      if now == fuse_frame then return end');
+    lines.push('      fuse_frame = now');
+    lines.push('      local keys = wa.world and wa.world.keys and wa.world.keys() or nil');
+    lines.push('      local digit = keys and keys.digit or nil');
+    lines.push('      if digit == nil then return end');
+    lines.push('      local worms = wa.worms.all()');
+    lines.push('      for i = 1, #worms do');
+    lines.push('        local w = worms[i]');
+    lines.push('        if w.turn and w.weapon == ctx.id and FUSE_AIM[w.state_id]');
+    lines.push('          and digit >= 1 and digit <= 5 then');
+    lines.push('          fuse_by_worm[w.id] = digit * 1000');
+    lines.push('        end');
+    lines.push('      end');
+    lines.push('    end, { msgs = { wa.msg.FRAME_FINISH } })');
+    lines.push('');
+  }
   if (usesZap) {
     // `px.electric`'s damage module uses `wa` at load (its depth, sheets and
     // loop sound), so it can only be required here. Assigning the outer local
@@ -1154,91 +1275,11 @@ export function generateLuaCode(project: WeaponProject): string {
   }
   if (usesHoldLocal) {
     // With the aiming manager the table is built by `sb.hold`, which returns the
-    // engine's key set and, when the last feature needs it, attaches the quad
-    // layer; `px_hold_art` reads the same table.
+    // engine's key set and attaches the quad layer (the aim poses, the held art
+    // on WA's firing frames, and the firing role).
     lines.push(usesAimLayer ? '    local hold = sb.hold(ctx, {' : '    local hold = {');
     for (const row of holdRows) lines.push(`      ${row}`);
     lines.push(usesAimLayer ? '    })' : '    }');
-  }
-  if (usesFiringArt) {
-    // FAMAS' firing sheet: the hold's own placement, its own picture. The helper
-    // has no `weap_scale` (it draws a quad at `size` pixels), so the multiplier
-    // goes into `size`, the flash cell's pixel extent times the hold's scale.
-    const h = project.hold!;
-    const fallback = defaultArtFor(project);
-    const holdFrames = Math.max(1, h.frames || 1);
-    // The hold's own cell: an uploaded strip is sliced by `frames`, the default
-    // art is stacked to them (so its cell is the original image).
-    const holdCell = Math.min(
-      h.sheetWidth ?? fallback.width,
-      h.sheetFile ? (h.sheetHeight ?? fallback.height) / holdFrames : fallback.height,
-    );
-    // The firing sheet is a vertical strip of equal cells: its frame count
-    // slices the height, exactly as `gfx::load_strip_bytes` does at load. One
-    // frame falls back to the smaller side, which is the old single-cell rule.
-    const fireFrames = Math.max(1, Math.round(h.fireFrames ?? 1));
-    const flashHeight = h.flashHeight ?? 0;
-    const cell = Math.max(
-      1,
-      fireFrames > 1 && flashHeight > 0
-        ? Math.floor(flashHeight / fireFrames)
-        : Math.min(h.flashWidth ?? 0, flashHeight) || holdCell,
-    );
-    // The firing sheet's own geometry, when the author copied and changed it.
-    // Unset keys inherit the held art, which is PX's old FAMAS case.
-    const fireScale = h.fireScale ?? h.scale ?? 1;
-    const flashSize = Math.max(1, Math.round(cell * fireScale * 100) / 100);
-    const fireRadius = h.fireWeapRadius ?? h.weapRadius ?? 6;
-    const fireRotation = h.fireWeapRotation ?? h.weapRotation ?? 0;
-    lines.push('    local firing = {');
-    lines.push('      weapon = ctx.id,');
-    lines.push(`      sheet = ${luaQuote(flashSheetPath(project))},`);
-    lines.push(`      size = ${flashSize},`);
-    lines.push(`      weap_radius = ${fireRadius},`);
-    lines.push(
-      `      weap_rotation = ${(1 + fireRotation / 180).toFixed(6).replace(/0+$/, '').replace(/\.$/, '')},`,
-    );
-    lines.push('      weap_radial_rotation = 1,');
-    if (fireFrames > 1) {
-      // `px_hold_art` walks the strip on the world clock: one frame every
-      // `50/fps` ticks, the same rate `HoldSpec.anim_speed` produces.
-      const fireFps = Math.max(1, Number(h.fireFps) || 15);
-      lines.push(`      frames = ${fireFrames},`);
-      lines.push(
-        `      anim_speed = ${(fireFps / (1.5 * fireFrames)).toFixed(4).replace(/0+$/, '').replace(/\.$/, '')},`,
-      );
-    }
-    // The firing sheet draws in place of the hold, so it needs the hand too:
-    // `px_hold_art` only gets these keys from the table it is given. The hand
-    // is part of the firing role, so it has its own radius, rotation and scale
-    // (unset means the aiming hand, which is the usual case).
-    const handIdx = h.handType === 'lower' ? 1 : h.handType === 'upper' ? 3 : 2;
-    const fireHandDeg = h.fireHandRotation ?? h.handRotation ?? 0;
-    const fireHandScale = h.fireHandScale ?? h.handScale ?? 1;
-    lines.push(`      hand = holds.PX_HANDS[${handIdx}],`);
-    lines.push(`      hand_type = ${handIdx},`);
-    lines.push(`      hand_radius = ${h.fireHandRadius ?? h.handRadius ?? 10},`);
-    lines.push(
-      `      hand_rotation = ${
-        Math.abs(fireHandDeg) < 0.0001
-          ? '1'
-          : (1 + fireHandDeg / 180).toFixed(6).replace(/0+$/, '').replace(/\.$/, '')
-      },`,
-    );
-    lines.push('      hand_radial_rotation = 1,');
-    lines.push('      hand_size = 60,');
-    if (fireHandScale !== 1) lines.push(`      hand_scale = ${formatNumber(fireHandScale)},`);
-    if (h.fireDrawHand === false) lines.push('      draw_hand = false,');
-    if (usesFireSequence) {
-      // A burst keeps WA's firing states for its whole length; only the shot
-      // frames should show the firing sheet, so it follows `fire_seq`'s shot
-      // marks, the weapon passes its own sequencer table, because an exported
-      // library module is instanced per pack and would see a different one. A
-      // single shot needs no mark: its two firing states are the shot.
-      lines.push('      flash = true,');
-      lines.push('      shots = seq.shot_at,');
-    }
-    lines.push('    }');
   }
   lines.push(extraAssignments.length > 0 ? '    local rec = {' : '    wa.weapons.replace{');
   lines.push(`      name = ${luaQuote(project.name)},`);
@@ -1357,9 +1398,9 @@ export function generateLuaCode(project: WeaponProject): string {
     lines.push(`      sprites = { ${packSprites.join(', ')} },`);
   }
 
-  // `px_hold_art` draws the hold sheet through `wa.draw.quad`, which resolves a
-  // pack path through the same sprite-key registry the claim fills. The engine
-  // already packs every `hold.sheet` into the GPU atlas by itself
+  // `sb.hold` draws the hold and firing sheets through `wa.draw.quad`, which
+  // resolves a pack path through the same sprite-key registry the claim fills.
+  // The engine already packs every `hold.sheet` into the GPU atlas by itself
   // (`apply.rs`'s `hold_sheet` test), so this is belt-and-braces: it is the key
   // PX's own fire_seq weapons pass (`params = { gpu_prefix = "sprites/" }`),
   // and it keeps the quad's path resolving if a build ever stops claiming the
@@ -1368,7 +1409,7 @@ export function generateLuaCode(project: WeaponProject): string {
   // It is skipped when the claim has art WA itself has to draw from a real slot:
   // `gpu_prefix` moves every matching path to a virtual atlas id, and a body or
   // cluster sheet needs the stock id the record points at.
-  if ((usesHoldArt || usesAimLayer) && !strikeBodyArt && !clusterBitArt && !clusterBitHomingArt) {
+  if (usesAimLayer && !strikeBodyArt && !clusterBitArt && !clusterBitHomingArt) {
     lines.push('      params = { gpu_prefix = "sprites/" },');
   }
 
@@ -2803,8 +2844,8 @@ export function generateLuaCode(project: WeaponProject): string {
   if (usesHold) {
     lines.push('      worm_sprites = holds.PX_POSTURE,');
     if (usesHoldLocal) {
-      // The table itself is declared before the claim (px_hold_art and the
-      // aiming manager both build it there); the engine sees the same values.
+      // The table itself is declared before the claim (`sb.hold` builds it
+      // there, and the claim reads the same values the layer draws with).
       lines.push('      hold = hold,');
     } else {
       lines.push('      hold = {');
@@ -2885,6 +2926,11 @@ export function generateLuaCode(project: WeaponProject): string {
     }
     if (f.standoff > 0) {
       lines.push(`          standoff = ${standoff},`);
+    }
+    if (carriesFuse) {
+      // `launch` merges this over the slot's record, so the burst's rounds get
+      // the player's fuse instead of the record's (which is 0 for a grenade).
+      lines.push('          missile = { fuse = fuse_of(ev.worm) },');
     }
     if (live) {
       lines.push(`          x = function(i, w) return w.x${offX} end,`);
@@ -3112,24 +3158,6 @@ export function generateLuaCode(project: WeaponProject): string {
     lines.push('    }');
   }
 
-  if (usesHoldArt) {
-    // WA draws the held sheet on the firing frames only while `h.firing` is
-    // set, and only the turn's own fire message sets it; a fire_seq burst
-    // repeats the shot without one, so 0x6A/0x6B would hide it every other
-    // frame. A plain shot has that message, so with `keep_while_firing` the
-    // engine draws the sheet itself and only the firing sheet is added here
-    // adding both would draw the gun twice.
-    const keeper = !!project.hold?.keepWhileFiring && !usesFireSequence;
-    if (!keeper) {
-      lines.push('    -- Fill WA\'s repeat-fire frames (0x6A/0x6B) with the held art.');
-      lines.push('    hold_art.add(hold)');
-    }
-    if (usesFiringArt) {
-      lines.push('    -- The firing-state sheet, drawn in the same states and place.');
-      lines.push('    hold_art.add(firing)');
-    }
-    lines.push('');
-  }
 
   // Effects-SDK ribbon trail (`wf-lib/effects/trail`): PX's effect manager
   // samples the round's position on game frames and draws a tapering ribbon,
@@ -3457,19 +3485,12 @@ export function generateModToml(project: WeaponProject): string {
     !!project.terrainStamp?.enabled &&
     supportsTerrainStamp(project) &&
     stampImpact.kind === 'taze';
-  // `wf-lib/fire_seq` is its own library bundle (`px.fire_seq`), and so is
-  // `wf-lib/px_hold_art`, which the firing-state sprite rides (FAMAS-style).
+  // `wf-lib/fire_seq` is its own library bundle (`px.fire_seq`). The held art
+  // and the firing role no longer need it: the aim layer draws both.
   const usesFireSequence =
     !!project.fireSequence?.enabled &&
     !(project.enableCustomLua && /(?:^|\n)[ \t]*on_fire\s*=/.test(project.customLuaSnippet || '')) &&
     supportsFireSequence(project);
-  const usesFiringArt = !!usesHold && !!project.hold?.flashFile;
-  // `wf-lib/px_hold_art` ships in the px.fire_seq bundle, and it is what fills
-  // WA's repeat-fire frames for a held weapon (a firearm's burst included).
-  const usesHoldArt =
-    !!usesHold &&
-    (usesFireSequence || usesFiringArt || project.fireType === 'hitscan');
-
   const lines: string[] = [
     `id = ${luaQuote(project.id)}`,
     `name = ${luaQuote(project.name)}`,
@@ -3484,7 +3505,8 @@ export function generateModToml(project: WeaponProject): string {
   if (usesWfws) dependencies.push('wfws.sdk');
   if (usesRibbonTrail || usesExplosionEffect) dependencies.push('effects.sdk');
   if (usesElectricBlast || usesElectricImpact) dependencies.push('px.electric');
-  if (usesHoldArt) dependencies.push('px.fire_seq');
+  // `px.fire_seq` is the sequencer's bundle; the held art no longer needs it.
+  if (usesFireSequence) dependencies.push('px.fire_seq');
   // Extra library bundles the author asked for (they may be used from the
   // custom Lua snippet, or by a component this editor does not model).
   for (const dependency of project.extraDependencies || []) {

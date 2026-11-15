@@ -1,6 +1,7 @@
 import type { CustomSoundsConfig, FireSequenceConfig, WeaponProject } from '../types/weapon';
 import { DEFAULT_CUSTOM_SOUNDS, SOUND_PRIORITIES } from '../data/soundPresets';
 import { DEFAULT_FIRE_SEQUENCE, supportsFireSequence } from '../data/fireSequence';
+import { recordField } from '../utils/recordField';
 import { SoundUpload } from './EffectsCards';
 import {
   SectionHeader,
@@ -30,6 +31,19 @@ export const FireSequenceCard: React.FC<Props> = ({ project, onChange }) => {
     onChange({ customSounds: { ...sounds, ...patch } });
 
   const supported = supportsFireSequence(project);
+  // A launched round carries its own fuse: WA's fuse option (the number keys
+  // while aiming) only reaches the shots WA fires itself, so a burst would
+  // otherwise play the record's timer, which is 0 for every grenade.
+  const recordFuse = Math.max(
+    0,
+    Math.round(Number(recordField(project, 'missile.fuse', project.body.fuse_time_ms ?? 0)) || 0),
+  );
+  const carriesFuse =
+    seq.enabled &&
+    seq.mode !== 'actors' &&
+    recordFuse === 0 &&
+    (project.fireType === 'power' || (project.fireType === 'drop' && !!project.body.fuse));
+  const fuseFallback = 3000;
   const customOnFire =
     !!project.enableCustomLua && /(?:^|\n)[ \t]*on_fire\s*=/.test(project.customLuaSnippet || '');
 
@@ -117,6 +131,16 @@ export const FireSequenceCard: React.FC<Props> = ({ project, onChange }) => {
             {seqNum('seq-offset-x', 'Muzzle Offset X', 'x', 'Horizontal origin offset from worm center before standoff.', 'offsetX', { min: -100, max: 100, unit: 'px' })}
             {seqNum('seq-offset-y', 'Muzzle Offset Y', 'y', 'Vertical origin offset from worm center (-3 is roughly weapon height).', 'offsetY', { min: -100, max: 100, unit: 'px' })}
           </div>
+
+          {carriesFuse && (
+            <p className="rounded-lg border border-amber-200 bg-amber-50/70 px-3 py-2 text-[11px] leading-snug text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200">
+              <span className="font-semibold">Fuse</span>: the pack launches these rounds
+              itself, so each one carries the fuse the player picks while aiming (the number
+              keys 1 to 5) and falls back to {fuseFallback} ms. WA writes its fuse option into
+              the shots it fires, never into a launched one, which is why a burst without this
+              goes off on the first frame.
+            </p>
+          )}
 
           <div className="flex flex-wrap gap-x-6 gap-y-2 pt-1">
             <label className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-stone-700 dark:text-stone-300">

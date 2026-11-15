@@ -2622,3 +2622,127 @@ The test pack's firing strip had to become a real strip too. It wrote
 would not slice at load and the importer measured a different cell than the
 generator had used. WF 32 now ships a stacked two-cell sheet, owns every number
 of its role, and `check_mod_import` asserts all of them plus the emitted table.
+
+## The firing role moved into `sb.hold`, and `px_hold_art` is gone
+
+WA's firing states are exactly two frames (0x6A/0x6B). The engine draws
+`hold.sheet` there only while `h.firing` is set, and only the turn's fire
+message sets that, so:
+
+- a burst lost the gun from the second shot (that is what `px_hold_art` was
+  patched in for: a second hold entry with a pixel `size` key, its own hand
+  redraw, and `shots`/`flash` marks);
+- a firing sheet could only ever appear for as long as those two frames lasted,
+  which is why a strip with `frames = 4` showed one frame and vanished. The
+  window was the missing concept, not the animation.
+
+Both are the aiming layer's job now, because it already draws the held art as
+quads from `wa.on.draw` with the engine's own geometry:
+
+- **`keep_firing = true`** on the `sb.hold` spec keeps the held art on
+  WA's firing frames: the same quads as the aim pose, at full size (the engine's
+  20-frame `grow()` belongs to the aiming counter, so reusing it would draw the
+  gun tiny), with the strip on the firing clock. `hold_needs_lua` returns true
+  for it, so `holdNeedsAimLayer` has to agree: a firearm (`hitscan`) and an
+  enabled fire sequence now put the layer on. That is the trade for dropping a
+  second library from every hold.
+- **`fire = { ... }`** is the firing role: `sheet`, `cell_w`/`cell_h`, `scale`,
+  `frames`, `anim_speed`, `ticks`, `hide_main`, its own `weap_radius`,
+  `weap_rotation`, `weap_radial_rotation` and its own hand. `ticks` is the
+  window in 50 Hz frames from the first firing frame; unset means one whole
+  strip cycle, `0` means "WA's frames only" (the old behaviour), and a gap wider
+  than one tick rewinds the strip, so each shot in a burst replays it.
+  `hide_main` skips the aim draw and mutes the engine while the role shows,
+  which is the "the firing art replaces the gun" case.
+
+The generator writes `keep_firing` instead of
+`local hold_art = require("wf-lib/px_hold_art")` + `hold_art.add(hold)`, so a
+hold's dependency set is `wf.sdk` + `wfws.sdk`; `px.fire_seq` is the sequencer's
+bundle only. `tools/check_mod_import.ts` asserts both the emitted
+`keep_firing`/`fire` table and the absence of `px_hold_art`.
+
+The preview follows: the Firing Frames tab hides the main weapon when
+`fireHideMain` is set (the gun, the default art and the placeholder all skip),
+and the sheet's window defaults to the same one-cycle number the generator uses
+(`ceil(frames * 50 / fps)`), shown in the **Show For** dial so the number on
+screen is the number in game.
+
+## One layout for both hold roles
+
+The Aim and Firing tabs were the same editor with a different set of knobs, but
+they did not look like it: the aim column had scale, radius, rotation and an
+offset pair, the firing column had radius, rotation, scale and no offset at all,
+and the firing sheet lived in its own card while the held sheet had a bar above
+the tabs. Reading one and then the other meant hunting for the same number
+twice.
+
+They now run the same four blocks in the same order, which is how the flight
+builder gives every sprite role its complete control set:
+
+1. the role's sheet (one upload row, swapped with the tab),
+2. its animation (`frames` / `fps` / current frame),
+3. its placement (radius, rotation, scale),
+4. its offset (X/Y, plus one line about which draw is in use).
+
+The hand column mirrors the same order: Draw Hand, Hand Type, hand scale,
+hand radius, hand rotation, hand offset. Only the behaviour block differs, and
+that is because the two roles really are different: the aim tab has
+Launchable/Throwable, put-away, keep-while-firing and the Space clip, the firing
+tab has Show For, Hide Main Weapon and the copy/follow-aim note.
+
+The firing role gained the two channels it was missing, `fireOffsetX` /
+`fireOffsetY` and `fireHandOffsetX` / `fireHandOffsetY`, emitted as
+`offset = { x, y }` and `hand_offset = { x, y }` inside the `fire` table and
+drawn by `hold_draw_fire` the way `hold_draw_aim` draws the held art's: in sheet
+pixels, scaled with the role's own `scale` (its `hand_scale` for the hand),
+turned with the drawn angle and mirrored with the side. Unlike the held art's
+offset it needs no extra layer, because the fire role is a quad role already.
+`Copy aiming parameters` copies them too, and `hasFireGeometry` counts them, so
+`Follow the aim` appears once a role owns one.
+
+The upload row swapped with the tab is the other half of "the two tabs are the
+same editor": the held sheet is no longer a bar above the tab bar with the
+firing sheet buried in a column card. The enable pill stays above the tabs,
+because it gates both roles.
+
+## A sequential burst carries the player's fuse
+
+A grenade record keeps `missile.fuse` (0x8C) at **0**: WA never reads it for a
+grenade, because the fuse is a WA *option*, the 1-5 seconds the player picks with
+the number keys while aiming, and WA writes that number into the shot
+description when it fires. A sequential burst does not go through WA's fire path
+at all: `wf-lib/fire_seq` calls `wa.weapons.launch`, whose shoot description
+takes the fuse from `missile.fuse` (0 when absent). So every round of a burst
+exploded on its first frame, whatever the weapon panel said.
+
+The engine offers no verb for the selected option, so the pack reads the keys
+itself, which is exactly what they are: `wa.world.keys().digit` is the digit the
+turn player holds, taken from the lockstep input, so every peer samples the same
+value on the same frame. For a missile-family sequence (a `power` record, or a
+`drop` one with a fuse; not the actor mode, which builds no missile) the
+generator now emits:
+
+- `FUSE_DEFAULT`, the record's own `missile.fuse` when it has one (dynamite's
+  5000, a bazooka's 9000) and 3000 otherwise, WA's default grenade fuse;
+- `FUSE_AIM = { 0x67, 0x68, 0x69 }`, the three aiming states;
+- a per-worm `fuse_by_worm` table and `fuse_of(w)`;
+- inside `install`, a `wa.on.worm_message(..., { msgs = { wa.msg.FRAME_FINISH } })`
+  sampler: once per 50 Hz frame, if a worm is the turn's and aims this weapon,
+  `digit 1..5` becomes `digit * 1000`;
+- `missile = { fuse = fuse_of(ev.worm) }` in the launch table, which
+  `record_table::launch_patches` turns into the fire params' fuse
+  (`FIRE_FUSE`, 0x50 relative, absolute 0x8C) and the engine copies into the
+  shot (`SHOOT_FUSE`).
+
+The tracker is only emitted when the record's own `missile.fuse` is **0**, which
+is exactly the set of weapons WA offers its fuse keys for; an author who pinned a
+timer (dynamite's 5000, a bazooka's 9000) keeps it, and `launch` plays the
+record. The effective value is read through `recordField` (`missile.fuse`), so a
+donor's or a `.wep`'s timer counts as the record's. The sampler is a statement,
+so it sits at the top of `install()`, above the claim, not inside the
+`wa.weapons.replace{ ... }` table where the burst's own keys live.
+
+The Firing Sequence card says so under its numbers, with the fallback it will
+use, because "the fuse is not the record's" is exactly the kind of thing an
+author needs to know before reporting it as a bug. `tools/check_mod_import.ts`
+asserts the launch key, the tracker and the fallback on WF 29.

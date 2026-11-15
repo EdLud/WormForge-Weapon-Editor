@@ -530,7 +530,7 @@ function makeOp(partial: {
   roamSheets?: WeaponProject['roamSheets'];
   /** `wf-lib/fire_seq` burst from one `on_fire`. */
   fireSequence?: Partial<NonNullable<WeaponProject['fireSequence']>>;
-  /** Held art (`hold`), e.g. the repeat-fire draw with `px_hold_art`. */
+  /** Held art (`hold`), e.g. the repeat-fire draw with `keep_firing`. */
   hold?: Partial<WeaponProject['hold']>;
   /** The Space swing played on the held art (`aimClip`). */
   aimClip?: Partial<NonNullable<WeaponProject['aimClip']>>;
@@ -1271,7 +1271,7 @@ const TESTS: TestCase[] = [
       slot: 'grenade',
       // A held sheet plus a burst: WA's repeat-fire frames (0x6A/0x6B) alternate
       // and the engine only draws them while `h.firing` is set, which a
-      // fire_seq burst does not refresh. `px_hold_art` covers those two states,
+      // fire_seq burst does not refresh. `keep_firing` covers those two states,
       // so the grenade must stay visible for the whole burst. `size` is the
       // 46 px default cell times the 0.7 scale.
       hold: {
@@ -1299,11 +1299,11 @@ const TESTS: TestCase[] = [
       },
     }),
     intent:
-      '`px_hold_art` with `wf-lib/fire_seq`: the held grenade is redrawn on WA\'s repeat-fire frames, at the sheet\'s cell size times `weap_scale`.',
+      '`keep_firing` with `wf-lib/fire_seq`: the held grenade stays on WA\'s repeat-fire frames through the aim layer, at the sheet\'s own size times `weap_scale`.',
     expect:
-      'After the first shot the held art stays on screen every frame for the rest of the burst, at the same size as while aiming (0.7x), and still follows the live aim.',
+      'After the first shot the held art stays on screen every frame for the rest of the burst, at the same size and place as while aiming (0.7x), and still follows the live aim and the hand.',
     watch:
-      'The grenade blinking out on every other frame (px_hold_art missing or its `weapon` id wrong), the firing frames drawing at 1x instead of 0.7x (`size` missing the scale), or art drawn at a fixed 90 px cell.',
+      'The grenade blinking out on every other frame (no `keep_firing`), the firing frames drawing at 1x instead of 0.7x (`weap_scale` dropped), or the art jumping to a fixed position (the aim geometry not copied).',
   },
   {
     project: makeOp({
@@ -1312,8 +1312,8 @@ const TESTS: TestCase[] = [
       slot: 'minigun',
       fireType: 'hitscan',
       body: { sprite: 'minigun', damage: 6 },
-      // The firing-state sprite (`hold.flash`): the engine draws it at the
-      // gun's muzzle on WA's firing frames, for `frames` + 1 ticks.
+      // The firing role: a sheet of its own drawn on WA's firing frames, for a
+      // window of its own (`ticks`), instead of the held gun.
       hold: {
         enabled: true,
         handType: 'mid',
@@ -1331,30 +1331,38 @@ const TESTS: TestCase[] = [
         // hand, so the round trip has something real to carry.
         fireFrames: 2,
         fireFps: 12,
+        // One strip cycle at 12 fps, and the gun gives way to it.
+        fireTicks: 9,
+        fireHideMain: true,
         fireWeapRadius: -4,
         fireWeapRotation: 15,
         fireScale: 1.2,
+        // The role's own nudge channels, so the offsets are carried too.
+        fireOffsetX: 6,
+        fireOffsetY: -4,
+        fireHandOffsetX: -2,
+        fireHandOffsetY: 3,
         fireHandRadius: 14,
         fireHandRotation: -10,
         fireHandScale: 0.9,
       },
     }),
     intent:
-      'The firing-state sheet: a second hold entry (`local firing`) drawn by `px_hold_art` in WA\'s firing states, in the held gun\'s own place.',
+      "The firing role: `sb.hold`'s `fire` table draws its own two-frame strip on WA's firing frames (0x6A/0x6B), with its own placement and hand, and hides the held gun while it plays.",
     expect:
-      'Every shot shows the firing sheet where the held gun draws (same radius, rotation, scale and hand), for the shot\'s frames; between shots the hold sheet is what stays on screen.',
+      "Every shot shows the firing strip where the gun draws (its own radius, rotation and scale), animating for 9 ticks instead of WA's two frames, with the gun hidden behind it and the role's own hand.",
     watch:
-      'No flash (the `firing` table missing, or the helper gated by `flash` with no shot mark), the flash at a fixed offset instead of the gun\'s, or the hand missing while firing.',
+      'A single flash frame (the `ticks` window missing), the held gun showing under the strip (`hide_main` missing), the strip at the aim placement instead of its own, or the hand missing while firing.',
   },
   {
     project: makeOp({
       id: 'wftest.36_seq_flash',
       name: 'WF 36 Sequential Flash',
       slot: 'grenade',
-      // Both art roles on one burst: the hold sheet fills WA's firing frames
-      // for the whole burst (`px_hold_art`), and the firing sheet replaces it
-      // only on the frames around each shot (`flash = true` + fire_seq's shot
-      // marks), which is PX's `OnFiringAnim(isFiring)`.
+      // Both art roles on one burst: `keep_firing` holds the held sheet on WA's
+      // firing frames for the whole burst, and the firing role replaces it for
+      // its own window (`ticks`) from each shot, which is PX's
+      // `OnFiringAnim(isFiring)`.
       hold: {
         enabled: true,
         handType: 'mid',
@@ -1380,11 +1388,11 @@ const TESTS: TestCase[] = [
       },
     }),
     intent:
-      '`px_hold_art` + `wf-lib/fire_seq` with both a hold sheet and a firing sheet: the aim sheet fills the burst\'s firing frames, and the firing sheet lights only on each shot.',
+      '`keep_firing` + `wf-lib/fire_seq` with both a hold sheet and a firing sheet: the aim sheet fills the burst\'s firing frames, and the firing sheet plays for its own window from each shot.',
     expect:
-      'During the six-shot burst the held grenade stays visible at 0.7x between shots, and the firing sheet flashes over it for a couple of frames on every shot only.',
+      'During the six-shot burst the held grenade stays visible at 0.7x between shots, and the firing sheet plays over it from every shot for its own window (not for the whole burst).',
     watch:
-      'The firing sheet stuck on for the whole burst (the `flash` gate missing), the gun blinking out between shots (the plain hold not added), or the hand disappearing on firing frames.',
+      'The firing sheet stuck on for the whole burst (the window ignored), the gun blinking out between shots (no `keep_firing`), or the hand disappearing on firing frames.',
   },
   {
     project: makeOp({
@@ -1783,7 +1791,7 @@ for (const test of TESTS) {
   }
 
   // Held art. The engine loads `hold.sheet` itself, so no `sprites` entry; the
-  // file only has to exist. `px_hold_art` redraws the same sheet on the
+  // file only has to exist. The aim layer redraws the same sheet on the
   // repeat-fire frames, so a sequential-fire test needs the pixels too.
   if (project.hold?.enabled) {
     mkdirSync(join(BUNDLE, 'sprites', folder), { recursive: true });
