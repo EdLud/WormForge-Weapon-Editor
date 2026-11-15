@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useMemo, useState } from 'react';
 import {
   WeaponProject,
   HandType,
@@ -17,7 +17,7 @@ import {
   roamWalkPoseId,
 } from '../utils/luaGenerator';
 import { StockSpriteInput } from './StockSpriteInput';
-import { NumberInput } from './NumberInput';
+import { NumberInput, UnitNumberInput } from './NumberInput';
 import { SheetFrameWarning } from './SheetFrameWarning';
 import { imagePixelSize } from '../utils/imagePixelSize';
 import { stockSpriteName } from '../data/stockSprites';
@@ -33,6 +33,14 @@ import {
   bitBuilderMode,
   primaryBuilderOn,
 } from '../data/spriteBuilder';
+import {
+  CLIP_EASES,
+  DEFAULT_AIM_CLIP,
+  evalClip,
+  type AimClipConfig,
+  type AimClipKey,
+  type ClipPose,
+} from '../data/aimClip';
 import mapBackgroundSrc from '../../spec/pre_weapon_preview.png';
 import normalIconSrc from '../../spec/normal.png';
 import homingIconSrc from '../../spec/hmissil1.png';
@@ -297,6 +305,62 @@ const MISSILE_ZOOM_MAX = 12;
  */
 const AIM_ZOOM_STEP = 0.25;
 const AIM_ZOOM_MIN = 0.5;
+/**
+ * One aim dial: a label, an exact number box (the slider is for the hand, the
+ * box for the value the export actually gets) and the slider under it. The
+ * offset pairs put two of these side by side, because X and Y are one thought.
+ */
+const HoldDial: React.FC<{
+  id: string;
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+  min: number;
+  max: number;
+  step: number;
+  unit?: string;
+  title?: string;
+}> = ({ id, label, value, onChange, min, max, step, unit, title }) => (
+  <div className="space-y-1" title={title}>
+    <div className="flex items-center justify-between gap-2">
+      <label
+        htmlFor={id}
+        className="min-w-0 truncate text-xs font-semibold text-stone-700 dark:text-stone-300"
+      >
+        {label}
+      </label>
+      {/* 92px, not 74: the unit cell takes ~30px and the input's own padding
+          24px, and an `input` clips its text to the content box, so a two-digit
+          value ("15", "-8") painted nothing at all in a narrower box. */}
+      <div className="w-[92px] shrink-0">
+        <UnitNumberInput
+          id={`${id}-value`}
+          aria-label={`${label} exact value`}
+          value={value}
+          step={step}
+          unit={unit}
+          onChange={(event) => {
+            const raw = Number(event.target.value);
+            if (event.target.value.trim() === '' || Number.isNaN(raw)) return;
+            onChange(Math.min(max, Math.max(min, raw)));
+          }}
+          className="py-0.5 !px-2 text-[11px]"
+        />
+      </div>
+    </div>
+    <input
+      id={id}
+      type="range"
+      min={min}
+      max={max}
+      step={step}
+      value={value}
+      onChange={(event) => onChange(Number(event.target.value))}
+      className="w-full cursor-pointer accent-forge-500"
+    />
+  </div>
+);
+
 const AIM_ZOOM_MAX = 4;
 
 export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) => {
@@ -334,21 +398,49 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
   const flashFileInputRef = useRef<HTMLInputElement>(null);
   const flashImgRef = useRef<HTMLImageElement | null>(null);
   const [flashLoadedImg, setFlashLoadedImg] = useState<HTMLImageElement | null>(null);
-  const [flashLeft, setFlashLeft] = useState(0);
+  // 50 Hz ticks on the firing tab: the strip's frame is derived from them the
+  // way `px_hold_art` derives it from the world clock, so the tab shows the
+  // firing animation running instead of a single still.
+  const [fireTick, setFireTick] = useState(0);
+
+  // The Space swing: `swingStart` is a wall-clock stamp so the preview plays at
+  // 20 ms a tick like the game, and `swingTick` re-renders the canvas as it
+  // runs. Nothing is stored on the project here: the clip is the author's data
+  // and this only plays it.
+  // Two faces of one builder: the held art and the firing sheet. Both are the
+  // same gun with the same geometry; the tab keeps the firing controls from
+  // crowding the aim ones.
+  const [aimTab, setAimTab] = useState<'aim' | 'firing'>('aim');
+  const [swingStart, setSwingStart] = useState<number | null>(null);
+  const [swingTick, setSwingTick] = useState(0);
 
   const triggerPutAwayDemo = () => {
     setPutAwayCounter(20);
   };
 
-  const triggerFireDemo = () => {
-    setFlashLeft(Math.max(1, Math.round(project.hold.flashFrames ?? 3)) + 1);
-  };
-
+  // Play the clip while `swingStart` is set, one 50 Hz step at a time.
   useEffect(() => {
-    if (flashLeft <= 0) return;
-    const timer = setTimeout(() => setFlashLeft((left) => Math.max(0, left - 1)), 20);
+    if (swingStart === null) return;
+    const ticks = Math.max(1, Math.round(playerClip?.ticks ?? DEFAULT_AIM_CLIP.ticks));
+    if (swingTick >= ticks) {
+      const done = setTimeout(() => setSwingStart(null), 0);
+      return () => clearTimeout(done);
+    }
+    const timer = setTimeout(() => {
+      setSwingTick(Math.floor((performance.now() - swingStart) / 20));
+    }, 20);
     return () => clearTimeout(timer);
-  }, [flashLeft]);
+    // `playerClip` is read for its length only; the tick drives the loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [swingStart, swingTick]);
+
+  // The firing role's clock: one tick per 50 Hz frame while its tab is open, so
+  // the strip runs at the rate the game plays it (`fireFps` frames a second).
+  useEffect(() => {
+    if (aimTab !== 'firing') return;
+    const timer = setInterval(() => setFireTick((tick) => tick + 1), 20);
+    return () => clearInterval(timer);
+  }, [aimTab]);
 
   useEffect(() => {
     if (putAwayCounter === null) return;
@@ -364,6 +456,70 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
 
   const hold = project.hold;
   const defaultArt = defaultArtFor(project);
+  // The clip the preview plays: the project's own, or the default shape while
+  // the card is on and no keys exist yet (so pressing Space always shows
+  // something rather than nothing).
+  const playerClip: AimClipConfig = project.aimClip ?? DEFAULT_AIM_CLIP;
+  // The same test the generator and the exporter run (`holdNeedsAimLayer`),
+  // mirrored here so the aim page says which draw is in use.
+  const hasFireGeometry =
+    hold.fireWeapRadius !== undefined ||
+    hold.fireWeapRotation !== undefined ||
+    hold.fireScale !== undefined ||
+    hold.fireHandRadius !== undefined ||
+    hold.fireHandRotation !== undefined ||
+    hold.fireHandScale !== undefined;
+  const aimLayerOn =
+    hold.enabled &&
+    ((hold.offsetX ?? 0) !== 0 ||
+      (hold.offsetY ?? 0) !== 0 ||
+      (hold.handOffsetX ?? 0) !== 0 ||
+      (hold.handOffsetY ?? 0) !== 0 ||
+      !!project.aimClip?.enabled);
+  // The firing role's resolved numbers, the way the generator resolves them:
+  // unset means "the aim art", which is PX's FAMAS case.
+  const fireStripFrames = Math.max(1, Math.round(hold.fireFrames ?? 1));
+  const fireFps = Math.max(1, Math.round(Number(hold.fireFps) || 15));
+  const fireCellWidth = Math.max(1, Math.round(hold.flashWidth ?? 0));
+  const fireCellHeight = Math.max(1, Math.round((hold.flashHeight ?? 0) / fireStripFrames));
+  const firePreviewFrame =
+    fireStripFrames > 1 ? Math.floor((fireTick * fireFps) / 50) % fireStripFrames : 0;
+  const updateClip = (patch: Partial<AimClipConfig>) => {
+    onChange({ aimClip: { ...playerClip, ...patch } });
+  };
+  // Memoised on the tick, so an unrelated render does not rebuild the aim
+  // canvas (the pose is an effect dependency).
+  const swingPose: ClipPose | null = useMemo(
+    () =>
+      playerClip.enabled && swingStart !== null
+        ? evalClip(playerClip, Math.min(swingTick, playerClip.ticks))
+        : null,
+    [playerClip, swingStart, swingTick],
+  );
+  const triggerSwing = () => {
+    if (!playerClip.enabled) return;
+    setSwingTick(0);
+    setSwingStart(performance.now());
+  };
+
+  // The keyboard is the game's own trigger, so the preview listens to the same
+  // key. Typing in a field keeps its Space.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.code !== 'Space' && event.key !== ' ') return;
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target?.isContentEditable) {
+        return;
+      }
+      if (!playerClip.enabled) return;
+      event.preventDefault();
+      setSwingTick(0);
+      setSwingStart(performance.now());
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [playerClip.enabled]);
   const updateHold = (patch: Partial<typeof hold>) => {
     onChange({ hold: { ...hold, ...patch } });
   };
@@ -768,7 +924,15 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
     // are drawn right-facing, so the whole cell is mirrored below for the
     // left-facing pose, exactly as `SPRITE_MIRROR_X` mirrors the hold.
     const rot = (1 - aimT) * Math.PI;
-    const weapRotRad = ((Number(hold.weapRotation) || 0) * Math.PI) / 180;
+    // The firing tab previews the firing role: the numbers the game blits on WA's
+    // 0x6A/0x6B frames, with the firing sheet where the held art would be and
+    // only the strip looping. Every other tab is the aim role.
+    const firingView = aimTab === 'firing';
+    const aimWeapRotation = Number(hold.weapRotation) || 0;
+    const roleWeapRotation = firingView
+      ? Number(hold.fireWeapRotation ?? aimWeapRotation) || 0
+      : aimWeapRotation;
+    const weapRotRad = (roleWeapRotation * Math.PI) / 180;
 
     // 1. Base Worm aiming posture (PX_POSTURE.weaponlnk: 32 rows of 60x60).
     // `aim.png` is natively left-facing, while the hold math below places the
@@ -791,8 +955,16 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
     }
 
     // 2. Weapon Sprite
-    const weapRadius = Number(hold.weapRadius ?? 6);
-    const scale = (Number(hold.scale) || 1) * putAwayShrink;
+    const weapRadius = Number(
+      firingView ? (hold.fireWeapRadius ?? hold.weapRadius ?? 6) : (hold.weapRadius ?? 6),
+    );
+    // A swing's `scale` multiplies the art, exactly as the layer does. The firing
+    // role has no clip, so its scale is its own.
+    const poseScale = swingPose?.scale ?? 1;
+    const roleScale = firingView
+      ? Number(hold.fireScale ?? hold.scale) || 1
+      : Number(hold.scale) || 1;
+    const scale = roleScale * putAwayShrink * poseScale;
 
     // worm_hold.rs: `rot_w = rot + PI * weap_radial_rotation`; the generator
     // emits `weap_radial_rotation = 1`.
@@ -802,10 +974,13 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
     // worm_hold.rs: `PI - PI*aim - PI*(1 - weap_rotation)`, which is
     // `(1 - aim)*PI + weapRotation`.  PX hold art points up natively, so at
     // level aim this is 90 degrees clockwise and the barrel points forward.
-    const weapAngle = rot + weapRotRad;
+    // The swing's `angle` is added before the side mirror, as the layer does
+    // (`(base + swing) * facing`), so the art cuts the same way on both sides.
+    const weapAngle = rot + weapRotRad + ((swingPose?.angle ?? 0) * Math.PI) / 180;
 
     offCtx.save();
     offCtx.imageSmoothingEnabled = false;
+    offCtx.globalAlpha = swingPose?.alpha ?? 1;
     offCtx.translate(weapX, weapY);
     offCtx.rotate(weapAngle);
     offCtx.scale(scale, scale);
@@ -813,8 +988,10 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
     // scaled with the art. Translating inside the scaled, rotated frame is the
     // same nudge the aiming manager draws, and the cell's mirror carries it to
     // the left-facing pose exactly as the game's `facing` does.
-    const holdOffsetX = Number(hold.offsetX ?? 0);
-    const holdOffsetY = Number(hold.offsetY ?? 0);
+    // `offset` (`sb.hold`) and the swing's `dx`/`dy` share one frame: sheet
+    // pixels, scaled with the art, turned with the drawn angle.
+    const holdOffsetX = firingView ? 0 : Number(hold.offsetX ?? 0) + (swingPose?.dx ?? 0);
+    const holdOffsetY = firingView ? 0 : Number(hold.offsetY ?? 0) + (swingPose?.dy ?? 0);
     if (holdOffsetX || holdOffsetY) offCtx.translate(holdOffsetX, holdOffsetY);
 
     const weaponImg = weaponLoadedImg || weaponImgRef.current;
@@ -822,7 +999,13 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
       const totalFrames = Math.max(1, hold.frames || 1);
       const frameHeight = weaponImg.naturalHeight / totalFrames;
       const frameWidth = weaponImg.naturalWidth;
-      const sy = (currentFrame % totalFrames) * frameHeight;
+      // A clip key can name a frame (`frame = 3`), which steps the strip on a
+      // beat of its own instead of the engine's loop.
+      const shownFrame =
+        swingPose?.frame !== undefined
+          ? Math.min(totalFrames - 1, Math.max(0, Math.round(swingPose.frame)))
+          : currentFrame;
+      const sy = (shownFrame % totalFrames) * frameHeight;
 
       offCtx.drawImage(
         weaponImg,
@@ -862,25 +1045,53 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
     offCtx.restore();
 
     // 3. Hand Sprite
-    if (hold.drawHand !== false) {
-      const handRadius = Number(hold.handRadius ?? 10);
+    if ((firingView ? (hold.fireDrawHand ?? hold.drawHand) : hold.drawHand) !== false) {
+      const handRadius = Number(
+        firingView
+          ? (hold.fireHandRadius ?? hold.handRadius ?? 10)
+          : (hold.handRadius ?? 10),
+      );
+      const roleHandRotation = Number(
+        (firingView
+          ? (hold.fireHandRotation ?? hold.handRotation)
+          : hold.handRotation) || 0,
+      );
+      const roleHandScale = Number(
+        (firingView ? (hold.fireHandScale ?? hold.handScale) : hold.handScale) || 1,
+      );
       // worm_hold.rs: `rot_h = rot - PI * hand_radial_rotation`; the
       // generator emits `hand_radial_rotation = 1`.
       const rotH = rot - Math.PI;
-      const handX = cx + Math.sin(rotH) * handRadius;
-      const handY = cy - Math.cos(rotH) * handRadius;
+      let handX = cx + Math.sin(rotH) * handRadius;
+      let handY = cy - Math.cos(rotH) * handRadius;
+      // `hand_rotation` is in turns of PI (`rot + PI*hand_rotation`), and the
+      // panel's degrees become `1 + deg/180` the way `weap_rotation` does.
+      const handAngle = rot + Math.PI * (1 + roleHandRotation / 180);
+      // The hand offset and a swing's carry ride the hand's own size, which
+      // already includes `hand_scale` and the clip's `scale`. `px_hold_art` has
+      // no hand offset, so the firing role has none either.
+      const handCarry = roleHandScale * putAwayShrink * poseScale;
+      const hox =
+        (firingView ? 0 : Number(hold.handOffsetX ?? 0) + (swingPose?.dx ?? 0)) * handCarry;
+      const hoy =
+        (firingView ? 0 : Number(hold.handOffsetY ?? 0) + (swingPose?.dy ?? 0)) * handCarry;
+      if (hox || hoy) {
+        handX += hox * Math.cos(handAngle) - hoy * Math.sin(handAngle);
+        handY += hox * Math.sin(handAngle) + hoy * Math.cos(handAngle);
+      }
 
       let handImg = handMidImgRef.current;
       if (hold.handType === 'lower') handImg = handLowerImgRef.current;
       else if (hold.handType === 'upper') handImg = handUpperImgRef.current;
 
       if (handImg && handImg.complete && handImg.naturalWidth > 0) {
-        const handScale = (Number(hold.handScale) || 1) * putAwayShrink;
+        const handScale = roleHandScale * putAwayShrink * poseScale;
         offCtx.save();
         offCtx.imageSmoothingEnabled = false;
+        offCtx.globalAlpha = swingPose?.alpha ?? 1;
         offCtx.translate(handX, handY);
         // worm_hold.rs: `rot + PI * hand_rotation` (hand_rotation = 1).
-        offCtx.rotate(rot + Math.PI);
+        offCtx.rotate(handAngle);
         offCtx.scale(handScale, handScale);
         offCtx.drawImage(handImg, -handImg.naturalWidth / 2, -handImg.naturalHeight / 2);
         offCtx.restore();
@@ -898,7 +1109,15 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
     // mirrored by the worm's facing with the rest of the cell. It has its own
     // picture, so it is drawn at its own pixel size, not stretched to the gun.
     const flashImg = flashLoadedImg || flashImgRef.current;
-    if (flashLeft > 0 && flashImg && flashImg.complete && flashImg.naturalWidth > 0) {
+    if (firingView && flashImg && flashImg.complete && flashImg.naturalWidth > 0) {
+      // The firing sheet is a vertical strip: `fireFrames` slices it, and the
+      // frame walks at `fireFps`, the same rate `px_hold_art` uses in game
+      // (one frame every 50/fps ticks). It draws where the held art would be,
+      // which is why `weapX`/`weapY`/`weapAngle`/`scale` above are the firing
+      // role's own numbers on this tab.
+      const cellH = flashImg.naturalHeight / fireStripFrames;
+      const cellW = flashImg.naturalWidth;
+      const flashFrame = fireStripFrames > 1 ? firePreviewFrame : 0;
       offCtx.save();
       offCtx.imageSmoothingEnabled = false;
       offCtx.translate(weapX, weapY);
@@ -906,8 +1125,14 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
       offCtx.scale(scale, scale);
       offCtx.drawImage(
         flashImg,
-        -flashImg.naturalWidth / 2,
-        -flashImg.naturalHeight / 2
+        0,
+        flashFrame * cellH,
+        cellW,
+        cellH,
+        -cellW / 2,
+        -cellH / 2,
+        cellW,
+        cellH
       );
       offCtx.restore();
     }
@@ -959,7 +1184,7 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
       ctx.drawImage(offscreen, 0, 0, SIZE, SIZE, cellX, cellY, SIZE, SIZE);
     }
     ctx.restore();
-  }, [hold, aimAngleIndex, currentFrame, facingRight, assetsLoaded, weaponLoadedImg, defaultHoldLoaded, putAwayCounter, flashLoadedImg, flashLeft, aimZoom]);
+  }, [hold, aimAngleIndex, currentFrame, facingRight, assetsLoaded, weaponLoadedImg, defaultHoldLoaded, putAwayCounter, flashLoadedImg, firePreviewFrame, fireStripFrames, aimZoom, swingPose, aimTab]);
 
   // Derive active preview role settings for the 50 Hz simulation canvas
   const activeRolePreviewCfg = (() => {
@@ -1645,23 +1870,36 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
     } catch {
       // The browser still draws it; the cell just falls back to square.
     }
+    // The engine's own strip rule (`gfx::load_strip_bytes`): a vertical PNG
+    // whose height divides by its width is that many square cells, which is how
+    // a 36x72 upload becomes two 36x36 firing frames. Reading it here means the
+    // panel shows the frames the game will actually play.
+    const autoFrames =
+      flashWidth && flashHeight && flashHeight > flashWidth && flashHeight % flashWidth === 0
+        ? flashHeight / flashWidth
+        : 1;
     updateHold({
       enabled: true,
       flashFile: file,
       flashPreview: previewUrl,
       flashWidth,
       flashHeight,
-      flashFrames: Math.max(1, Math.round(hold.flashFrames ?? 3)),
-      flashOut: hold.flashOut ?? 0,
-      flashSide: hold.flashSide ?? 0,
-      flashScale: hold.flashScale ?? 1,
+      // A new firing sheet starts with its own copy of the aim placement, so
+      // the role is independent from the moment it exists.
+      fireWeapRadius: hold.fireWeapRadius ?? hold.weapRadius ?? 6,
+      fireWeapRotation: hold.fireWeapRotation ?? hold.weapRotation ?? 0,
+      fireScale: hold.fireScale ?? hold.scale ?? 1,
+      fireHandRadius: hold.fireHandRadius ?? hold.handRadius ?? 10,
+      fireHandRotation: hold.fireHandRotation ?? hold.handRotation ?? 0,
+      fireHandScale: hold.fireHandScale ?? hold.handScale ?? 1,
+      fireFrames: autoFrames,
+      fireFps: hold.fireFps ?? 15,
     });
   };
 
   const removeFlash = () => {
     if (hold.flashPreview) URL.revokeObjectURL(hold.flashPreview);
     setFlashLoadedImg(null);
-    setFlashLeft(0);
     updateHold({
       flashFile: undefined,
       flashPreview: undefined,
@@ -1949,27 +2187,90 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
           </label>
         </div>
 
-        {/* 3-Column Main Area: lg:grid-cols-[1fr_1.4fr_1.9fr] */}
-        <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.4fr_1.9fr] gap-4 items-start">
-          {/* LEFT COLUMN: Hand controls (order-3 on mobile, order-1 on lg) */}
-          <div className="order-3 lg:order-1 flex flex-col gap-4">
-            {/* Draw Hand checkbox card + Hand Type cycling box */}
-            <div className="grid grid-cols-2 gap-3 items-end">
-              <label
-                htmlFor="hold-draw-hand"
-                className="h-10 flex items-center justify-between px-3 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 cursor-pointer shadow-2xs hover:bg-stone-50 dark:hover:bg-stone-750 transition-colors"
-              >
-                <span className="text-xs font-semibold text-stone-800 dark:text-stone-200 select-none">
-                  Draw Hand
+        {/* Aim / Firing builder tabs. The canvas below is shared: it shows the
+            held art while aiming and the firing sheet on Test fire. */}
+        <div className="mb-4 flex flex-wrap items-center gap-2" role="tablist" aria-label="Held art builder">
+          {(
+            [
+              { id: 'aim' as const, label: 'Aim & Swing', hint: 'The held weapon, its offset, the hand and the Space clip' },
+              { id: 'firing' as const, label: 'Firing Frames', hint: "WA's 0x6A/0x6B frames: PX's FAMAS firing sheet" },
+            ]
+          ).map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              aria-selected={aimTab === tab.id}
+              aria-controls={`hold-tab-${tab.id}`}
+              id={`hold-tab-${tab.id}-button`}
+              title={tab.hint}
+              onClick={() => setAimTab(tab.id)}
+              className={`cursor-pointer rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                aimTab === tab.id
+                  ? 'border-forge-500 bg-forge-50/60 text-forge-700 ring-1 ring-forge-500 dark:bg-forge-950/40 dark:text-forge-300'
+                  : 'border-stone-200 bg-white text-stone-700 hover:bg-stone-50 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-750'
+              }`}
+            >
+              {tab.label}
+              {tab.id === 'firing' && hold.flashFile ? (
+                <span className="ml-1.5 rounded bg-amber-100 px-1 text-[10px] font-bold text-amber-700 dark:bg-amber-950/60 dark:text-amber-300">
+                  1
                 </span>
-                <input
-                  id="hold-draw-hand"
-                  type="checkbox"
-                  checked={hold.drawHand !== false}
-                  onChange={(e) => updateHold({ drawHand: e.target.checked })}
-                  className="rounded text-forge-600 focus:ring-forge-500 w-4 h-4 cursor-pointer"
-                />
-              </label>
+              ) : null}
+            </button>
+          ))}
+        </div>
+
+        {/* The role grid. Each tab is a complete role of its own, the way
+            the flight builder gives every sprite role the same full control
+            set: its sheet, its animation, its hand and its own placement. The
+            canvas in the middle is shared, the columns swap with the tab. */}
+        <div
+          role="tabpanel"
+          id={`hold-tab-${aimTab}`}
+          aria-labelledby={`hold-tab-${aimTab}-button`}
+        >
+        <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.4fr_1.9fr] gap-4 items-start">
+          {/* LEFT COLUMN: this role's hand (order-3 on mobile, order-1 on lg) */}
+          <div className="order-3 lg:order-1 flex flex-col gap-4">
+            {/* Draw Hand and Hand Type. The hand is one art, so the type is
+                shared; each role decides whether its own sheet shows a hand. */}
+            <div className="grid grid-cols-2 gap-3 items-end">
+              {aimTab === 'aim' ? (
+                <label
+                  htmlFor="hold-draw-hand"
+                  title="WA draws the hand in its aiming states only, so the held art needs it."
+                  className="h-10 flex items-center justify-between px-3 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 cursor-pointer shadow-2xs hover:bg-stone-50 dark:hover:bg-stone-750 transition-colors"
+                >
+                  <span className="text-xs font-semibold text-stone-800 dark:text-stone-200 select-none">
+                    Draw Hand
+                  </span>
+                  <input
+                    id="hold-draw-hand"
+                    type="checkbox"
+                    checked={hold.drawHand !== false}
+                    onChange={(e) => updateHold({ drawHand: e.target.checked })}
+                    className="rounded text-forge-600 focus:ring-forge-500 w-4 h-4 cursor-pointer"
+                  />
+                </label>
+              ) : (
+                <label
+                  htmlFor="hold-fire-draw-hand"
+                  title="Show the hand on the firing frames, or hide it for this sheet only. Unset follows the aiming hand."
+                  className="h-10 flex items-center justify-between px-3 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 cursor-pointer shadow-2xs hover:bg-stone-50 dark:hover:bg-stone-750 transition-colors"
+                >
+                  <span className="text-xs font-semibold text-stone-800 dark:text-stone-200 select-none">
+                    Draw Hand
+                  </span>
+                  <input
+                    id="hold-fire-draw-hand"
+                    type="checkbox"
+                    checked={(hold.fireDrawHand ?? hold.drawHand) !== false}
+                    onChange={(e) => updateHold({ fireDrawHand: e.target.checked })}
+                    className="rounded text-forge-600 focus:ring-forge-500 w-4 h-4 cursor-pointer"
+                  />
+                </label>
+              )}
 
               <div className="flex flex-col gap-1">
                 <span className="text-xs font-semibold text-stone-700 dark:text-stone-300">
@@ -1987,51 +2288,120 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
               </div>
             </div>
 
-            {/* Hand Scale Multiplier Slider */}
-            <div className="space-y-1">
-              <div className="flex justify-between items-center text-xs">
-                <label htmlFor="hold-hand-scale" className="font-semibold text-stone-700 dark:text-stone-300">
-                  Hand Scale Multiplier
-                </label>
-                <span className="font-mono text-forge-600 dark:text-forge-400 font-bold">
-                  {(hold.handScale ?? 1).toFixed(2)}x
-                </span>
-              </div>
-              <input
-                id="hold-hand-scale"
-                type="range"
-                min={0.5}
-                max={2.0}
-                step={0.05}
-                value={hold.handScale ?? 1}
-                onChange={(e) => updateHold({ handScale: Number(e.target.value) })}
-                className="w-full accent-forge-500 cursor-pointer"
-              />
-            </div>
+            {aimTab === 'aim' ? (
+              <>
+            <HoldDial
+              id="hold-hand-scale"
+              label="Hand Scale"
+              value={hold.handScale ?? 1}
+              onChange={(value) => updateHold({ handScale: value })}
+              min={0.5}
+              max={2}
+              step={0.05}
+              unit="x"
+              title="Multiplies the hand's own cell, independently of the weapon."
+            />
 
-            {/* Hand Radius Slider */}
-            <div className="space-y-1">
-              <div className="flex justify-between items-center text-xs">
-                <label htmlFor="hold-hand-radius" className="font-semibold text-stone-700 dark:text-stone-300">
-                  Hand Radius
-                </label>
-                <span className="font-mono text-forge-600 dark:text-forge-400 font-bold">
-                  {hold.handRadius} px
+            <HoldDial
+              id="hold-hand-radius"
+              label="Hand Radius"
+              value={hold.handRadius ?? 10}
+              onChange={(value) => updateHold({ handRadius: value })}
+              min={-35}
+              max={35}
+              step={1}
+              unit="px"
+              title="Distance of the hand from the worm's centre, along its own radial (rot_h). Negative puts it on the other side."
+            />
+
+            <HoldDial
+              id="hold-hand-rotation"
+              label="Hand Rotation"
+              value={hold.handRotation ?? 0}
+              onChange={(value) => updateHold({ handRotation: value })}
+              min={-180}
+              max={180}
+              step={5}
+              unit="°"
+              title="Extra hand rotation, on top of the engine's half turn (hand_rotation = 1 + degrees/180). The hand turns about its own centre, so a hand piece drawn at an angle can be squared up."
+            />
+
+            {/* Hand offset: one thought, two knobs, so they share a line. */}
+            <div
+              className="space-y-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 p-3"
+              title="Moves the hand art inside its own cell, in sheet pixels: positive Y is down the sheet, positive X to the sheet's right. Scaled with hand scale and mirrored with the side. The engine's hold has no hand offset, so a non-zero one hands the aim poses to the WFWS quad layer."
+            >
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-semibold text-stone-700 dark:text-stone-300">Hand Offset</span>
+                <span className="font-mono text-[11px] text-stone-500 dark:text-stone-400">
+                  {(hold.handOffsetX ?? 0)}, {hold.handOffsetY ?? 0} px
                 </span>
               </div>
-              <input
-                id="hold-hand-radius"
-                type="range"
-                min={-35}
-                max={35}
-                step={1}
-                value={hold.handRadius}
-                onChange={(e) => updateHold({ handRadius: Number(e.target.value) })}
-                className="w-full accent-forge-500 cursor-pointer"
-              />
+              <div className="grid grid-cols-2 gap-3">
+                <HoldDial
+                  id="hold-hand-offset-x"
+                  label="X"
+                  value={hold.handOffsetX ?? 0}
+                  onChange={(value) => updateHold({ handOffsetX: value })}
+                  min={-32}
+                  max={32}
+                  step={1}
+                />
+                <HoldDial
+                  id="hold-hand-offset-y"
+                  label="Y"
+                  value={hold.handOffsetY ?? 0}
+                  onChange={(value) => updateHold({ handOffsetY: value })}
+                  min={-32}
+                  max={32}
+                  step={1}
+                />
+              </div>
             </div>
+              </>
+            ) : (
+              <>
+                <p className="rounded-lg border border-stone-200 bg-white/70 px-2.5 py-2 text-[11px] text-stone-600 dark:border-stone-700 dark:bg-stone-900/60 dark:text-stone-400">
+                  The firing hand is the same art, placed by its own numbers. Unset values follow
+                  the aiming hand, so a sheet whose grip sits differently lines up without moving
+                  the aiming pose.
+                </p>
+                <HoldDial
+                  id="hold-fire-hand-radius"
+                  label="Firing Hand Radius"
+                  value={hold.fireHandRadius ?? hold.handRadius ?? 10}
+                  onChange={(value) => updateHold({ fireHandRadius: value })}
+                  min={-35}
+                  max={35}
+                  step={1}
+                  unit="px"
+                  title="The hand's distance from the worm's centre on the firing frames, along its own radial. px_hold_art draws it exactly as the engine does."
+                />
+                <HoldDial
+                  id="hold-fire-hand-rotation"
+                  label="Firing Hand Rotation"
+                  value={hold.fireHandRotation ?? hold.handRotation ?? 0}
+                  onChange={(value) => updateHold({ fireHandRotation: value })}
+                  min={-180}
+                  max={180}
+                  step={5}
+                  unit="°"
+                  title="Extra hand rotation on the firing frames, on top of the engine's half turn."
+                />
+                <HoldDial
+                  id="hold-fire-hand-scale"
+                  label="Firing Hand Scale"
+                  value={hold.fireHandScale ?? hold.handScale ?? 1}
+                  onChange={(value) => updateHold({ fireHandScale: value })}
+                  min={0.5}
+                  max={2}
+                  step={0.05}
+                  unit="x"
+                  title="Multiplies the hand's own cell on the firing frames."
+                />
+              </>
+            )}
           </div>
-
           {/* CENTER COLUMN: Canvas + Posture + Flip (order-1 on mobile, order-2 on lg) */}
           <div className="order-1 lg:order-2 flex flex-col items-center gap-3 w-full">
             {/* 600x600 Pixel-Perfect Canvas Viewport */}
@@ -2049,6 +2419,26 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
                 <span>·</span>
                 <span>{aimAngleIndex === 16 ? 'Horizontal' : aimAngleIndex < 16 ? 'Down' : 'Up'}</span>
               </div>
+
+              {/* The Space press, next to the thing it moves. The real key
+                  works too; this is the button for a touch screen. The firing
+                  role has no clip, so the pill belongs to the aim tab only. */}
+              <button
+                type="button"
+                hidden={aimTab !== 'aim'}
+                onClick={triggerSwing}
+                disabled={!playerClip.enabled}
+                aria-label="Press Space: play the swing clip in the preview"
+                title={
+                  playerClip.enabled
+                    ? 'Play the swing clip (the same thing Space does in game)'
+                    : 'Turn on Swing on Space below to play a clip'
+                }
+                className="absolute bottom-2 left-2 flex cursor-pointer items-center gap-1.5 rounded border border-white/15 bg-black/70 px-2 py-1 font-mono text-[10px] font-semibold text-stone-200 backdrop-blur-xs hover:bg-black/85 disabled:opacity-40"
+              >
+                <RotateCw className={`h-3 w-3 ${swingStart !== null ? 'animate-spin' : ''}`} />
+                SPACE
+              </button>
 
               {/* Zoom: the scene is laid out at 2x, so 100% is the framing below
                   and the percentages are relative to it. */}
@@ -2126,8 +2516,11 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
             </button>
           </div>
 
-          {/* RIGHT COLUMN: Controls & Properties (order-2 on mobile, order-3 on lg) */}
+          {/* RIGHT COLUMN: this role's art and placement (order-2 on mobile,
+              order-3 on lg) */}
           <div className="order-2 lg:order-3 flex flex-col gap-4">
+            {aimTab === 'aim' ? (
+              <>
             {/* Row: Launchable / Throwable buttons */}
             <div className="grid grid-cols-2 gap-3">
               <button
@@ -2158,72 +2551,41 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
               </button>
             </div>
 
-            {/* Row: Weapon Radius and Weapon Rotation side-by-side */}
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-1">
-                <div className="flex justify-between items-center text-xs">
-                  <label htmlFor="hold-weap-radius" className="font-semibold text-stone-700 dark:text-stone-300">
-                    Weapon Radius
-                  </label>
-                  <span className="font-mono text-forge-600 dark:text-forge-400 font-bold">
-                    {hold.weapRadius} px
-                  </span>
-                </div>
-                <input
-                  id="hold-weap-radius"
-                  type="range"
-                  min={-35}
-                  max={35}
-                  step={1}
-                  value={hold.weapRadius}
-                  onChange={(e) => updateHold({ weapRadius: Number(e.target.value) })}
-                  className="w-full accent-forge-500 cursor-pointer"
-                />
-              </div>
+            <HoldDial
+              id="hold-weap-radius"
+              label="Weapon Radius"
+              value={hold.weapRadius ?? 6}
+              onChange={(value) => updateHold({ weapRadius: value })}
+              min={-35}
+              max={35}
+              step={1}
+              unit="px"
+              title="Distance of the held art from the worm's centre, along the aim radial (rot_w). This is the number the engine's HoldSpec measures."
+            />
 
-              <div className="space-y-1">
-                <div className="flex justify-between items-center text-xs">
-                  <label htmlFor="hold-weap-rotation" className="font-semibold text-stone-700 dark:text-stone-300">
-                    Weapon Rotation
-                  </label>
-                  <span className="font-mono text-forge-600 dark:text-forge-400 font-bold">
-                    {hold.weapRotation}°
-                  </span>
-                </div>
-                <input
-                  id="hold-weap-rotation"
-                  type="range"
-                  min={-180}
-                  max={180}
-                  step={5}
-                  value={hold.weapRotation}
-                  onChange={(e) => updateHold({ weapRotation: Number(e.target.value) })}
-                  className="w-full accent-forge-500 cursor-pointer"
-                />
-              </div>
-            </div>
+            <HoldDial
+              id="hold-weap-rotation"
+              label="Weapon Rotation"
+              value={hold.weapRotation ?? 0}
+              onChange={(value) => updateHold({ weapRotation: value })}
+              min={-180}
+              max={180}
+              step={5}
+              unit="°"
+              title="Rotation of the held art about its own centre, on top of the aim angle. Art drawn pointing up is level at 0."
+            />
 
-            {/* Scale Multiplier Slider */}
-            <div className="space-y-1">
-              <div className="flex justify-between items-center text-xs">
-                <label htmlFor="hold-scale" className="font-semibold text-stone-700 dark:text-stone-300">
-                  Scale Multiplier
-                </label>
-                <span className="font-mono text-forge-600 dark:text-forge-400 font-bold">
-                  {hold.scale}x
-                </span>
-              </div>
-              <input
-                id="hold-scale"
-                type="range"
-                min={0.5}
-                max={2.5}
-                step={0.1}
-                value={hold.scale}
-                onChange={(e) => updateHold({ scale: Number(e.target.value) })}
-                className="w-full accent-forge-500 cursor-pointer"
-              />
-            </div>
+            <HoldDial
+              id="hold-scale"
+              label="Scale Multiplier"
+              value={hold.scale ?? 1}
+              onChange={(value) => updateHold({ scale: value })}
+              min={0.5}
+              max={2.5}
+              step={0.05}
+              unit="x"
+              title="Scales the held art. The export writes it as weap_scale."
+            />
 
             {/* Row: Pivot offset (`sb.hold`'s quad layer) and the atlas mode. */}
             <div
@@ -2236,33 +2598,28 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
                   {hold.offsetX ?? 0}, {hold.offsetY ?? 0} px
                 </span>
               </div>
-              {(
-                [
-                  { axis: 'X' as const, key: 'offsetX' as const },
-                  { axis: 'Y' as const, key: 'offsetY' as const },
-                ]
-              ).map(({ axis, key }) => (
-                <div key={key} className="flex items-center gap-2">
-                  <label
-                    htmlFor={`hold-offset-${axis.toLowerCase()}`}
-                    className="w-3 shrink-0 text-[10px] font-semibold uppercase text-stone-500"
-                  >
-                    {axis}
-                  </label>
-                  <input
-                    id={`hold-offset-${axis.toLowerCase()}`}
-                    type="range"
-                    min={-32}
-                    max={32}
-                    step={1}
-                    value={hold[key] ?? 0}
-                    onChange={(e) => updateHold({ [key]: Number(e.target.value) })}
-                    className="w-full accent-forge-500 cursor-pointer"
-                  />
-                </div>
-              ))}
+              <div className="grid grid-cols-2 gap-3">
+                <HoldDial
+                  id="hold-offset-x"
+                  label="X"
+                  value={hold.offsetX ?? 0}
+                  onChange={(value) => updateHold({ offsetX: value })}
+                  min={-32}
+                  max={32}
+                  step={1}
+                />
+                <HoldDial
+                  id="hold-offset-y"
+                  label="Y"
+                  value={hold.offsetY ?? 0}
+                  onChange={(value) => updateHold({ offsetY: value })}
+                  min={-32}
+                  max={32}
+                  step={1}
+                />
+              </div>
               <p className="text-[10px] leading-snug text-stone-500 dark:text-stone-400">
-                {hold.enabled && ((hold.offsetX ?? 0) !== 0 || (hold.offsetY ?? 0) !== 0) ? (
+                {aimLayerOn ? (
                   <>
                     <span className="font-semibold text-amber-600 dark:text-amber-400">
                       WFWS quad layer
@@ -2276,8 +2633,8 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
                     <span className="font-semibold text-forge-600 dark:text-forge-400">
                       Rust native
                     </span>
-                    : the engine draws the held art itself, no extra atlas slot. An offset turns the
-                    quad layer on.
+                    : the engine draws the held art itself, no extra atlas slot. An offset, a hand
+                    offset or a Space swing turns the quad layer on.
                   </>
                 )}
               </p>
@@ -2403,79 +2760,519 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
                 frames={hold.frames}
               />
             </div>
+              </>
+            ) : (
+              <>
+                {/* The firing role's own sheet. */}
+                <div className="space-y-2 rounded-xl border border-stone-200 bg-stone-50/50 p-3.5 dark:border-stone-800 dark:bg-stone-800/30">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <span className="text-xs font-bold uppercase tracking-wider text-stone-900 dark:text-stone-100">
+                        Firing Sheet
+                      </span>
+                      <p className="mt-0.5 text-[11px] text-stone-500 dark:text-stone-400">
+                        WA&apos;s two firing states (0x6A / 0x6B), PX&apos;s FAMAS pattern: the
+                        held art&apos;s place, its own picture. Without one, the held art keeps
+                        drawing on those frames.
+                      </p>
+                    </div>
+                    {hold.flashPreview && (
+                      <img
+                        src={hold.flashPreview}
+                        alt="Firing sheet"
+                        className="h-12 w-12 shrink-0 rounded border border-stone-200 bg-stone-100 object-contain dark:border-stone-700 dark:bg-stone-800"
+                        style={{ imageRendering: 'pixelated' }}
+                      />
+                    )}
+                  </div>
+                  <input
+                    ref={flashFileInputRef}
+                    type="file"
+                    accept="image/png,image/gif"
+                    onChange={handleUploadFlash}
+                    className="hidden"
+                  />
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => flashFileInputRef.current?.click()}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-stone-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-stone-800 shadow-2xs hover:bg-stone-100 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200 dark:hover:bg-stone-700"
+                    >
+                      <Upload className="h-3.5 w-3.5 text-forge-600 dark:text-forge-400" />
+                      {hold.flashFile ? 'Change PNG' : 'Upload PNG'}
+                    </button>
+                    {hold.flashPreview && (
+                      <button
+                        type="button"
+                        onClick={removeFlash}
+                        className="text-xs font-medium text-rose-500 hover:text-rose-600"
+                      >
+                        Remove
+                      </button>
+                    )}
+                    <span className="font-mono text-[11px] text-stone-500 dark:text-stone-400">
+                      {fireStripFrames > 1
+                        ? `${fireStripFrames} x ${fireCellWidth}x${fireCellHeight} px`
+                        : 'one frame'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Its own placement, snapshotted from the aim art on upload. */}
+                <HoldDial
+                  id="hold-fire-radius"
+                  label="Firing Radius"
+                  value={hold.fireWeapRadius ?? hold.weapRadius ?? 6}
+                  onChange={(value) => updateHold({ fireWeapRadius: value })}
+                  min={-35}
+                  max={35}
+                  step={1}
+                  unit="px"
+                  title="Distance of the firing sheet from the worm's centre on WA's firing frames (px_hold_art's own radial)."
+                />
+                <HoldDial
+                  id="hold-fire-rotation"
+                  label="Firing Rotation"
+                  value={hold.fireWeapRotation ?? hold.weapRotation ?? 0}
+                  onChange={(value) => updateHold({ fireWeapRotation: value })}
+                  min={-180}
+                  max={180}
+                  step={5}
+                  unit="°"
+                  title="Rotation of the firing sheet about its own centre, measured like the aiming rotation."
+                />
+                <HoldDial
+                  id="hold-fire-scale"
+                  label="Firing Scale"
+                  value={hold.fireScale ?? hold.scale ?? 1}
+                  onChange={(value) => updateHold({ fireScale: value })}
+                  min={0.5}
+                  max={2.5}
+                  step={0.05}
+                  unit="x"
+                  title="Scales the firing sheet. The export folds it into the helper's size, the sheet's cell times this multiplier."
+                />
+
+                <div className="space-y-2 rounded-lg border border-stone-200 bg-white/70 px-2.5 py-2 text-[11px] text-stone-600 dark:border-stone-700 dark:bg-stone-900/60 dark:text-stone-400">
+                  <p>
+                    {hasFireGeometry
+                      ? 'These numbers belong to the firing sheet; the aiming pose keeps the ones on the other tab.'
+                      : "Following the aiming parameters, which is PX's FAMAS case: the sheet sits exactly where the gun does."}
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={!hold.flashFile}
+                      onClick={() =>
+                        updateHold({
+                          fireWeapRadius: hold.weapRadius ?? 6,
+                          fireWeapRotation: hold.weapRotation ?? 0,
+                          fireScale: hold.scale ?? 1,
+                          fireHandRadius: hold.handRadius ?? 10,
+                          fireHandRotation: hold.handRotation ?? 0,
+                          fireHandScale: hold.handScale ?? 1,
+                        })
+                      }
+                      title="Copy the aiming radius, rotation and scale into the firing sheet, so they can be changed without moving the gun"
+                      className="inline-flex items-center gap-1.5 rounded border border-stone-300 bg-white px-2 py-1 text-[11px] font-semibold text-stone-800 hover:bg-stone-100 disabled:opacity-50 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200 dark:hover:bg-stone-700"
+                    >
+                      <Copy className="h-3 w-3" />
+                      Copy aiming parameters
+                    </button>
+                    {hasFireGeometry && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateHold({
+                            fireWeapRadius: undefined,
+                            fireWeapRotation: undefined,
+                            fireScale: undefined,
+                            fireHandRadius: undefined,
+                            fireHandRotation: undefined,
+                            fireHandScale: undefined,
+                          })
+                        }
+                        title="Go back to following the aiming parameters"
+                        className="font-medium text-forge-600 hover:text-forge-700 dark:text-forge-400"
+                      >
+                        Follow the aim
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Its own strip and rate, laid out like the hold animation. */}
+                <div className="space-y-2.5 rounded-xl border border-stone-200 bg-stone-50/50 p-3.5 dark:border-stone-800 dark:bg-stone-800/30">
+                  <div className="text-center">
+                    <span className="text-xs font-bold uppercase tracking-wider text-stone-900 dark:text-stone-100">
+                      Firing Animation
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="space-y-1 text-center">
+                      <label
+                        htmlFor="hold-fire-frames"
+                        className="block text-xs font-medium text-stone-600 dark:text-stone-400"
+                      >
+                        Total Frames
+                      </label>
+                      <NumberInput
+                        id="hold-fire-frames"
+                        min={1}
+                        max={32}
+                        value={fireStripFrames}
+                        title="Frames in the firing sheet. The height is sliced by this number, exactly as the engine does at load: a 36x72 upload is two 36x36 frames."
+                        onChange={(e) =>
+                          updateHold({
+                            fireFrames: Math.min(32, Math.max(1, Number(e.target.value) || 1)),
+                          })
+                        }
+                        className="w-full rounded-lg border border-stone-200 bg-white px-2 py-1.5 text-center font-mono text-xs text-stone-900 dark:border-stone-700 dark:bg-stone-900 dark:text-white"
+                      />
+                    </div>
+                    <div className="space-y-1 text-center">
+                      <label
+                        htmlFor="hold-fire-fps"
+                        className="block text-xs font-medium text-stone-600 dark:text-stone-400"
+                        title="Frames per second for the firing strip. The export converts it to anim_speed = fps / (1.5 x frames)."
+                      >
+                        FPS
+                      </label>
+                      <NumberInput
+                        id="hold-fire-fps"
+                        min={1}
+                        max={30}
+                        value={fireFps}
+                        title="Frames per second for the firing strip. The export converts it to anim_speed = fps / (1.5 x frames)."
+                        onChange={(e) =>
+                          updateHold({
+                            fireFps: Math.min(30, Math.max(1, Number(e.target.value) || 1)),
+                          })
+                        }
+                        className="w-full rounded-lg border border-stone-200 bg-white px-2 py-1.5 text-center font-mono text-xs text-stone-900 dark:border-stone-700 dark:bg-stone-900 dark:text-white"
+                      />
+                    </div>
+                    <div className="space-y-1 text-center">
+                      <span className="block text-xs font-medium text-stone-600 dark:text-stone-400">
+                        Current
+                      </span>
+                      <div className="w-full rounded-lg border border-stone-200 bg-stone-100 px-2 py-1.5 text-center font-mono text-xs font-semibold text-stone-700 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-300">
+                        {firePreviewFrame + 1} / {fireStripFrames}
+                      </div>
+                    </div>
+                  </div>
+                  <SheetFrameWarning
+                    preview={hold.flashPreview}
+                    width={hold.flashWidth}
+                    height={hold.flashHeight}
+                    frames={fireStripFrames}
+                  />
+                </div>
+              </>
+            )}
           </div>
         </div>
-
-        {/* Firing-state sprite: `hold.flash`. The engine draws it over the worm
-            on WA's firing states, at the gun's muzzle. */}
-        <div className="mt-4 p-3.5 rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-800/30 space-y-3">
+        {/* The Space swing: a keyframed clip on the held art. It is data, not
+            Lua, so the preview and the game run the same numbers. */}
+        {aimTab === 'aim' && (
+          <div className="mt-4 space-y-3 rounded-xl border border-stone-200 bg-stone-50/50 p-3.5 dark:border-stone-800 dark:bg-stone-800/30">
           <div className="flex flex-wrap items-start justify-between gap-2">
-            <div>
-              <span className="text-xs font-bold text-stone-900 dark:text-stone-100 uppercase tracking-wider">
-                Firing Sprite (`hold.flash`)
+            <div className="min-w-0">
+              <span className="text-xs font-bold uppercase tracking-wider text-stone-900 dark:text-stone-100">
+                Space Swing (`swing`)
               </span>
               <p className="mt-0.5 max-w-2xl text-[11px] text-stone-500 dark:text-stone-400">
-                Optional still drawn over the worm while WA is in its firing states
-                (0x6A / 0x6B), at the gun&apos;s muzzle, a muzzle flash, or an extra
-                overlay on the firing frame. It only shows while{' '}
-                <span className="font-mono">keep_while_firing</span> holds the gun on those
-                frames.
+                What the held weapon does when the player presses Space. Each key is a pose on
+                top of the engine&apos;s aim: an angle, a nudge in sheet pixels, a size, an
+                optional strip frame and opacity, reached with its own easing. It needs the
+                quad layer, so it also turns the aim poses over to{' '}
+                <span className="font-mono">sb.hold</span>.
               </p>
-              {hold.flashFile && !hold.keepWhileFiring && (
-                <p className="mt-1 text-[11px] font-medium text-amber-700 dark:text-amber-400">
-                  Turn on “Keep While Firing” above, or WA hides the hold (and this sprite)
-                  on the firing frames.
-                </p>
-              )}
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              {hold.flashPreview && (
-                <button
-                  type="button"
-                  onClick={triggerFireDemo}
-                  disabled={flashLeft > 0}
-                  title="Light the flash in the preview for frames + 1 ticks (20 ms each)"
-                  className="rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-xs font-semibold text-amber-700 hover:bg-amber-100 disabled:opacity-50 dark:border-amber-700 dark:bg-amber-950/50 dark:text-amber-300 dark:hover:bg-amber-900/50"
-                >
-                  {flashLeft > 0 ? 'Firing…' : 'Test fire'}
-                </button>
-              )}
-              <input
-                ref={flashFileInputRef}
-                type="file"
-                accept="image/png,image/gif"
-                onChange={handleUploadFlash}
-                className="hidden"
-              />
+              <label
+                htmlFor="hold-swing-enable"
+                className="flex h-8 cursor-pointer items-center gap-2 rounded-lg border border-stone-300 bg-white px-2.5 text-xs font-semibold text-stone-800 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200"
+              >
+                <input
+                  id="hold-swing-enable"
+                  type="checkbox"
+                  checked={!!playerClip.enabled}
+                  onChange={(event) => updateClip({ enabled: event.target.checked })}
+                  className="h-4 w-4 cursor-pointer rounded text-forge-600 focus:ring-forge-500"
+                />
+                Swing on Space
+              </label>
               <button
                 type="button"
-                onClick={() => flashFileInputRef.current?.click()}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-stone-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-stone-800 shadow-2xs hover:bg-stone-100 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200 dark:hover:bg-stone-700"
+                onClick={triggerSwing}
+                disabled={!playerClip.enabled}
+                title="Play the clip in the preview, the way Space plays it in game"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-forge-300 bg-forge-50 px-2.5 py-1.5 text-xs font-semibold text-forge-700 hover:bg-forge-100 disabled:opacity-50 dark:border-forge-700 dark:bg-forge-950/50 dark:text-forge-300 dark:hover:bg-forge-900/50"
               >
-                <Upload className="h-3.5 w-3.5 text-forge-600 dark:text-forge-400" />
-                {hold.flashFile ? 'Change PNG' : 'Upload PNG'}
+                <RotateCw className="h-3.5 w-3.5" />
+                Press Space
               </button>
-              {hold.flashPreview && (
-                <button
-                  type="button"
-                  onClick={removeFlash}
-                  className="text-xs font-medium text-rose-500 hover:text-rose-600"
-                >
-                  Remove
-                </button>
-              )}
             </div>
           </div>
 
-          {hold.flashPreview && (
-            <p className="rounded-lg border border-stone-200 bg-white/70 px-2.5 py-2 text-[11px] text-stone-600 dark:border-stone-700 dark:bg-stone-900/60 dark:text-stone-400">
-              Drawn like PX&apos;s FAMAS firing sheet: the same pivot, radius, rotation and
-              scale as the held art above, on WA&apos;s two firing frames (0x6A / 0x6B), so
-              it needs no offset or scale of its own. Its own picture is drawn at its own
-              pixel size; a <span className="font-mono">90×90</span> sheet with the gun is
-              the usual case.
-            </p>
+          {playerClip.enabled && (
+            <>
+              <p className="rounded-lg border border-amber-200 bg-amber-50/70 px-2.5 py-2 text-[11px] text-amber-800 dark:border-amber-800/60 dark:bg-amber-950/25 dark:text-amber-300">
+                Space plays this clip and <span className="font-semibold">does not fire</span>: the
+                claim carries <span className="font-mono">eat_fire = true</span>, so nothing leaves
+                the worm. With <span className="font-semibold">End the turn</span> below, the swing
+                hands the turn back when it finishes; without it the worm stays aiming, which is
+                only right when a hit box or a custom <span className="font-mono">on_fire</span>{' '}
+                ends the shot itself.
+              </p>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <HoldDial
+                  id="hold-swing-ticks"
+                  label="Length"
+                  value={playerClip.ticks}
+                  onChange={(value) => updateClip({ ticks: value })}
+                  min={2}
+                  max={80}
+                  step={1}
+                  unit="t"
+                  title="Length in 50 Hz ticks (20 ms each), so 16 ticks is 320 ms."
+                />
+                <div className="space-y-1">
+                  <label
+                    htmlFor="hold-swing-finish"
+                    className="text-xs font-semibold text-stone-700 dark:text-stone-300"
+                  >
+                    When it ends
+                  </label>
+                  <select
+                    id="hold-swing-finish"
+                    value={playerClip.finish}
+                    onChange={(event) =>
+                      updateClip({ finish: event.target.value as AimClipConfig['finish'] })
+                    }
+                    className="h-8 w-full cursor-pointer rounded-lg border border-stone-300 bg-white px-2 text-xs text-stone-800 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-200"
+                  >
+                    <option value="endTurn">End the turn</option>
+                    <option value="none">Nothing (a hit or a custom on_fire ends it)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[620px] border-separate border-spacing-y-1">
+                  <thead>
+                    <tr className="text-[10px] uppercase tracking-wide text-stone-500 dark:text-stone-400">
+                      <th className="px-1 text-left font-semibold">Tick</th>
+                      <th className="px-1 text-left font-semibold">Angle</th>
+                      <th className="px-1 text-left font-semibold">dx</th>
+                      <th className="px-1 text-left font-semibold">dy</th>
+                      <th className="px-1 text-left font-semibold">Scale</th>
+                      <th className="px-1 text-left font-semibold">Frame</th>
+                      <th className="px-1 text-left font-semibold">Alpha</th>
+                      <th className="px-1 text-left font-semibold">Ease</th>
+                      <th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...playerClip.keys]
+                      .sort((a, b) => a.t - b.t)
+                      .map((key, index) => {
+                        const patchKey = (patch: Partial<AimClipKey>) => {
+                          const keys = playerClip.keys.map((k) =>
+                            k === key ? { ...k, ...patch } : k,
+                          );
+                          updateClip({ keys });
+                        };
+                        const cell =
+                          'w-[62px] rounded border border-stone-300 bg-white px-1 py-0.5 text-right font-mono text-[11px] text-stone-900 dark:border-stone-700 dark:bg-stone-900 dark:text-white';
+                        return (
+                          <tr key={`${key.t}-${index}`}>
+                            <td className="px-1">
+                              <NumberInput
+                                aria-label={`Key ${index + 1} tick`}
+                                value={key.t}
+                                onChange={(event) => {
+                                  const value = Number(event.target.value);
+                                  if (event.target.value.trim() === '' || Number.isNaN(value)) return;
+                                  patchKey({ t: Math.max(0, value) });
+                                }}
+                                className={cell}
+                              />
+                            </td>
+                            <td className="px-1">
+                              <NumberInput
+                                aria-label={`Key ${index + 1} angle`}
+                                value={key.angle}
+                                onChange={(event) => {
+                                  const value = Number(event.target.value);
+                                  if (event.target.value.trim() === '' || Number.isNaN(value)) return;
+                                  patchKey({ angle: value });
+                                }}
+                                className={cell}
+                              />
+                            </td>
+                            <td className="px-1">
+                              <NumberInput
+                                aria-label={`Key ${index + 1} dx`}
+                                value={key.dx}
+                                onChange={(event) => {
+                                  const value = Number(event.target.value);
+                                  if (event.target.value.trim() === '' || Number.isNaN(value)) return;
+                                  patchKey({ dx: value });
+                                }}
+                                className={cell}
+                              />
+                            </td>
+                            <td className="px-1">
+                              <NumberInput
+                                aria-label={`Key ${index + 1} dy`}
+                                value={key.dy}
+                                onChange={(event) => {
+                                  const value = Number(event.target.value);
+                                  if (event.target.value.trim() === '' || Number.isNaN(value)) return;
+                                  patchKey({ dy: value });
+                                }}
+                                className={cell}
+                              />
+                            </td>
+                            <td className="px-1">
+                              <NumberInput
+                                aria-label={`Key ${index + 1} scale`}
+                                value={key.scale ?? 1}
+                                step={0.05}
+                                onChange={(event) => {
+                                  const value = Number(event.target.value);
+                                  if (event.target.value.trim() === '' || Number.isNaN(value)) return;
+                                  patchKey({ scale: value });
+                                }}
+                                className={cell}
+                              />
+                            </td>
+                            <td className="px-1">
+                              <NumberInput
+                                aria-label={`Key ${index + 1} frame`}
+                                value={key.frame ?? ''}
+                                onChange={(event) => {
+                                  const value = Number(event.target.value);
+                                  patchKey({
+                                    frame:
+                                      event.target.value.trim() === '' || Number.isNaN(value)
+                                        ? undefined
+                                        : Math.max(0, value),
+                                  });
+                                }}
+                                className={cell}
+                              />
+                            </td>
+                            <td className="px-1">
+                              <NumberInput
+                                aria-label={`Key ${index + 1} alpha`}
+                                value={key.alpha ?? 1}
+                                step={0.05}
+                                onChange={(event) => {
+                                  const value = Number(event.target.value);
+                                  if (event.target.value.trim() === '' || Number.isNaN(value)) return;
+                                  patchKey({ alpha: Math.min(1, Math.max(0, value)) });
+                                }}
+                                className={cell}
+                              />
+                            </td>
+                            <td className="px-1">
+                              <select
+                                aria-label={`Key ${index + 1} easing`}
+                                value={key.ease}
+                                onChange={(event) =>
+                                  patchKey({ ease: event.target.value as AimClipKey['ease'] })
+                                }
+                                className="w-[104px] cursor-pointer rounded border border-stone-300 bg-white px-1 py-0.5 text-[11px] text-stone-800 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-200"
+                              >
+                                {CLIP_EASES.map((ease) => (
+                                  <option key={ease.id} value={ease.id}>
+                                    {ease.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </td>
+                            <td className="px-1">
+                              <button
+                                type="button"
+                                aria-label={`Remove key ${index + 1}`}
+                                title="Remove this key"
+                                disabled={playerClip.keys.length <= 1}
+                                onClick={() =>
+                                  updateClip({ keys: playerClip.keys.filter((k) => k !== key) })
+                                }
+                                className="rounded p-1 text-rose-500 hover:bg-rose-50 disabled:opacity-40 dark:hover:bg-rose-950/40"
+                              >
+                                ×
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    // A new key lands at the end, at the aim pose, so the table
+                    // stays sorted and the clip keeps returning to zero.
+                    const last = Math.max(playerClip.ticks, ...playerClip.keys.map((key) => key.t));
+                    updateClip({
+                      keys: [
+                        ...playerClip.keys,
+                        { t: last, angle: 0, dx: 0, dy: 0, scale: 1, alpha: 1, ease: 'out_quad' },
+                      ],
+                    });
+                  }}
+                  className="rounded-lg border border-stone-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-stone-800 hover:bg-stone-100 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200 dark:hover:bg-stone-700"
+                >
+                  Add key
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    // The one key a swing almost always needs: back to the aim
+                    // pose at the clip's end, so the art is the engine's again.
+                    const last = Math.max(0, ...playerClip.keys.map((key) => key.t));
+                    const at = Math.max(playerClip.ticks, last + 4);
+                    updateClip({
+                      ticks: at,
+                      keys: [
+                        ...playerClip.keys,
+                        { t: at, angle: 0, dx: 0, dy: 0, scale: 1, alpha: 1, ease: 'out_quad' },
+                      ],
+                    });
+                  }}
+                  className="rounded-lg border border-stone-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-stone-800 hover:bg-stone-100 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200 dark:hover:bg-stone-700"
+                >
+                  Add return key
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    updateClip({
+                      keys: DEFAULT_AIM_CLIP.keys.map((key) => ({ ...key })),
+                      ticks: DEFAULT_AIM_CLIP.ticks,
+                    })
+                  }
+                  className="rounded-lg border border-stone-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-stone-800 hover:bg-stone-100 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200 dark:hover:bg-stone-700"
+                >
+                  Reset shape
+                </button>
+                <span className="font-mono text-[11px] text-stone-500 dark:text-stone-400">
+                  {playerClip.ticks} ticks = {Math.round(playerClip.ticks * 20)} ms
+                </span>
+              </div>
+            </>
           )}
+          </div>
+        )}
         </div>
       </div>
 

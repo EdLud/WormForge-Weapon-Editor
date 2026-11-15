@@ -594,7 +594,7 @@ Reference implementation: `WormForgeNew/crates/weapons/src/record.rs`,
   `impact.enabled` defaults **true**, which is safe only because of the gate
   above: the constant is shared by every new project and by `gen_test_pack`'s
   `makeOp`, so without `terrainStamp.enabled` in `usesImpactDamage` a fresh
-  weapon (and all 46 test weapons) would pierce with its blast zeroed. With the
+  weapon (and all 47 test weapons) would pierce with its blast zeroed. With the
   gate, the default is a visible preference and the enablement stays explicit.
   The card says so while it is inert: a ticked Pierce Targets with Enable Stamp
   off shows an amber note rather than doing nothing quietly.
@@ -683,6 +683,19 @@ Reference implementation: `WormForgeNew/crates/weapons/src/record.rs`,
   swallow a flash). A single shot needs neither: its 0x6A/0x6B pair is the
   shot. The dependency is `px.fire_seq` (that bundle exports the helper) and the
   sheet goes in the claim's `sprites`.
+  **The firing sheet is its own role.** It owns `fireFrames` / `fireFps`, its
+  hand and its placement, all emitted into the `firing` table, so nothing is
+  shared with the aim entry beyond the hand art itself. A vertical PNG whose
+  height divides by its width is `height / width` cells (WA's own
+  `load_strip_bytes` rule), so the upload reads the frame count from the image;
+  the generator slices the cell as `flashHeight / fireFrames` and emits
+  `frames` + `anim_speed = fps / (1.5 × frames)`, which `px_hold_art`'s
+  `gun_frame` walks on the 50 Hz clock (one frame every `50 / fps` ticks). The
+  hand rows are the role's own (`hand_radius` / `hand_rotation` / `hand_scale` /
+  `draw_hand`, falling back to the aim hand), and `size` is the cell times
+  `fireScale`, which is the only place that scale is written, so the importer
+  reads it back as `size / cell`. The firing tab's canvas runs the strip, which
+  is why it needs no Test button.
 - **The aiming manager (`sb.hold`) and the hold offset.** The engine's
   `HoldSpec` has no offset field, so a hold whose art is not at its cell centre
   is drawn by `sb.hold` instead: the engine gets the same `hold =` table it
@@ -697,6 +710,18 @@ Reference implementation: `WormForgeNew/crates/weapons/src/record.rs`,
   the `wfws.sdk` dependency and the UI's **Atlas Mode** line all read it, so a
   centred hold keeps the engine's draw with no extra atlas slot and no draw
   hook, and an untouched pack re-exports byte-identical.
+  **The quad layer needs its sheet in the claim `sprites`.** `wa.draw.quad`
+  resolves a pack path through the sprite-key registry that the claim's
+  `sprites` list fills (`apply.rs` only `remember_key`s `params.extra_sheets`),
+  so a hold sheet that is only named by `hold.sheet` has no key and the quad
+  throws "sprite ... is not installed". The generator therefore claims
+  `holdSheetPath(project)` whenever `holdNeedsAimLayer` is true, not only when
+  the author uploaded a sheet: without it the engine's own draw is muted while
+  the quads fail, so the weapon showed a static hold and never swung, and only
+  holds with uploaded art (whose path happened to be claimed already) worked in
+  game. The claim also gets `params = { gpu_prefix = "sprites/" }` on the same
+  terms as `px_hold_art`'s (skipped when a body or cluster sheet needs WA's real
+  slot).
   **The mute is `wa.weapons.hold_sheet(weapon, n)`**, pointing the engine at a
   1x1 transparent `silent.png` (appended to `hold.sheets`, which the claim loads
   by itself, so it needs no `sprites` entry and no `mod.toml` line) **only while
@@ -722,11 +747,54 @@ Reference implementation: `WormForgeNew/crates/weapons/src/record.rs`,
   mirrored with the side: positive Y is down the sheet, toward the grip, so it
   adds to the engine's own `weap_radius` measurement. The preview applies the
   same `translate` inside its rotated `scale` frame, which is why the two agree
-  at every angle.
+  at every angle. **`hand_offset = { x, y }`** is the same nudge for the hand
+  (its own cell's pixels, scaled by `hand_scale`); it also forces the layer, and
+  so does **`aimClip`**, while **`handRotation`** does not (the engine has
+  `hand_rotation`, written as `1 + degrees/180`).
+  **The Space swing (`project.aimClip`, wfws.sdk 0.9.0).** A keyframed clip on
+  the held art: `swing = { ticks, finish, keys = { { t, angle, dx, dy, scale,
+  frame, alpha, ease } } }`. It is data, not Lua, and `M.clip_pose` is a pure
+  function of the ticks since the press, so **the simulation decides when and
+  the draw decides how it looks** from the same numbers the editor's preview
+  runs (`src/data/aimClip.ts`). The edge is `wa.world.keys().space`, the turn
+  player's synchronised keyboard, sampled in a `FRAME_FINISH` worm message once
+  per 50 Hz frame, never in `wa.on.draw`; the start tick lives per weapon and
+  worm. Channels are relative to the engine's aim pose: `angle` in degrees added
+  *before* the side mirror, `dx`/`dy` in the offset's own sheet-pixel frame,
+  `scale`, an optional `frame` (an index, so it steps rather than blends) and
+  `alpha` (`wa.draw.quad`'s 0xAARRGGBB is premultiplied by `quad_tint`, so a
+  fade needs no blend mode). The hand carries `dx`/`dy` with the weapon.
+  **A swing owns Space**, so the generator writes `eat_fire = true` on the claim
+  and, unless `finish = "none"`, hands the turn back with
+  `wa.world.set_turn_clock(0)` when the clip runs out; otherwise the worm would
+  sit in its aim pose for ever with no shot and no turn end.
   Known limits: `worm.aim` is the record's own fraction, not WA's interpolated
   render position, so a worm still sliding into its aim pose can be a sub-pixel
   out for a frame; and the layer is per weapon (one `hold_sheet` choice), which
   is fine because only the turn player can be aiming.
+- **The aiming phase is two roles, and each tab is one role's full editor.**
+  `HoldPreview`'s first section is a `role="tabpanel"` grid whose columns swap
+  with the tab, the way every flight-builder role has the same complete control
+  set: the middle column keeps the shared canvas and posture, and the left and
+  right columns become that role's hand and art.
+  **Aim & Swing** owns the held sheet, `frames`/`fps`, the hand (scale, radius,
+  rotation, offset), the weapon (radius, rotation, scale, offset), put-away and
+  keep-while-firing, and the Space clip; its canvas carries the **SPACE** pill
+  and listens for the real key. **Firing Frames** owns the firing sheet, its
+  `fireFrames`/`fireFps` strip, its own hand (`fireHandRadius`,
+  `fireHandRotation`, `fireHandScale`, `fireDrawHand`) and its own placement
+  (`fireWeapRadius`, `fireWeapRotation`, `fireScale`); its canvas draws what the
+  game blits on 0x6A/0x6B with the strip looping at `fireFps` and no clip, so
+  the tab shows the firing animation instead of a still. Uploading a firing
+  sheet snapshots the aim numbers into the `fire*` fields, so the role is
+  independent from the moment it exists; **Copy aiming parameters** does the
+  same later and **Follow the aim** clears them (unset = inherit, which is PX's
+  FAMAS case and writes no numbers).
+- **A firearm's held art keeps drawing through its burst.** A gun fires several
+  shots from one trigger and the engine drops the hold (and with it the hand)
+  after the first, so `usesHoldArt` now also holds for `fireType === 'hitscan'`:
+  `px_hold_art` fills WA's repeat-fire frames with the same sheet and the same
+  hand. The dependency is `px.fire_seq`, which ships the helper.
 - **Hold animation:** `worm_hold.rs` does
   `phase += anim_speed * 0.03` once per 50 Hz game frame, so the sheet plays
   `1.5 × frames × anim_speed` frames per second. The UI asks for the real
@@ -1105,7 +1173,7 @@ The pack ships the editor's own `wf-lib/wfws_sdk/` (copied from `spec/`, like an
 export does), so its weapons run against the version they were generated for
 instead of an older installed copy of the library.
 
-It writes one bundle with 46 components, one profile ("WF Test Pack") and art
+It writes one bundle with 47 components, one profile ("WF Test Pack") and art
 derived from `spec/` sheets, one per role (the sprite builder, cluster bits, the
 homing window, the homing bit, the roaming animal and native trails). Each
 test carries its intent, expected result and failure symptom in
@@ -1121,7 +1189,8 @@ WA's own blast left in place, and 43 the electrical pierce (a taze with no burst
 and no stamp); 44 the terrain stamp's frame coming from `sb.heading` (the
 builder's drawn angle, not the velocity), 45 the builder `offset` (the art
 12 px off the flight path both ways round) and 46 the hold `offset`, which is
-what puts the aimed weapon on the quad layer. The stamp art is a built-up arrow
+what puts the aimed weapon on the quad layer, and 47 the Space swing (`eat_fire`,
+the clip's keys, and the turn ending when it finishes). The stamp art is a built-up arrow
 pointing up, so a wrong frame index is obvious in game.
 
 Stock record values (PX's default scheme, from `WormForgeNew`):
@@ -1152,7 +1221,7 @@ bun run tools/gen_test_pack.ts
 bun run tools/check_mod_import.ts
 ```
 
-It imports all 46 test weapons and asserts the features come back with their
+It imports all 47 test weapons and asserts the features come back with their
 files: held art and its scale, `sb.flight` roles, `size`/`angle` and `offset`, the ribbon
 trail and its target, both explosion modes with every burst field and the preset,
 `fire_seq` counts/speed/offsets, custom WAVs, pack sheets, roaming strips and the
@@ -1446,6 +1515,12 @@ Done and validated:
   WF 39 covers it.
 - **Electrical blast damage** (`kind = "taze"`) is now selectable in the burst
   card's custom hit values, not just emitted from a preset.
+- **Space swing + hold hands (wfws.sdk 0.9.0).** `project.aimClip` keyframes an
+  angle, nudge, size, frame and fade over 50 Hz ticks with the editor's easing
+  set; `sb.hold` plays it on the held art from a synchronised Space edge, the
+  claim eats WA's fire, and the turn ends when the clip does. `holdRotation` and
+  `handOffsetX/Y` joined it, and a firearm's gun and hand now keep drawing
+  through its burst via `px_hold_art`. Test Pack WF 47 covers the swing.
 - **Hold offset through `sb.hold` (wfws.sdk 0.8.0), the first half of the aiming
   plan.** A held sheet whose art is not at its cell centre is nudged with
   `hold.offsetX/offsetY` (sheet pixels, scaled with the art, mirrored with the

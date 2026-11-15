@@ -16,7 +16,7 @@ import type { WeaponProject } from '../src/types/weapon';
 import type { ModFile } from '../src/utils/modLib/scan';
 import { readBundles, readWeapons } from '../src/utils/modLib/scan';
 import { importBundleWeapon } from '../src/utils/modLib/importWeapon';
-import { generateLuaCode, generateModToml } from '../src/utils/luaGenerator';
+import { generateLuaCode, generateModToml, holdSheetPath } from '../src/utils/luaGenerator';
 import {
   DEFAULT_IMPORT_HOLD,
   DEFAULT_IMPORT_MISSILE,
@@ -65,7 +65,7 @@ check(
   bundles.some((bundle) => bundle.id === 'wfws.sdk'),
   bundles.map((bundle) => bundle.id).join(', '),
 );
-check('test pack has 46 weapons', weapons.length === 46, String(weapons.length));
+check('test pack has 47 weapons', weapons.length === 47, String(weapons.length));
 
 const byName = new Map(weapons.map((weapon) => [weapon.name, weapon]));
 const projects = new Map<string, WeaponProject>();
@@ -345,6 +345,7 @@ function fullProject(p: WeaponProject, name: string): WeaponProject {
     customSounds: p.customSounds ?? DEFAULT_CUSTOM_SOUNDS,
     extraDependencies: p.extraDependencies ?? [],
     hold: p.hold ?? DEFAULT_IMPORT_HOLD,
+    aimClip: p.aimClip,
     packArt: p.packArt ?? {},
     customSprites: {},
     recordOverrides: p.recordOverrides ?? {},
@@ -496,13 +497,31 @@ return {
 // ---- firing-state sprite (WF 32) ---------------------------------------
 {
   const p = project('WF 32 Hold Flash')!;
-  // The firing sheet is a second hold entry handed to `px_hold_art`, so it
-  // inherits the gun's placement: only the file and its cell survive a round
-  // trip, exactly like PX's FAMAS.
+  // The firing sheet is a second hold entry handed to `px_hold_art`. PX's FAMAS
+  // leaves its placement unset and inherits the gun's; this one owns every
+  // number, so the whole role has to survive the round trip.
   check('WF 32: firing sheet attached', !!p.hold.flashFile, 'no file attached');
   near('WF 32: firing sheet width', p.hold.flashWidth, 100);
   near('WF 32: keep while firing', p.hold.keepWhileFiring, true);
   check('WF 32: old overlay geometry gone', p.hold.flashOut === undefined, 'flashOut set');
+  near('WF 32: its own strip frames', p.hold.fireFrames, 2);
+  near('WF 32: its own strip rate', p.hold.fireFps, 12);
+  near('WF 32: its own radius', p.hold.fireWeapRadius, -4);
+  near('WF 32: its own rotation', p.hold.fireWeapRotation, 15);
+  near('WF 32: its own scale', p.hold.fireScale, 1.2);
+  near('WF 32: its own hand radius', p.hold.fireHandRadius, 14);
+  near('WF 32: its own hand rotation', p.hold.fireHandRotation, -10);
+  near('WF 32: its own hand scale', p.hold.fireHandScale, 0.9);
+  const lua = generateLuaCode(fullProject(p, 'WF 32 Hold Flash'));
+  check(
+    'WF 32: the firing role is emitted with its own numbers',
+    lua.includes('weap_radius = -4,') &&
+      lua.includes('frames = 2,') &&
+      lua.includes('anim_speed = 4,') &&
+      lua.includes('hand_radius = 14,') &&
+      lua.includes('hand_scale = 0.9,'),
+    'the firing table fell back to the aiming numbers',
+  );
 }
 
 // ---- burst + firing sheet (WF 36) ---------------------------------------
@@ -814,6 +833,54 @@ return {
     'WF 46: a re-export keeps the offset',
     generateLuaCode(fullProject(p, 'WF 46 Hold Offset')).includes('offset = { x = 8, y = -10 },'),
     'the offset is dropped on re-export',
+  );
+  // The quad layer resolves its sheet through the claim `sprites` registry, so
+  // an aim-layer hold has to claim hold.png even when it is the default art.
+  // Without it the engine's own draw is muted and the quads cannot resolve,
+  // and the hold swings only for authors who happened to upload a sheet.
+  check(
+    'WF 46: the aim layer claims the hold sheet',
+    lua.includes(`sprites = { "${holdSheetPath(fullProject(p, 'WF 46 Hold Offset'))}" }`),
+    'wa.draw.quad cannot resolve the hold path, so the quad layer draws nothing',
+  );
+}
+
+// ---- the Space swing (WF 47) ---------------------------------------------
+{
+  const p = project('WF 47 Swing Idle')!;
+  const clip = p.aimClip;
+  near('WF 47: the clip imports enabled', clip?.enabled, true);
+  near('WF 47: the clip length', clip?.ticks, 16);
+  near('WF 47: the finish', clip?.finish, 'endTurn');
+  near('WF 47: the keys come back', clip?.keys.length, 4);
+  near('WF 47: the strike key angle', clip?.keys[2]?.angle, 60);
+  near('WF 47: the strike key easing', clip?.keys[2]?.ease, 'out_cubic');
+  const lua = generateLuaCode(fullProject(p, 'WF 47 Swing Idle'));
+  check(
+    'WF 47: the clip is emitted as keys',
+    lua.includes('swing = {') &&
+      lua.includes('{ t = 8, angle = 60, dx = 3, dy = -3, scale = 1.1, ease = "out_cubic" },'),
+    'the swing table is missing or the keys are not in ticks',
+  );
+  check(
+    'WF 47: Space does not fire',
+    /eat_fire = true,/.test(lua),
+    'the weapon would fire as well as swing',
+  );
+  check(
+    'WF 47: the swing forces the quad layer',
+    lua.includes('local hold = sb.hold(ctx, {') && lua.includes('silent_sheet = '),
+    'the clip cannot be drawn by the engine hold',
+  );
+  check(
+    'WF 47: a re-export keeps the clip',
+    generateLuaCode(fullProject(p, 'WF 47 Swing Idle')).includes('{ t = 16, angle = 0,'),
+    'the swing is dropped on re-export',
+  );
+  check(
+    'WF 47: the swing claims its hold sheet',
+    lua.includes(`sprites = { "${holdSheetPath(fullProject(p, 'WF 47 Swing Idle'))}" }`),
+    'the swing cannot draw: the sheet is not in the claim sprites',
   );
 }
 

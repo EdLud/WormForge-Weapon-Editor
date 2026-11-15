@@ -122,6 +122,15 @@ export interface BodyConfig {
   clustlet: ClustletConfig;
 }
 
+/**
+ * The aiming clip (`project.aimClip`), see `src/data/aimClip.ts`. It is the
+ * data behind `sb.hold`'s `swing`: keyframes over 50 Hz ticks that a Space press
+ * plays on the held art, on top of whatever pose the engine's aim maths gives.
+ */
+import type { AimClipConfig } from '../data/aimClip';
+
+export type { AimClipConfig, AimClipKey, ClipEase } from '../data/aimClip';
+
 export interface HoldConfig {
   enabled: boolean;
   sheet: string;
@@ -160,6 +169,47 @@ export interface HoldConfig {
   handRad: number;
   handRadLower: number;
   handRadUpper: number;
+  /**
+   * Extra hand rotation in degrees, on top of the engine's `hand_rotation = 1`
+   * (a half turn). `HoldSpec` has the field, so this one needs no quad layer.
+   */
+  handRotation?: number;
+  /**
+   * The hand art nudged inside its own cell, in sheet pixels, scaled with
+   * `hand_scale` (the hand's counterpart of `offsetX/offsetY`). `HoldSpec` has
+   * no hand offset, so a non-zero value also forces `sb.hold`'s quad layer.
+   */
+  handOffsetX?: number;
+  handOffsetY?: number;
+  /**
+   * Geometry for the firing sheet, when it should differ from the held art.
+   * Unset (the default) means "the same as the aiming art", which is what PX's
+   * FAMAS sheet relies on; the Firing tab's Copy button snapshots the aim
+   * numbers here so they can be changed without touching the aim pose.
+   */
+  fireWeapRadius?: number;
+  fireWeapRotation?: number;
+  fireScale?: number;
+  /**
+   * The firing sheet's own hand, the counterpart of `handRadius` /
+   * `handRotation` / `handScale`. `px_hold_art` draws the hand on WA's firing
+   * frames from the same table, so a sheet whose grip differs from the held
+   * art can move it without moving the aiming hand. Unset means "the aim
+   * hand", which is the usual case.
+   */
+  fireHandRadius?: number;
+  fireHandRotation?: number;
+  fireHandScale?: number;
+  /** Keep the hand on the firing frames, or hide it for this sheet only. */
+  fireDrawHand?: boolean;
+  /**
+   * The firing sheet's own strip: how many frames it holds and the rate they
+   * play at. The engine auto-slices a vertical PNG whose height divides by its
+   * width, so a 36x72 upload is two 36x36 frames; the upload sets this from the
+   * image, and `px_hold_art` walks it on the 50 Hz clock.
+   */
+  fireFrames?: number;
+  fireFps?: number;
   /**
    * The held art nudged inside its own cell, in sheet pixels, scaled with
    * `weap_scale` (the aim counterpart of `MissileSpriteConfig.offsetX/Y`).
@@ -655,6 +705,11 @@ export interface WeaponProject {
   fireType: FireType;
   specialSubtype: number;
   teleport: boolean;
+  /**
+   * The Space swing played on the held art (`sb.hold`'s `swing`). A fresh
+   * project carries it disabled, so the panel has numbers to show.
+   */
+  aimClip?: AimClipConfig;
   panel_icon: string; // stock name or custom path
   customIconFile?: File;
   customIconPreview?: string;

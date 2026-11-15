@@ -14,6 +14,7 @@ import { exportModZip, downloadBlob } from './utils/modExporter';
 import { sanitizeModFolder } from './utils/luaGenerator';
 import { rebaseToDonor } from './utils/donorRebase';
 import { DEFAULT_EXPLOSION_EFFECT } from './data/explosionPresets';
+import { DEFAULT_AIM_CLIP } from './data/aimClip';
 import { stockDonor, stockDonorBaseline } from './data/stockDonors';
 import { DEFAULT_BODY, DEFAULT_DIG, DEFAULT_FIRE, DEFAULT_ROAM } from './data/defaults';
 import { DEFAULT_CUSTOM_SOUNDS } from './data/soundPresets';
@@ -94,6 +95,7 @@ const INITIAL_PROJECT: WeaponProject = {
     target: 'main',
   },
   explosionEffect: { ...DEFAULT_EXPLOSION_EFFECT },
+  aimClip: { ...DEFAULT_AIM_CLIP, keys: DEFAULT_AIM_CLIP.keys.map((k) => ({ ...k })) },
   terrainStamp: { ...DEFAULT_TERRAIN_STAMP },
   customSounds: { ...DEFAULT_CUSTOM_SOUNDS },
   extraDependencies: [],

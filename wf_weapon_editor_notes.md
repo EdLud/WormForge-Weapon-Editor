@@ -2477,3 +2477,148 @@ Playwright pass over the new Offset card and the aim canvas. What is left to
 the in-game pass: the acceptance test, that WF 46 looks identical to an
 unoffset hold in grow-in, scale, walk pose and put-away, with only the nudge
 differing.
+
+## The Space swing, and the aim page's second face
+
+**`project.aimClip` is data, not Lua.** A clip is a list of keys over 50 Hz
+ticks, each holding an angle, a `dx`/`dy` in the hold offset's sheet-pixel
+frame, a size, an optional strip frame and alpha, and the easing that reaches
+it. `src/data/aimClip.ts` holds the keys, the easing set and `evalClip`, and
+`wfws_sprite_builder` carries the same arithmetic as `M.clip_pose`. That
+duplication is the price of one source of truth across two languages, and it is
+the whole reason the clip is keyframes rather than author Lua: the preview can
+run exactly what the game runs.
+
+**The simulation decides when; the draw decides how it looks.** The Space edge
+is `wa.world.keys().space`, the turn player's synchronised keyboard, read in a
+`FRAME_FINISH` worm message once per 50 Hz frame. The start tick is stored per
+weapon and worm, the pose is `clip_pose(now - start)`, and the draw only reads
+it. Deciding in `wa.on.draw` would put the trigger on the renderer's clock,
+which is not the game's and differs between machines; the same reasoning made
+the hold counter advance once per `wa.world.frame()`.
+
+**A swing owns Space.** WA's `FireWeapon` dispatch is eaten (`eat_fire = true`),
+so nothing leaves the worm: no projectile, no ammo change, no WA shot. That
+leaves turn flow to the clip, so `finish = "end_turn"` calls
+`wa.world.set_turn_clock(0)` when the last tick passes. `finish = "none"` is for
+a weapon whose hit box or custom `on_fire` ends the shot itself, which is where
+the melee plan's next phase goes.
+
+**Alpha needed no blend mode.** `wa.draw.quad` takes 0xAARRGGBB and
+`gpu.rs::quad_tint` premultiplies it, so a key below 1 simply fades the art. The
+hand carries the clip's `dx`/`dy` so it stays with the weapon, but keeps its own
+rotation: a swing should move the grip, not bend the arm.
+
+The aim page itself is now two tabs over one canvas: **Aim & Swing** (the sheet,
+the hand, the offsets, the clip) and **Firing Frames** (the FAMAS sheet and its
+**Placement** card). The canvas has a **SPACE** pill, and the real key works
+while the page is open, because the preview should behave like the game it is
+previewing. **Copy aiming parameters** snapshots the aim radius, rotation and
+scale into the firing entry so they can be changed without moving the gun;
+unset is "inherit", which is PX's own case and writes no numbers.
+
+**A machine gun's hand.** A firearm fires several shots from one trigger, and
+the engine's hold needs `h.firing` for the firing states, which a repeat-fire
+burst does not keep set: the gun and the hand vanished from the second shot.
+`usesHoldArt` now also holds for `fireType === 'hitscan'`, so `px_hold_art`
+fills WA's repeat-fire frames with the same sheet, the same hand and the same
+geometry. `px.fire_seq` ships the helper, so that is the dependency.
+
+Validation: lint, build, 47 test weapons, `check_mod_import` 47/47 (WF 47 round
+trips the clip's keys, `eat_fire` and the quad layer), `audit_records`,
+`check_copyfrom`, `wfcheck` on the pack and on an export, and a Playwright pass
+over the tabs, the number boxes driving their sliders, the hand dials, the
+the SPACE pill and the real key both moving the art mid-clip.
+
+## The quad layer was drawing nothing for holds built from the default art
+
+First in-game pass on WF 46/47: the weapon held its art but never swung, while
+the author's own exported grenade (uploaded hold + firing sheet) swung fine, and
+importing the test bundle into the editor previewed correctly. That split looked
+like an engine fault and was not: it was the claim.
+
+`wa.draw.quad{ sprite = "sprites/<mod>/hold.png" }` resolves a pack path through
+the sprite-key registry, and `apply.rs` only `remember_key`s the sheets in the
+claim's `params.extra_sheets`, which is what the `sprites` list fills. A hold
+sheet named only by `hold.sheet` is loaded by the engine for its own native draw
+but never gets a key, so the quad throws "sprite ... is not installed" inside
+`wa.on.draw`. The exception aborts the callback before `hold_mute` runs, so the
+engine kept drawing its own sheet: a static hold, no swing, no error on screen.
+An uploaded sheet was claimed by accident (the generator adds
+`holdSheetPath` to `sprites` when `hold.sheetFile` exists), which is exactly why
+only uploaded holds ever swung in game.
+
+The generator now claims the hold sheet whenever `holdNeedsAimLayer` is true, not
+only when a file was uploaded, and takes `params = { gpu_prefix = "sprites/" }`
+on the same terms as `px_hold_art`'s (skipped when a body or cluster sheet needs
+WA's real slot). `check_mod_import` asserts the line for WF 46 and WF 47 so the
+regression cannot come back quietly.
+
+## The firing sheet is an animation, not a sticker
+
+The Firing Frames tab was a copy of the aim tab: it inherited the placement and
+drew a single frame. It is now its own art with its own numbers. Uploading a
+sheet snapshots the aim radius, rotation and scale into `fireWeapRadius` /
+`fireWeapRotation` / `fireScale`, so the tab is independent from the moment it
+exists (unset still means "inherit", which is what an imported FAMAS bundle
+carries, and writes no numbers). `fireFrames` and `fireFps` belong to it too.
+
+The frame count comes from the image, because WA's `load_strip_bytes` slices a
+vertical PNG whose height divides by its width, and the panel should show the
+frames the game will actually blit: a 36x72 upload is two 36x36 cells. The
+generator slices the cell as `flashHeight / fireFrames` instead of the smaller
+side, and emits `frames` plus `anim_speed = fps / (1.5 x frames)`, which
+`px_hold_art`'s `gun_frame` already walks on the 50 Hz clock (one frame every
+`50 / fps` ticks). The preview does the same: it draws one cell and steps it
+while the firing state is lit, and one Test fire runs a whole cycle, because a
+muzzle flash's 3-tick lifetime is shorter than a single frame at 15 fps. Before
+this the canvas drew the entire strip squashed into one quad, so a two-frame
+sheet previewed as both frames at once and never appeared to animate.
+
+## A number box narrower than its own text paints nothing
+
+`HoldDial`'s exact-value box was `w-[74px]`. The unit suffix takes about 30px and
+the input's own `px-3` padding 24px, which left 9px of content box, and an
+`<input>` clips its text to that box: `2` and `1` showed, but `15`, `-8` and
+`-12` painted as an empty white cell while the slider and the project value were
+both correct. Every aim dial had it, including the new frames and frame-rate
+pair. The box is `w-[92px]` with `!px-2` now. Playwright reads `inputValue()`,
+so a probe passes while the screen shows nothing: read the pixels, not the DOM.
+
+## The aiming phase is two roles now, and the firing one is a real role
+
+The Firing Frames tab started as a header with two sliders bolted to the bottom
+of a panel, which is not how any other role in this editor works: the flight
+builder gives every sprite role its own complete control set, and the aiming
+phase has exactly two roles. So the section is a tab panel whose three columns
+swap with the tab, and each tab is one role end to end:
+
+- **Aim & Swing**: held sheet, `frames`/`fps`, the hand (scale, radius,
+  rotation, offset), the weapon (radius, rotation, scale, offset), put-away,
+  keep-while-firing, the Space clip, and a canvas that runs the clip and plays
+  the SPACE pill and the real key.
+- **Firing Frames**: firing sheet, its own strip, its own hand
+  (`fireHandRadius`/`fireHandRotation`/`fireHandScale`/`fireDrawHand`) and its
+  own placement (`fireWeapRadius`/`fireWeapRotation`/`fireScale`), and a canvas
+  that draws the 0x6A/0x6B frames with the strip looping, so the tab shows the
+  animation instead of a still and needs no Test button.
+
+The middle column (canvas, worm posture, flip) stays shared because it is the
+same worm in both cases; only the role's numbers change. Uploading a firing
+sheet snapshots the aim numbers into the `fire*` fields, so the role is
+independent from the moment it exists, and **Follow the aim** puts it back to
+inheriting them (unset writes no keys, which is PX's FAMAS case).
+
+Two things had to move into the generator with it: the hand rows of the firing
+entry are now the role's own (before, they were the aim hand copied wholesale),
+and `hand_scale` is emitted for the role. `size` remains the cell times the
+firing scale, because the helper has no `weap_scale`; the importer reads that
+scale back as `size / cell`, where the cell is the sheet's height divided by the
+declared frames. Rotations are written with six decimals now: four turned a
+typed 15 degrees into 14.994 on the way back in.
+
+The test pack's firing strip had to become a real strip too. It wrote
+`fire_famas.png` (one 100x100 cell) while declaring two frames, so the sheet
+would not slice at load and the importer measured a different cell than the
+generator had used. WF 32 now ships a stacked two-cell sheet, owns every number
+of its role, and `check_mod_import` asserts all of them plus the emitted table.

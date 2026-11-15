@@ -32,6 +32,7 @@ import type {
   TerrainStampImpactConfig,
   WeaponProject,
 } from '../../types/weapon';
+import { CLIP_EASES, type AimClipKey, type ClipEase } from '../../data/aimClip';
 import {
   DEFAULT_DIG_ROLE_ART,
   DEFAULT_ROAM_ROLE_ART,
@@ -285,6 +286,22 @@ function readHold(table: LuaTable, fallback: HoldConfig): HoldConfig {
     weapRadius: num(table.weap_radius) ?? fallback.weapRadius,
     scale: num(table.weap_scale) ?? fallback.scale,
     handScale: num(table.hand_scale) ?? fallback.handScale,
+    // `hand_rotation` is in turns of PI (`1 + degrees/180`), like `weap_rotation`.
+    ...(num(table.hand_rotation) !== undefined
+      ? {
+          handRotation:
+            Math.round((((num(table.hand_rotation) as number) - 1) * 180 + Number.EPSILON) * 1000) /
+            1000,
+        }
+      : {}),
+    // `hand_offset = { x, y }` (sheet pixels): what put the hand on the quad
+    // layer, so a re-export must keep it.
+    ...(isTable(table.hand_offset)
+      ? {
+          handOffsetX: num((table.hand_offset as LuaTable).x) ?? 0,
+          handOffsetY: num((table.hand_offset as LuaTable).y) ?? 0,
+        }
+      : {}),
     frames,
     fps: frames > 1 ? Math.max(1, Math.round(animSpeed * 1.5 * frames)) : fallback.fps,
     drawHand,
@@ -503,6 +520,16 @@ export async function readBundleFeatures(args: {
     const flashAsset = flashSource
       ? await readAsset(files, bundleDir, str(flashSource.sheet))
       : undefined;
+    // The firing sheet's cell, the way the generator slices it: the frame count
+    // divides the height, and one frame falls back to the smaller side. `size`
+    // is that cell times the role's scale, so the scale can be read back.
+    const fireFrameCount = Math.max(1, Math.round(num(firingTable?.frames) ?? 1));
+    const flashCell =
+      flashAsset?.width && flashAsset.height
+        ? fireFrameCount > 1
+          ? Math.floor(flashAsset.height / fireFrameCount)
+          : Math.min(flashAsset.width, flashAsset.height)
+        : 0;
     const weapRadius = Number(hold.weapRadius ?? 6);
     const weapScale = Number(hold.scale) || 1;
     const weapRotRad = ((Number(hold.weapRotation) || 0) * Math.PI) / 180;
@@ -534,10 +561,127 @@ export async function readBundleFeatures(args: {
                     Math.round(((num(flashTable.scale) ?? 1) / weapScale) * 1000) / 1000,
                 }
               : {}),
+            // The FAMAS entry carries its own geometry only when the author
+            // copied and changed it (`firing` for `px_hold_art`); unset means
+            // "the aiming numbers", which is the common case.
+            ...(firingTable
+              ? {
+                  ...(num(firingTable.weap_radius) !== undefined &&
+                  num(firingTable.weap_radius) !== Number(hold.weapRadius ?? 6)
+                    ? { fireWeapRadius: num(firingTable.weap_radius) }
+                    : {}),
+                  ...(num(firingTable.weap_rotation) !== undefined &&
+                  (num(firingTable.weap_rotation) as number) !==
+                    Math.round((1 + (Number(hold.weapRotation) || 0) / 180) * 1e4) / 1e4
+                    ? {
+                        fireWeapRotation:
+                          Math.round(
+                            (((num(firingTable.weap_rotation) as number) - 1) * 180 +
+                              Number.EPSILON) *
+                              1000,
+                          ) / 1000,
+                      }
+                    : {}),
+                  // The firing hand: its own numbers when they differ from the
+                  // aiming hand, which is the usual case (`px_hold_art` draws it
+                  // from the same table, so the keys are the hand's own).
+                  ...(num(firingTable.hand_radius) !== undefined &&
+                  (num(firingTable.hand_radius) as number) !==
+                    Number(hold.handRadius ?? 10) &&
+                  (num(firingTable.hand_radius) as number) > 0.5
+                    ? { fireHandRadius: num(firingTable.hand_radius) }
+                    : {}),
+                  ...(num(firingTable.hand_rotation) !== undefined &&
+                  (num(firingTable.hand_rotation) as number) !==
+                    Math.round((1 + (Number(hold.handRotation) || 0) / 180) * 1e4) / 1e4
+                    ? {
+                        fireHandRotation:
+                          Math.round(
+                            (((num(firingTable.hand_rotation) as number) - 1) * 180 +
+                              Number.EPSILON) *
+                              1000,
+                          ) / 1000,
+                      }
+                    : {}),
+                  ...(num(firingTable.hand_scale) !== undefined &&
+                  (num(firingTable.hand_scale) as number) !== Number(hold.handScale ?? 1)
+                    ? { fireHandScale: num(firingTable.hand_scale) }
+                    : {}),
+                  // `size` is the sheet's cell times the scale (the helper has
+                  // no `weap_scale` of its own), so it is also the only place
+                  // the firing scale is written.
+                  ...(num(firingTable.size) !== undefined &&
+                  flashCell > 0 &&
+                  Math.abs((num(firingTable.size) as number) / flashCell - Number(hold.scale ?? 1)) >
+                    0.001
+                    ? {
+                        fireScale:
+                          Math.round(
+                            ((num(firingTable.size) as number) / flashCell) * 1000,
+                          ) / 1000,
+                      }
+                    : {}),
+                  ...(firingTable.draw_hand === false ? { fireDrawHand: false } : {}),
+                  // The firing strip: `frames` slices the sheet, `anim_speed`
+                  // is the engine's multiplier for `fps / (1.5 x frames)`.
+                  ...(num(firingTable.frames) !== undefined
+                    ? {
+                        fireFrames: Math.max(1, Math.round(num(firingTable.frames) as number)),
+                        fireFps: Math.max(
+                          1,
+                          Math.round(
+                            (num(firingTable.anim_speed) ?? 1) *
+                              1.5 *
+                              Math.max(1, Math.round(num(firingTable.frames) as number)),
+                          ),
+                        ),
+                      }
+                    : {}),
+                }
+              : {}),
           }
         : {}),
     };
+    // `swing = { ticks, finish, keys = { { t, angle, dx, dy, ... } } }`: the
+    // Space clip `sb.hold` plays on the held art. Keys are data, so they read
+    // back exactly; an unrecognised easing falls back to the default.
+    const swingTable = isTable(holdTable.swing)
+      ? holdTable.swing
+      : isTable(scan.assignments.swing)
+        ? scan.assignments.swing
+        : undefined;
+    if (swingTable && isTable(swingTable.keys)) {
+      const raw = swingTable.keys;
+      const keys: AimClipKey[] = [];
+      // A Lua array reads as `1..n` string keys; gaps end the walk.
+      for (let i = 1; raw[String(i)] !== undefined; i += 1) {
+        const key = raw[String(i)];
+        if (!isTable(key)) continue;
+        const t = num(key.t);
+        if (t === undefined) continue;
+        const ease = str(key.ease);
+        keys.push({
+          t,
+          angle: num(key.angle) ?? 0,
+          dx: num(key.dx) ?? 0,
+          dy: num(key.dy) ?? 0,
+          scale: num(key.scale) ?? 1,
+          frame: num(key.frame),
+          alpha: num(key.alpha) ?? 1,
+          ease: (CLIP_EASES.some((entry) => entry.id === ease) ? ease : 'inout_quad') as ClipEase,
+        });
+      }
+      if (keys.length > 0) {
+        project.aimClip = {
+          enabled: true,
+          ticks: Math.max(1, Math.round(num(swingTable.ticks) ?? keys[keys.length - 1].t)),
+          finish: str(swingTable.finish) === 'end_turn' ? 'endTurn' : 'none',
+          keys,
+        };
+      }
+    }
     notes.push(flashSource ? 'hold art + firing sprite' : 'hold art');
+    if (project.aimClip) notes.push('space swing');
   }
 
   // ---- sprite builder -----------------------------------------------------

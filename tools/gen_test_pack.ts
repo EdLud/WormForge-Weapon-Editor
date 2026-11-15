@@ -55,6 +55,7 @@ import { stockDonor } from '../src/data/stockDonors';
 import { DEFAULT_CUSTOM_SOUNDS } from '../src/data/soundPresets';
 import { DEFAULT_FIRE_SEQUENCE } from '../src/data/fireSequence';
 import { DEFAULT_TERRAIN_STAMP, STAMP_FRAMES } from '../src/data/terrainStamp';
+import { DEFAULT_AIM_CLIP } from '../src/data/aimClip';
 import {
   DEFAULT_ROAM_ROLE_ART,
   DEFAULT_ROLE_ART,
@@ -317,6 +318,25 @@ const STAMP_BMP = upArrowBitmap();
 const STAMP_PNG = encodePng(rotationSheet(STAMP_BMP, STAMP_FRAMES));
 
 const AIM_PNG = encodePng(AIM_BMP);
+/**
+ * A two-frame firing strip: the gun's own cell, then a bright one, stacked the
+ * way WA slices a firing sheet (`height / frames`). The panel reads the frame
+ * count from exactly this shape, so the test has to be a real strip.
+ */
+function firingStrip(source: Bitmap): Bitmap {
+  const { width, height, rgba } = source;
+  const out = new Uint8Array(width * height * 2 * 4);
+  out.set(rgba, 0);
+  const second = width * height * 4;
+  for (let i = 0; i < width * height; i += 1) {
+    out[second + i * 4] = 255;
+    out[second + i * 4 + 1] = 236;
+    out[second + i * 4 + 2] = 180;
+    out[second + i * 4 + 3] = 255;
+  }
+  return { width, height: height * 2, rgba: out };
+}
+const FIRING_STRIP_PNG = encodePng(firingStrip(ICE_BMP));
 /** The aiming manager's mute: 1x1 and fully transparent, never drawn. */
 const SILENT_PNG = encodePng({ width: 1, height: 1, rgba: new Uint8Array(4) });
 const GRENADE_PNG = encodePng(GRENADE_BMP);
@@ -512,6 +532,8 @@ function makeOp(partial: {
   fireSequence?: Partial<NonNullable<WeaponProject['fireSequence']>>;
   /** Held art (`hold`), e.g. the repeat-fire draw with `px_hold_art`. */
   hold?: Partial<WeaponProject['hold']>;
+  /** The Space swing played on the held art (`aimClip`). */
+  aimClip?: Partial<NonNullable<WeaponProject['aimClip']>>;
   /** `wa.land.stamp` picture burned into the terrain (`terrainStamp`). */
   terrainStamp?: Partial<WeaponProject['terrainStamp']>;
   defaults?: Partial<WeaponProject['defaults']>;
@@ -611,6 +633,14 @@ function makeOp(partial: {
       handRadLower: 0,
       handRadUpper: 0,
       ...partial.hold,
+    },
+    aimClip: {
+      ...DEFAULT_AIM_CLIP,
+      keys: DEFAULT_AIM_CLIP.keys.map((key) => ({ ...key })),
+      ...partial.aimClip,
+      ...(partial.aimClip?.keys
+        ? { keys: partial.aimClip.keys.map((key) => ({ ...key })) }
+        : {}),
     },
     packArt: { ...(partial.packArt || {}) },
     customSprites: {},
@@ -1294,11 +1324,19 @@ const TESTS: TestCase[] = [
         drawHand: true,
         thrown: false,
         keepWhileFiring: true,
-        flashFile: file(AIM_PNG, 'flash.png'),
-        flashFrames: 3,
-        flashOut: 14,
-        flashSide: 2,
-        flashScale: 1.5,
+        flashFile: file(FIRING_STRIP_PNG, 'flash.png'),
+        flashWidth: ICE_BMP.width,
+        flashHeight: ICE_BMP.height * 2,
+        // The firing role's own numbers: its own two-frame strip, placement and
+        // hand, so the round trip has something real to carry.
+        fireFrames: 2,
+        fireFps: 12,
+        fireWeapRadius: -4,
+        fireWeapRotation: 15,
+        fireScale: 1.2,
+        fireHandRadius: 14,
+        fireHandRotation: -10,
+        fireHandScale: 0.9,
       },
     }),
     intent:
@@ -1652,6 +1690,46 @@ const TESTS: TestCase[] = [
     watch:
       'A grenade in the hand exactly where an unoffset hold would be (the layer not taken over, or `offset` dropped), two grenades (the engine still drawing its sheet, so the mute did not apply), no grenade at all (the quad failed to load, so the silent sheet is what draws), or a grenade that jumps when the worm starts walking (the layer should not own the walk pose).',
   },
+  {
+    project: makeOp({
+      id: 'wftest.47_swing_idle',
+      name: 'WF 47 Swing Idle',
+      slot: 'baseball_bat',
+      fireType: 'special',
+      body: { sprite: 'baseball_bat', damage: 0 },
+      hold: {
+        enabled: true,
+        handType: 'mid',
+        handRadius: 10,
+        weapRadius: 4,
+        weapRotation: 0,
+        scale: 1,
+        frames: 1,
+        drawHand: true,
+        thrown: false,
+        putAway: true,
+      },
+      // A readable cut: wind up away from the target, swing through it, come
+      // back. `eat_fire` follows the clip, so Space never fires this weapon.
+      aimClip: {
+        enabled: true,
+        ticks: 16,
+        finish: 'endTurn',
+        keys: [
+          { t: 0, angle: 0, dx: 0, dy: 0, scale: 1, ease: 'out_quad' },
+          { t: 4, angle: -25, dx: -2, dy: 2, scale: 1, ease: 'in_quad' },
+          { t: 8, angle: 60, dx: 3, dy: -3, scale: 1.1, ease: 'out_cubic' },
+          { t: 16, angle: 0, dx: 0, dy: 0, scale: 1, ease: 'out_quad' },
+        ],
+      },
+    }),
+    intent:
+      'The aiming clip: Space plays a keyframed swing on the held art instead of firing, and the turn ends when the clip runs out.',
+    expect:
+      'The bat is held while aiming; pressing Space winds it back, swings it through, and returns it to the aim pose, with no shot, no projectile and no ammo change. The turn then ends by itself.',
+    watch:
+      'The weapon firing instead of swinging (`eat_fire` missing), the art not moving at all (the quad layer not taken over, or `swing` not emitted), the art moving but snapping back the instant Space is released (the clip read from the render clock instead of the 50 Hz one), or the turn never ending (a swing with no finish).',
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1714,7 +1792,13 @@ for (const test of TESTS) {
     // `mod.toml` declaration, only the file. The ice sprite keeps it visibly
     // different from the held gun, so a missing or stuck flash is obvious.
     if (project.hold.flashFile) {
-      writeFileSync(join(BUNDLE, flashSheetPath(project)), ICE_PNG);
+      // A strip has to be a real strip: WA slices the height by the frame count
+      // at load, and the panel reads the count back from the picture.
+      const fireFrames = Math.max(1, Math.round(project.hold.fireFrames ?? 1));
+      writeFileSync(
+        join(BUNDLE, flashSheetPath(project)),
+        fireFrames > 1 ? FIRING_STRIP_PNG : ICE_PNG,
+      );
     }
     // The aiming manager's mute: `hold.sheets` is loaded by the claim, so the
     // 1x1 transparent sheet only has to exist at the path the Lua names.

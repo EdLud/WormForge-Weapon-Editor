@@ -307,6 +307,58 @@ When the layer is on:
 `silent_sheet` is appended to `hold.sheets`, which the claim loads by itself, so
 the 1x1 PNG needs no `sprites` entry, only the file at the path.
 
+**The hold sheet must be in the weapon's `sprites` list** when the layer is on.
+`wa.draw.quad` resolves a pack path through the sprite keys the claim registers,
+and a sheet named only by `hold.sheet` is loaded for the engine's own draw but
+gets no key: the quad throws "sprite ... is not installed" inside `wa.on.draw`,
+the callback aborts before the mute is restored, and the weapon keeps the
+engine's static draw. The editor claims the path automatically for a hold that
+needs the layer; a hand-written bundle must add it:
+
+```lua
+wa.weapons.replace{ copy_from = "stock.bazooka",
+  sprites = { "sprites/<mod>/hold.png" },
+  params = { gpu_prefix = "sprites/" },  -- optional: the quad draws from the atlas
+  hold = hold }
+```
+
+`hand_offset = { x, y }` is the same nudge for the hand, in its own cell's
+pixels and scaled by `hand_scale`, and it also forces the layer. `hand_rotation`
+needs no layer: the engine has the field (`rot + PI*hand_rotation`), so the
+editor writes `1 + degrees/180` there and only the layer's quads read it back.
+
+### The Space swing (`swing`)
+
+`swing = { ticks, finish, keys = { { t, angle, dx, dy, scale, frame, alpha, ease }, ... } }`
+plays a keyframed clip on the held art when the turn player presses Space. It is
+data, not Lua: `M.clip_pose` is a pure function of the ticks since the press, so
+the simulation decides *when* and the draw decides *how it looks*, from the same
+arithmetic the editor's preview runs.
+
+- **The edge is read in the simulation.** `wa.world.keys().space` is the turn
+  player's synchronised keyboard, sampled in a `FRAME_FINISH` worm message once
+  per 50 Hz frame; `wa.on.draw` must never decide a swing, because its rate is
+  the renderer's. The start tick is stored per weapon and worm, and `clip_pose`
+  is evaluated from `wa.world.frame() - start`, so every peer plays the same
+  frames.
+- **Every channel is relative to the engine's aim pose.** `angle` is degrees
+  added to the drawn angle *before* the side mirror (so the art cuts the same
+  way both ways round), `dx`/`dy` are sheet pixels in the hold `offset`'s own
+  frame, `scale` multiplies the art, `frame` overrides the strip frame and
+  `alpha` fades the quad (`wa.draw.quad` takes 0xAARRGGBB and `quad_tint`
+  premultiplies it, so fading needs no blend mode). The hand carries `dx`/`dy`
+  so it stays with the weapon.
+- **Easing is the editor's own set:** `linear`, `in_quad`, `out_quad`,
+  `inout_quad`, `in_cubic`, `out_cubic`, `inout_cubic`, `out_back`,
+  `out_elastic` and `hold`. A frame is an index, not a number to blend, so it
+  steps at the end of the segment that names it.
+- **`finish = "end_turn"`** hands the turn back (`wa.world.set_turn_clock(0)`)
+  when the clip runs out. A weapon whose claim eats WA's fire
+  (`eat_fire = true`, which the editor writes whenever the swing is on) never
+  leaves a projectile, so without it the worm would sit in its aim pose for ever.
+  Leave it out (`finish = "none"`) when a hit box or a custom `on_fire` ends the
+  shot itself.
+
 ## Verify in game
 
 These are engine behaviours, not static checks:

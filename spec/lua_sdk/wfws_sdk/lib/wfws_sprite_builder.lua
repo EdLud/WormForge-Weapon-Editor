@@ -834,8 +834,18 @@ end
 
 -- One quad spec, refilled per draw: no table in the render callback.
 local HOLD_QUAD = { depth = HOLD_DEPTH, points = { {}, {}, {}, {} } }
+local HOLD_OPAQUE = 0xFFFFFFFF
 
-local function hold_quad(sheet, cx, cy, angle, half_w, half_h, facing, frame, worm)
+-- `hold_quad` colours the quad from an alpha, because `wa.draw.quad` takes
+-- 0xAARRGGBB and `gpu.rs::quad_tint` premultiplies it: an alpha below 1 fades
+-- the art without a blend mode of its own.
+local function hold_colour(alpha)
+  if alpha == nil or alpha >= 1 then return HOLD_OPAQUE end
+  if alpha <= 0 then return 0x00FFFFFF end
+  return math.floor(alpha * 255.0 + 0.5) * 0x1000000 + 0xFFFFFF
+end
+
+local function hold_quad(sheet, cx, cy, angle, half_w, half_h, facing, frame, worm, alpha)
   local cos, sin = wa.math.cos(angle), wa.math.sin(angle)
   local pts = HOLD_QUAD.points
   if facing < 0 then
@@ -851,6 +861,7 @@ local function hold_quad(sheet, cx, cy, angle, half_w, half_h, facing, frame, wo
   end
   HOLD_QUAD.sprite = sheet
   HOLD_QUAD.frame = frame or 0
+  HOLD_QUAD.color = hold_colour(alpha)
   -- Inherit the worm's Invisibility the way `draw_holds` does: an invisible,
   -- unrevealed team draws nothing, a revealed one gets the ghost tint.
   HOLD_QUAD.visibility = worm
@@ -866,8 +877,110 @@ function M.hold_needs_lua(spec)
   if spec.draw_mode == "lua" then return true end
   local off = spec.offset
   if type(off) == "table" and ((off.x or 0) ~= 0 or (off.y or 0) ~= 0) then return true end
+  local hand = spec.hand_offset
+  if type(hand) == "table" and ((hand.x or 0) ~= 0 or (hand.y or 0) ~= 0) then return true end
   if spec.clip ~= nil or spec.echo ~= nil or spec.swing ~= nil then return true end
   return false
+end
+
+-- ---------------------------------------------------------------------------
+-- The Space swing (`swing` in the spec, `project.aimClip` in the editor).
+--
+-- A clip is data, not Lua: keyframes over 50 Hz ticks, each holding an angle
+-- added to the drawn one, a dx/dy in sheet pixels, a size multiplier, an
+-- optional strip frame and alpha, and the easing that reaches it. `M.clip_pose`
+-- is a pure function of the ticks since the press, which is what keeps the two
+-- halves honest: the simulation decides *when* (the key edge, the finish) and
+-- the draw decides *how it looks*, from the same arithmetic the editor's
+-- preview runs. Nothing here reads the render clock, and nothing writes state
+-- from inside `wa.on.draw`.
+-- ---------------------------------------------------------------------------
+local CLIP_EASE = {
+  linear = function(t) return t end,
+  in_quad = function(t) return t * t end,
+  out_quad = function(t) return 1 - (1 - t) * (1 - t) end,
+  inout_quad = function(t)
+    if t < 0.5 then return 2 * t * t end
+    return 1 - 2 * (1 - t) * (1 - t)
+  end,
+  in_cubic = function(t) return t * t * t end,
+  out_cubic = function(t) return 1 - (1 - t) ^ 3 end,
+  inout_cubic = function(t)
+    if t < 0.5 then return 4 * t * t * t end
+    return 1 - 4 * (1 - t) ^ 3
+  end,
+  out_back = function(t)
+    local c = 1.70158
+    local u = t - 1
+    return 1 + (c + 1) * u * u * u + c * u * u
+  end,
+  out_elastic = function(t)
+    if t == 0 or t == 1 then return t end
+    local u = t - 1
+    return 2 ^ (-10 * t) * wa.math.sin((u * 10 - 0.75) * (2 * math.pi / 3)) + 1
+  end,
+  hold = function(t)
+    if t >= 1 then return 1 end
+    return 0
+  end,
+}
+
+local function clip_lerp(a, b, f)
+  return a + (b - a) * f
+end
+
+-- The pose at `t` ticks. Keys are read in file order but sorted by `t` once, at
+-- install, so this stays allocation-free enough for a draw callback: it returns
+-- one small table per call and the caller drops it.
+function M.clip_pose(clip, t)
+  local keys = clip and clip.keys
+  if not keys or #keys == 0 then return nil end
+  local first, last = keys[1], keys[#keys]
+  if t <= first.t then
+    return { angle = first.angle or 0, dx = first.dx or 0, dy = first.dy or 0,
+      scale = first.scale or 1, frame = first.frame, alpha = first.alpha or 1 }
+  end
+  if t >= last.t then
+    return { angle = last.angle or 0, dx = last.dx or 0, dy = last.dy or 0,
+      scale = last.scale or 1, frame = last.frame, alpha = last.alpha or 1 }
+  end
+  local i = 1
+  while i < #keys and keys[i + 1].t <= t do i = i + 1 end
+  local a, b = keys[i], keys[i + 1]
+  local span = b.t - a.t
+  local raw = span > 0 and (t - a.t) / span or 1
+  local ease = CLIP_EASE[b.ease or "inout_quad"] or CLIP_EASE.inout_quad
+  local f = ease(raw)
+  local a_scale, b_scale = a.scale or 1, b.scale or 1
+  local a_alpha, b_alpha = a.alpha or 1, b.alpha or 1
+  return {
+    angle = clip_lerp(a.angle or 0, b.angle or 0, f),
+    dx = clip_lerp(a.dx or 0, b.dx or 0, f),
+    dy = clip_lerp(a.dy or 0, b.dy or 0, f),
+    scale = clip_lerp(a_scale, b_scale, f),
+    -- A frame is an index, not a number to blend: it steps at the segment end.
+    frame = (raw >= 1) and b.frame or a.frame,
+    alpha = clip_lerp(a_alpha, b_alpha, f),
+  }
+end
+
+-- Sorted copy of a clip's keys, so `clip_pose` never has to sort in a callback.
+local function clip_prepare(clip)
+  if type(clip) ~= "table" or type(clip.keys) ~= "table" or #clip.keys == 0 then
+    return nil
+  end
+  local keys = {}
+  for i = 1, #clip.keys do
+    local k = clip.keys[i]
+    if type(k) == "table" and type(k.t) == "number" then keys[#keys + 1] = k end
+  end
+  table.sort(keys, function(a, b) return a.t < b.t end)
+  if #keys == 0 then return nil end
+  return {
+    keys = keys,
+    ticks = math.max(1, math.floor(clip.ticks or keys[#keys].t or 1)),
+    finish = clip.finish,
+  }
 end
 
 local function hold_mute(entry, on)
@@ -885,7 +998,7 @@ end
 -- One aiming frame of the engine's draw, as a quad: `draw_holds` in
 -- `worm_hold.rs`, aim branch only. The put-away and firing poses are not drawn
 -- here, because the engine keeps them (PX's aiming has no put-away of its own).
-local function hold_draw_aim(entry, w, ws)
+local function hold_draw_aim(entry, w, ws, pose)
   local pi = math.pi
   local facing = w.facing < 0 and -1 or 1
   local static = entry.static_angles
@@ -894,21 +1007,30 @@ local function hold_draw_aim(entry, w, ws)
   local rot_w = rot + pi * entry.weap_radial_rotation
   local rot_h = rot - pi * entry.hand_radial_rotation
   -- Aim frames use `counter - 1`; the engine's first one is deliberately blank.
-  local size = hold_grow(ws.counter - 1) * entry.weap_scale
+  local base = hold_grow(ws.counter - 1)
+  local scale = pose and pose.scale or 1
+  local size = base * entry.weap_scale * scale
   local frames = math.max(1, entry.frames)
   local frame = math.floor(ws.phase * frames)
+  if pose and pose.frame then frame = math.floor(pose.frame) end
   if frame >= frames then frame = frames - 1 end
   if frame < 0 then frame = 0 end
+  local alpha = pose and pose.alpha or 1
 
   local cx = w.x + facing * wa.math.sin(rot_w) * entry.weap_radius
   local cy = w.y - wa.math.cos(rot_w) * entry.weap_radius
-  local ang = (static and static.weap * pi
-    or (pi - pi * a - pi * (1.0 - entry.weap_rotation))) * facing
+  -- The swing's own angle goes in before the side mirror, so the art cuts the
+  -- same way on both sides of the worm (a positive angle always lifts it).
+  local swing = pose and pose.angle and (pose.angle * pi / 180.0) or 0
+  local ang = ((static and static.weap * pi
+    or (pi - pi * a - pi * (1.0 - entry.weap_rotation))) + swing) * facing
 
   -- `offset = { x, y }`: the art nudged inside its own cell, scaled with the
   -- art like `size`/`angle` on the flight builder. Mirrored with the side and
   -- turned with the drawn angle, so an off-centre grip stays put at every aim.
-  local ox, oy = entry.ox * size, entry.oy * size
+  -- A swing's `dx`/`dy` is the same channel, added to it.
+  local ox = (entry.ox + (pose and pose.dx or 0)) * size
+  local oy = (entry.oy + (pose and pose.dy or 0)) * size
   if ox ~= 0 or oy ~= 0 then
     if facing < 0 then ox = -ox end
     local cr, sr = wa.math.cos(ang), wa.math.sin(ang)
@@ -916,16 +1038,49 @@ local function hold_draw_aim(entry, w, ws)
     cy = cy + ox * sr + oy * cr
   end
   hold_quad(entry.sheet, cx, cy, ang,
-    entry.cell_w * size * 0.5, entry.cell_h * size * 0.5, facing, frame, w)
+    entry.cell_w * size * 0.5, entry.cell_h * size * 0.5, facing, frame, w, alpha)
 
   if entry.hand and entry.draw_hand ~= false and (entry.hand_radius or 0) ~= 0 then
     local hx = w.x + facing * wa.math.sin(rot_h) * entry.hand_radius
     local hy = w.y - wa.math.cos(rot_h) * entry.hand_radius
     local h_ang = (static and static.hand * pi or (rot + pi * entry.hand_rotation)) * facing
-    local h_half = (entry.hand_size or HOLD_HAND_CELL) * size * 0.5
-      * (entry.hand_scale or 1.0)
-    hold_quad(entry.hand, hx, hy, h_ang, h_half, h_half, facing, 0, w)
+    -- The hand's own cell scales with `hand_scale`, so its offset and the
+    -- swing's carry ride that size, not the weapon's.
+    local hsize = size * (entry.hand_scale or 1.0)
+    local hox = (entry.hox + (pose and pose.dx or 0)) * hsize
+    local hoy = (entry.hoy + (pose and pose.dy or 0)) * hsize
+    if hox ~= 0 or hoy ~= 0 then
+      if facing < 0 then hox = -hox end
+      local cr, sr = wa.math.cos(h_ang), wa.math.sin(h_ang)
+      hx = hx + hox * cr - hoy * sr
+      hy = hy + hox * sr + hoy * cr
+    end
+    local h_half = (entry.hand_size or HOLD_HAND_CELL) * hsize * 0.5
+    hold_quad(entry.hand, hx, hy, h_ang, h_half, h_half, facing, 0, w, alpha)
   end
+end
+
+-- The per-worm state the draw and the simulation half share: the draw-out
+-- counter, the engine's strip phase, and the swing's start tick.
+local function hold_worm_state(entry, w)
+  local per_worm = hold_state[entry]
+  if not per_worm then
+    per_worm = {}
+    hold_state[entry] = per_worm
+  end
+  local ws = per_worm[w.id]
+  if not ws then
+    ws = { counter = 0, phase = 0.0, frame = -1, swing = nil, space = false }
+    per_worm[w.id] = ws
+  end
+  return per_worm, ws
+end
+
+-- True while the engine would draw this worm's hold: alive, visible, body
+-- visible, this weapon selected, and an aiming state.
+local function hold_aiming(entry, w)
+  return w.hp and w.hp > 0 and w.visible and w.body_visible
+    and w.weapon == entry.weapon and HOLD_AIM_STATES[w.state_id] and true or false
 end
 
 local function hold_ensure_hook()
@@ -942,6 +1097,7 @@ local function hold_ensure_hook()
       local entry = hold_entries[i]
       local aiming = false
       local per_worm = hold_state[entry]
+      local ws_holder = nil
       if per_worm then
         for j = 1, #worms do
           local w = worms[j]
@@ -956,16 +1112,10 @@ local function hold_ensure_hook()
         local w = worms[j]
         -- The engine's own gate: dead, hidden and body-hidden worms draw no
         -- hold, and `w.weapon` is the selected weapon the engine tests.
-        if w.hp and w.hp > 0 and w.visible and w.body_visible
-          and w.weapon == entry.weapon and HOLD_AIM_STATES[w.state_id] then
+        if hold_aiming(entry, w) then
           aiming = true
-          per_worm = per_worm or {}
-          hold_state[entry] = per_worm
-          local ws = per_worm[w.id]
-          if not ws then
-            ws = { counter = 0, phase = 0.0, frame = -1 }
-            per_worm[w.id] = ws
-          end
+          per_worm, ws_holder = hold_worm_state(entry, w)
+          local ws = ws_holder
           -- Advance once per 50 Hz frame, never once per rendered frame: the
           -- render rate is not the game's and differs between machines.
           if ws.frame ~= now then
@@ -975,7 +1125,11 @@ local function hold_ensure_hook()
               ws.phase = hold_next_phase(ws.phase, entry.anim_speed)
             end
           end
-          hold_draw_aim(entry, w, ws)
+          local pose = nil
+          if entry.clip and ws.swing then
+            pose = M.clip_pose(entry.clip, now - ws.swing)
+          end
+          hold_draw_aim(entry, w, ws, pose)
         end
       end
       -- Point the engine at the silent sheet only while the quads draw, and
@@ -983,6 +1137,54 @@ local function hold_ensure_hook()
       hold_mute(entry, aiming)
     end
   end)
+end
+
+-- The simulation half of the swing: one handler for every layer, run per worm
+-- message, gated to the first call of each 50 Hz frame so the entries and the
+-- worm list are walked once. `wa.world.keys().space` is the turn player's
+-- synchronised keyboard, so the edge lands on the same frame on every peer;
+-- `wa.on.draw` must never decide a swing, because its rate is the renderer's.
+local swing_hooked = false
+local swing_tick = -1
+
+local function swing_ensure()
+  if swing_hooked then return end
+  if not (wa.on and wa.on.worm_message and wa.world and wa.world.frame) then return end
+  swing_hooked = true
+  wa.on.worm_message(function()
+    local now = wa.world.frame() or 0
+    if now == swing_tick then return end
+    swing_tick = now
+    local keys = wa.world.keys and wa.world.keys() or nil
+    local space = keys and keys.space or false
+    local worms = wa.worms.all()
+    for i = 1, #hold_entries do
+      local entry = hold_entries[i]
+      if entry.clip then
+        for j = 1, #worms do
+          local w = worms[j]
+          local _, ws = hold_worm_state(entry, w)
+          if not hold_aiming(entry, w) then
+            ws.space = false
+            ws.swing = nil
+          else
+            if space and not ws.space and not ws.swing then
+              ws.swing = now
+            end
+            ws.space = space
+            if ws.swing and now - ws.swing >= entry.clip.ticks then
+              ws.swing = nil
+              -- The claim eats WA's fire, so a swing that changes nothing has
+              -- to hand the turn back or the worm would sit there for ever.
+              if entry.clip.finish == "end_turn" and wa.world.set_turn_clock then
+                wa.world.set_turn_clock(0)
+              end
+            end
+          end
+        end
+      end
+    end
+  end, { msgs = { wa.msg.FRAME_FINISH } })
 end
 
 -- Build a worm hold. Returns the `hold =` table the claim wants; registers the
@@ -1024,11 +1226,16 @@ function M.hold(ctx, spec)
 
   local cell = spec.cell_size or HOLD_HAND_CELL
   local off = type(spec.offset) == "table" and spec.offset or {}
+  local hand_off = type(spec.hand_offset) == "table" and spec.hand_offset or {}
+  local clip = clip_prepare(spec.swing or spec.clip)
   local entry = {
     weapon = weapon,
     sheet = spec.sheet,
     silent = silent,
     muted = false,
+    clip = clip,
+    hox = hand_off.x or 0,
+    hoy = hand_off.y or 0,
     cell_w = spec.cell_w or cell,
     cell_h = spec.cell_h or cell,
     ox = off.x or 0,
@@ -1050,6 +1257,7 @@ function M.hold(ctx, spec)
   }
   hold_entries[#hold_entries + 1] = entry
   hold_ensure_hook()
+  if clip then swing_ensure() end
   return rust
 end
 
