@@ -43,11 +43,31 @@ export interface AimClipKey {
   ease: ClipEase;
 }
 
+/**
+ * The trail behind a swing: the same clip at earlier ticks, each ghost fainter
+ * than the one in front of it. The pose is a pure function of the tick, so the
+ * draw evaluates the clip again instead of recording a history, and the ghosts
+ * are identical on every peer for free.
+ */
+export interface AimEchoConfig {
+  enabled: boolean;
+  /** Ghosts behind the live art, 1 to 8. */
+  count: number;
+  /** 50 Hz ticks between two ghosts. */
+  every: number;
+  /** Alpha multiplier per ghost, so ghost k is `fade ^ k` opaque. */
+  fade: number;
+  /** `add` glows (the usual choice for a blade), `alpha` is a plain fade. */
+  blend: 'alpha' | 'add';
+}
+
 export interface AimClipConfig {
   enabled: boolean;
   /** Length of the swing in 50 Hz ticks (20 ms each). */
   ticks: number;
   keys: AimClipKey[];
+  /** The ghost trail drawn behind the swing. */
+  echo: AimEchoConfig;
   /**
    * What happens when the clip runs out. `endTurn` hands the turn back
    * (`wa.world.set_turn_clock(0)`) because the claim eats WA's fire, so
@@ -154,6 +174,14 @@ export function evalClip(clip: AimClipConfig, t: number): ClipPose | null {
   };
 }
 
+export const DEFAULT_AIM_ECHO: AimEchoConfig = {
+  enabled: false,
+  count: 4,
+  every: 2,
+  fade: 0.55,
+  blend: 'add',
+};
+
 /**
  * A readable two-way swing: wind up away from the target, cut through it,
  * come back to the aim pose. Numbers are small on purpose (a 90 degree cut on
@@ -164,6 +192,7 @@ export const DEFAULT_AIM_CLIP: AimClipConfig = {
   enabled: false,
   ticks: 16,
   finish: 'endTurn',
+  echo: { ...DEFAULT_AIM_ECHO },
   keys: [
     { t: 0, angle: 0, dx: 0, dy: 0, scale: 1, alpha: 1, ease: 'out_quad' },
     { t: 4, angle: -22, dx: -2, dy: 2, scale: 1, alpha: 1, ease: 'in_quad' },

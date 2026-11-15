@@ -850,7 +850,7 @@ local function hold_colour(alpha)
   return math.floor(alpha * 255.0 + 0.5) * 0x1000000 + 0xFFFFFF
 end
 
-local function hold_quad(sheet, cx, cy, angle, half_w, half_h, facing, frame, worm, alpha)
+local function hold_quad(sheet, cx, cy, angle, half_w, half_h, facing, frame, worm, alpha, blend)
   local cos, sin = wa.math.cos(angle), wa.math.sin(angle)
   local pts = HOLD_QUAD.points
   if facing < 0 then
@@ -867,6 +867,9 @@ local function hold_quad(sheet, cx, cy, angle, half_w, half_h, facing, frame, wo
   HOLD_QUAD.sprite = sheet
   HOLD_QUAD.frame = frame or 0
   HOLD_QUAD.color = hold_colour(alpha)
+  -- The table is reused, so the blend is set every call: an echo trail draws
+  -- additively and the live art after it must go back to alpha.
+  HOLD_QUAD.blend = blend or "alpha"
   -- Inherit the worm's Invisibility the way `draw_holds` does: an invisible,
   -- unrevealed team draws nothing, a revealed one gets the ghost tint.
   HOLD_QUAD.visibility = worm
@@ -891,6 +894,8 @@ function M.hold_needs_lua(spec)
   -- The held art on WA's firing frames is ours too (`keep_firing`): the engine
   -- draws it there only while `h.firing` is set, which a burst repeats without.
   if spec.keep_firing ~= nil then return true end
+  -- A second hand is the layer's: `HoldSpec` has exactly one hand slot.
+  if type(spec.extra_hand) == "table" and spec.extra_hand.draw ~= false then return true end
   return false
 end
 
@@ -987,10 +992,20 @@ local function clip_prepare(clip)
   end
   table.sort(keys, function(a, b) return a.t < b.t end)
   if #keys == 0 then return nil end
+  local echo = type(clip.echo) == "table" and clip.echo or nil
   return {
     keys = keys,
     ticks = math.max(1, math.floor(clip.ticks or keys[#keys].t or 1)),
     finish = clip.finish,
+    -- The trail behind a swing: the same clip evaluated at earlier ticks, each
+    -- ghost fainter than the last. Nothing is recorded, because the pose is a
+    -- pure function of the tick, so a ghost costs one `clip_pose` and one quad.
+    echo = echo and {
+      count = math.max(1, math.min(8, math.floor(echo.count or 3))),
+      every = math.max(1, math.floor(echo.every or 2)),
+      fade = math.max(0.05, math.min(0.95, echo.fade or 0.55)),
+      blend = echo.blend == "add" and "add" or "alpha",
+    } or nil,
   }
 end
 
@@ -1009,7 +1024,11 @@ end
 -- One aiming frame of the engine's draw, as a quad: `draw_holds` in
 -- `worm_hold.rs`, aim branch only. The put-away and firing poses are not drawn
 -- here, because the engine keeps them (PX's aiming has no put-away of its own).
-local function hold_draw_aim(entry, w, ws, pose, firing_hold)
+-- `alpha_mul` and `blend` are the echo trail's: a ghost is this same quad at an
+-- earlier tick, fainter and (usually) additive. `weapon_only` leaves the hand
+-- out, because the hand is anchored to the worm: a smear of it reads as a bug,
+-- not as motion.
+local function hold_draw_aim(entry, w, ws, pose, firing_hold, alpha_mul, blend, weapon_only)
   local pi = math.pi
   local facing = w.facing < 0 and -1 or 1
   local static = entry.static_angles
@@ -1028,7 +1047,7 @@ local function hold_draw_aim(entry, w, ws, pose, firing_hold)
   if pose and pose.frame then frame = math.floor(pose.frame) end
   if frame >= frames then frame = frames - 1 end
   if frame < 0 then frame = 0 end
-  local alpha = pose and pose.alpha or 1
+  local alpha = (pose and pose.alpha or 1) * (alpha_mul or 1)
 
   local cx = w.x + facing * wa.math.sin(rot_w) * entry.weap_radius
   local cy = w.y - wa.math.cos(rot_w) * entry.weap_radius
@@ -1051,15 +1070,18 @@ local function hold_draw_aim(entry, w, ws, pose, firing_hold)
     cy = cy + ox * sr + oy * cr
   end
   hold_quad(entry.sheet, cx, cy, ang,
-    entry.cell_w * size * 0.5, entry.cell_h * size * 0.5, facing, frame, w, alpha)
+    entry.cell_w * size * 0.5, entry.cell_h * size * 0.5, facing, frame, w, alpha, blend)
 
-  if entry.hand and entry.draw_hand ~= false and (entry.hand_radius or 0) ~= 0 then
+  if not weapon_only and entry.hand and entry.draw_hand ~= false and (entry.hand_radius or 0) ~= 0 then
     local hx = w.x + facing * wa.math.sin(rot_h) * entry.hand_radius
     local hy = w.y - wa.math.cos(rot_h) * entry.hand_radius
     local h_ang = (static and static.hand * pi or (rot + pi * entry.hand_rotation)) * facing
-    -- The hand's own cell scales with `hand_scale`, so its offset and the
-    -- swing's carry ride that size, not the weapon's.
-    local hsize = size * (entry.hand_scale or 1.0)
+    -- The hand is the engine's: `draw_holds` places it at `grow(counter) *
+    -- hand_scale`, with no `weap_scale` and no clip. Matching that exactly is
+    -- what keeps the engine's own copy under this one invisible (the engine
+    -- always draws its hand, and a bigger quad showed as a second hand on every
+    -- scaled weapon). The offset and the swing's carry ride that size.
+    local hsize = base * (entry.hand_scale or 1.0)
     local hox = (entry.hox + (pose and pose.dx or 0)) * hsize
     local hoy = (entry.hoy + (pose and pose.dy or 0)) * hsize
     if hox ~= 0 or hoy ~= 0 then
@@ -1070,6 +1092,31 @@ local function hold_draw_aim(entry, w, ws, pose, firing_hold)
     end
     local h_half = (entry.hand_size or HOLD_HAND_CELL) * hsize * 0.5
     hold_quad(entry.hand, hx, hy, h_ang, h_half, h_half, facing, 0, w, alpha)
+  end
+
+  -- The second hand: the same measurement as the engine's (`rot - PI*radial`,
+  -- rotation `rot + PI*hand_rotation`), its own radius and scale, and the
+  -- first hand's sheet unless it names one. It carries the swing's nudge with
+  -- the weapon, so a two-handed swing does not slide apart.
+  local x = not weapon_only and entry.extra_hand or nil
+  if x and (x.sheet or entry.hand) then
+    -- The same size rule as the first hand (`grow(counter) * scale`), so two
+    -- hands at scale 1 are the same size on the same weapon.
+    local xsize = base * (x.scale or 1.0)
+    local rot_x = rot - pi * (x.radial_rotation or 1.0)
+    local xx = w.x + facing * wa.math.sin(rot_x) * (x.radius or 0)
+    local xy = w.y - wa.math.cos(rot_x) * (x.radius or 0)
+    local x_ang = (rot + pi * (x.rotation or 1.0)) * facing
+    local xox = (x.ox + (pose and pose.dx or 0)) * xsize
+    local xoy = (x.oy + (pose and pose.dy or 0)) * xsize
+    if xox ~= 0 or xoy ~= 0 then
+      if facing < 0 then xox = -xox end
+      local cr, sr = wa.math.cos(x_ang), wa.math.sin(x_ang)
+      xx = xx + xox * cr - xoy * sr
+      xy = xy + xox * sr + xoy * cr
+    end
+    local x_half = (x.size or HOLD_HAND_CELL) * xsize * 0.5
+    hold_quad(x.sheet or entry.hand, xx, xy, x_ang, x_half, x_half, facing, 0, w, alpha)
   end
 end
 
@@ -1248,8 +1295,26 @@ local function hold_ensure_hook()
             -- its window is open, so the gun is not drawn underneath it.
             if not (firing and entry.fire and entry.fire.hide_main) then
               local pose = nil
+              local tick = nil
               if entry.clip and ws.swing then
-                pose = M.clip_pose(entry.clip, now - ws.swing)
+                tick = now - ws.swing
+                pose = M.clip_pose(entry.clip, tick)
+              end
+              -- Ghost trail: the same clip at earlier ticks, farthest first so
+              -- the live art lands on its own smear. The pose is a pure
+              -- function of the tick, so nothing has to be recorded in the sim.
+              local echo = entry.clip and entry.clip.echo
+              if echo and tick then
+                for k = echo.count, 1, -1 do
+                  local gt = tick - k * echo.every
+                  if gt >= 0 then
+                    local ghost = M.clip_pose(entry.clip, gt)
+                    if ghost then
+                      hold_draw_aim(entry, w, ws, ghost, false,
+                        echo.fade ^ k, echo.blend, true)
+                    end
+                  end
+                end
               end
               hold_draw_aim(entry, w, ws, pose)
               mute = true
@@ -1432,6 +1497,23 @@ function M.hold(ctx, spec)
     -- `keep_while_firing` is the engine's key for the same idea; once the layer
     -- draws, honouring it here is what makes the two agree.
     keep_firing = (spec.keep_firing == true or spec.keep_while_firing == true) or nil,
+    -- A second hand on the weapon (a support hand on a rifle's foregrip, a
+    -- second grip on a two-handed blade). The engine has one hand slot, so the
+    -- layer draws it: same rules as the first hand, its own numbers, and its
+    -- art defaults to the first hand's sheet.
+    extra_hand = type(spec.extra_hand) == "table"
+        and spec.extra_hand.draw ~= false
+        and {
+          sheet = spec.extra_hand.sheet,
+          radius = spec.extra_hand.radius or 0,
+          rotation = spec.extra_hand.rotation or 1.0,
+          radial_rotation = spec.extra_hand.radial_rotation or 1.0,
+          scale = spec.extra_hand.scale or 1.0,
+          size = spec.extra_hand.size or HOLD_HAND_CELL,
+          ox = (type(spec.extra_hand.offset) == "table" and spec.extra_hand.offset.x) or 0,
+          oy = (type(spec.extra_hand.offset) == "table" and spec.extra_hand.offset.y) or 0,
+        }
+      or nil,
   }
   hold_entries[#hold_entries + 1] = entry
   hold_ensure_hook()

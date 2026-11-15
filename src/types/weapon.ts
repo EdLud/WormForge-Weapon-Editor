@@ -244,6 +244,33 @@ export interface HoldConfig {
    */
   offsetX?: number;
   offsetY?: number;
+  /**
+   * A second hand on the weapon: a rifle's support hand on the foregrip, the
+   * off hand on a two-handed blade. `HoldSpec` has exactly one hand slot, so
+   * this one is drawn by `sb.hold`'s quad layer with the engine's own hand
+   * maths (`rot - PI*radial_rotation`, rotation `rot + PI*rotation`), its own
+   * radius, scale and cell nudge. With no sheet of its own it reuses the first
+   * hand's art, which is the usual case (PX's `PX_HANDS` sheet).
+   */
+  extraHand?: ExtraHandConfig;
+}
+
+export interface ExtraHandConfig {
+  enabled: boolean;
+  /** Uploaded art for the second hand; unset reuses the first hand's sheet. */
+  file?: File;
+  preview?: string;
+  /** The uploaded sheet's pixel size, so the quad layer knows its cell. */
+  sheetWidth?: number;
+  sheetHeight?: number;
+  /** Distance from the worm along its aim, in px (`hand_radius`). */
+  radius: number;
+  /** Degrees; the generator writes `1 + deg/180`, the engine's turn unit. */
+  rotation: number;
+  scale: number;
+  /** The art nudged inside its own cell, in sheet pixels, scaled by `scale`. */
+  offsetX: number;
+  offsetY: number;
 }
 
 export interface WeaponDefaults {

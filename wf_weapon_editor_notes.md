@@ -2746,3 +2746,88 @@ The Firing Sequence card says so under its numbers, with the fallback it will
 use, because "the fuse is not the record's" is exactly the kind of thing an
 author needs to know before reporting it as a bug. `tools/check_mod_import.ts`
 asserts the launch key, the tracker and the fallback on WF 29.
+
+## The ghost trail
+
+A swing on a down-the-line camera reads as a teleport: the blade leaves the aim
+pose and appears somewhere else. The trail is the fix, and the cheap way to
+build it is the property the clip already has: `clip_pose` is a pure function of
+the tick, so a ghost is the same clip evaluated at an earlier tick, not a
+recorded history.
+
+`swing.echo = { count, every, fade, blend }`, inside the clip's own table:
+
+- ghost `k` is `clip_pose(t - k * every)` at `fade ^ k`, drawn from the farthest
+  to the nearest so the live art lands on its own smear;
+- `count` is clamped to 1..8 and `every` to at least one tick;
+- `blend = "add"` is the usual choice (a blade glows), `"alpha"` is there for
+  sheets with real transparency;
+- the hand is left out. It is anchored to the worm, and a smear of it reads as a
+  bug rather than as motion. That is what `hold_draw_aim`'s `weapon_only` flag
+  is for, and the firing pass uses the same flag to keep the aim hand from being
+  drawn twice.
+
+`HOLD_QUAD` is one reused table, so `hold_quad` now writes `blend` on **every**
+call. A ghost that left `add` behind would have made the live art additive too,
+which looks like a bloom over the whole weapon instead of a trail behind it.
+
+No `wa.draw.quads` grouped path: one quad per ghost keeps the draw pool small
+and the code obvious, and eight is the cap. A "bake onto black" action was in the
+plan and is not needed: a ghost is the same sheet at an earlier pose, so a matte
+would only lose pixels.
+
+The preview draws the same formula (`echoPoses`), with `lighter` for `add`, so
+the smear in the panel is the smear in the game.
+
+## A second hand on the weapon
+
+`HoldSpec` has one `hand` slot, so a support hand (a foregrip, the off hand on a
+two-handed blade) is the aim layer's, on the same terms as the hold offset:
+
+`hold.extra_hand = { sheet?, radius, rotation, radial_rotation, scale, size,
+offset }`, using the engine's own hand maths (`rot - PI*radial_rotation` for the
+position, `rot + PI*rotation` for the drawn angle), its own art or the first
+hand's sheet, the swing's `dx`/`dy` carried with the weapon, and no hand on the
+echo ghosts or the firing pass. It forces the layer, and an uploaded sheet is
+claimed in `sprites` like the hold sheet, because `wa.draw.quad` resolves through
+that registry.
+
+Writing it exposed a bug in the layer's own hand: it was placed at
+`grow(counter) * weap_scale * scale * hand_scale` while the engine places the
+hand at `grow(counter) * hand_scale`. `draw_holds` always draws `config.hand`,
+whatever sheet the weapon is pointed at, so on any weapon with `weap_scale` != 1
+the layer drew a second, larger hand on top of the engine's. Both the layer and
+the preview now use the engine's rule. A nudged hand (`hand_offset`, or a clip's
+`dx`/`dy`) still moves off the engine's copy, which is the layer's one visible
+limit and needs an engine-side hand mute to fix properly.
+
+The preview also draws the firing sheet **before** its hand now, which is the
+order `sb.hold` uses (the `fire` role, then the hand on top): the hand was
+appearing behind the gun on the Firing Frames tab.
+
+## The squashed firing sheet and the stubborn hand
+
+Two bugs in the firing role, both invisible in the panel and obvious in game.
+
+**The cell was forced square.** The generator computed the firing cell as
+`min(width, height)` when the sheet had one frame, so a 113x32 muzzle flash was
+drawn into a 32x32 quad: the game squashed it horizontally, while the preview
+(the browser) drew the sheet's real shape and looked right. The cell is the
+sheet's own cell, `cell_w = width` and `cell_h = height / frames`, which is WA's
+`load_strip_bytes` rule read the other way: one frame is the whole picture, and
+a strip is cut out of the height. A typed frame count that no longer divides the
+height evenly is the `SheetFrameWarning`'s job to refuse, not the cell's.
+
+**The firing hand ignored the aim hand's switch.** The panel's checkbox is
+`fireDrawHand ?? drawHand`, so with only the aiming hand turned off the box
+showed off, the preview hid the hand, and the generator wrote nothing, because it
+tested `fireDrawHand === false` alone. `sb.hold`'s firing pass then drew the hand
+at `hand_radius`. It now resolves the same way the panel does.
+
+Same pass, one more gap: a multi-frame firing sheet was never declared in
+`mod.toml`, so the engine sliced it by its own height / width rule while the Lua
+walked it by `fire.frames`. They agree for a square strip and disagree the
+moment an author types a different count, which shows as a half-cell jumping
+inside the quad. The declaration is written whenever `fireFrames > 1`, from the
+same numbers the Lua uses, and the test pack writes the file and the declaration
+from one place (`spriteDecls`).

@@ -47,6 +47,7 @@ import {
   packArtPath,
   sanitizeModFolder,
   wfwsRoleFlags,
+  extraHandSheetPath,
   flashSheetPath,
   terrainStampPath,
 } from '../src/utils/luaGenerator';
@@ -1738,6 +1739,88 @@ const TESTS: TestCase[] = [
     watch:
       'The weapon firing instead of swinging (`eat_fire` missing), the art not moving at all (the quad layer not taken over, or `swing` not emitted), the art moving but snapping back the instant Space is released (the clip read from the render clock instead of the 50 Hz one), or the turn never ending (a swing with no finish).',
   },
+  {
+    project: makeOp({
+      id: 'wftest.48_echo_trail',
+      name: 'WF 48 Echo Trail',
+      slot: 'baseball_bat',
+      fireType: 'special',
+      body: { sprite: 'baseball_bat', damage: 0 },
+      hold: {
+        enabled: true,
+        handType: 'mid',
+        handRadius: 10,
+        weapRadius: 4,
+        weapRotation: 0,
+        scale: 1,
+        frames: 1,
+        drawHand: true,
+        thrown: false,
+        putAway: true,
+      },
+      // The same cut as WF 47, with five additive ghosts three ticks apart so
+      // the arc is visible as a smear instead of a single blade.
+      aimClip: {
+        enabled: true,
+        ticks: 20,
+        finish: 'endTurn',
+        echo: { enabled: true, count: 5, every: 3, fade: 0.6, blend: 'add' },
+        keys: [
+          { t: 0, angle: 0, dx: 0, dy: 0, scale: 1, ease: 'out_quad' },
+          { t: 5, angle: -25, dx: -2, dy: 2, scale: 1, ease: 'in_quad' },
+          { t: 12, angle: 70, dx: 4, dy: -3, scale: 1.1, ease: 'out_cubic' },
+          { t: 20, angle: 0, dx: 0, dy: 0, scale: 1, ease: 'out_quad' },
+        ],
+      },
+    }),
+    intent:
+      'The ghost trail behind a swing: the same clip at earlier ticks, each ghost fainter and additive, drawn under the live art.',
+    expect:
+      'Pressing Space leaves a bright smear of the bat behind the blade, fading over three ticks per ghost at 60 percent each, strongest at the blade and gone once the clip ends. The hand does not smear, only the blade.',
+    watch:
+      'No trail at all (`echo` dropped from the `swing` table, or `sb.hold` compiled it away), a solid white blob (the ghosts drawn on top of the blade instead of under it, or `blend` leaking into the live quad so it draws additively too), the hand smearing as well, or a trail that keeps growing after the swing ends (`t - k*every` not clamped to 0).',
+  },
+  {
+    project: makeOp({
+      id: 'wftest.49_second_hand',
+      name: 'WF 49 Second Hand',
+      slot: 'baseball_bat',
+      fireType: 'special',
+      body: { sprite: 'baseball_bat', damage: 0 },
+      hold: {
+        enabled: true,
+        handType: 'mid',
+        handRadius: 10,
+        weapRadius: 4,
+        weapRotation: 0,
+        scale: 1,
+        frames: 1,
+        drawHand: true,
+        thrown: false,
+        putAway: true,
+        // A support hand much further up the shaft, its own art, and a nudge
+        // that puts it on the grip rather than in the middle of the blade.
+        extraHand: {
+          enabled: true,
+          file: file(ICE_PNG, 'hand2.png'),
+          preview: '',
+          sheetWidth: 60,
+          sheetHeight: 60,
+          radius: -6,
+          rotation: 0,
+          scale: 0.9,
+          offsetX: 2,
+          offsetY: -3,
+        },
+      },
+    }),
+    intent:
+      'A second hand on the weapon: `HoldSpec` has one hand slot, so the aiming layer draws it with the engine`s own hand maths from `extra_hand`.',
+    expect:
+      'The worm holds the bat with two hands: the usual one at the grip and a second one further up the shaft, both swinging together when Space is pressed, and both drawn at every aim angle including straight up and straight down.',
+    watch:
+      'Only one hand (the layer not taken over for `extra_hand`), the second hand stuck at the worm`s feet (`radius` ignored), the second hand drawn but missing its sheet (the claim `sprites` does not list `hand2.png`, so the quad cannot resolve), the two hands sliding apart during a swing (the clip`s `dx`/`dy` not carried), or the second hand drawn twice during a firearm burst (`weapon_only` not honoured for the firing pass).',
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1803,11 +1886,22 @@ for (const test of TESTS) {
       // A strip has to be a real strip: WA slices the height by the frame count
       // at load, and the panel reads the count back from the picture.
       const fireFrames = Math.max(1, Math.round(project.hold.fireFrames ?? 1));
-      writeFileSync(
-        join(BUNDLE, flashSheetPath(project)),
-        fireFrames > 1 ? FIRING_STRIP_PNG : ICE_PNG,
-      );
+      const flashPath = flashSheetPath(project);
+      writeFileSync(join(BUNDLE, flashPath), fireFrames > 1 ? FIRING_STRIP_PNG : ICE_PNG);
+      // A strip's cell count has to be declared, or the engine slices the sheet
+      // by its own height / width rule and the quads show half a cell each.
+      if (fireFrames > 1) {
+        spriteDecls.set(flashPath, {
+          frames: fireFrames,
+          fps: Math.max(1, Number(project.hold.fireFps) || 15),
+          play: 'loop',
+        });
+      }
     }
+    // A second hand's own art. `sb.hold` resolves it through the claim
+    // `sprites`, so the file has to exist at the path the Lua names.
+    const hand2Path = extraHandSheetPath(project);
+    if (hand2Path) writeFileSync(join(BUNDLE, hand2Path), ICE_PNG);
     // The aiming manager's mute: `hold.sheets` is loaded by the claim, so the
     // 1x1 transparent sheet only has to exist at the path the Lua names.
     if (holdNeedsAimLayer(project)) {

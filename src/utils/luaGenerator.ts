@@ -210,6 +210,16 @@ export function flashSheetPath(project: WeaponProject): string {
 }
 
 /**
+ * The second hand's own art, when the author uploaded one. Without it the layer
+ * reuses the first hand's sheet (`PX_HANDS`), so nothing is written and nothing
+ * is claimed.
+ */
+export function extraHandSheetPath(project: WeaponProject): string | null {
+  if (!project.hold?.extraHand?.enabled || !project.hold.extraHand.file) return null;
+  return `sprites/${sanitizeModFolder(project.id)}/hand2.png`;
+}
+
+/**
  * The 1x1 transparent sheet the aiming manager points the engine at while its
  * quads draw (`hold.sheets[1]` / `wa.weapons.hold_sheet`). It is written by the
  * exporter, never declared in `mod.toml`: `worm_hold::claim` loads `hold.sheets`
@@ -241,7 +251,9 @@ export function holdNeedsAimLayer(project: WeaponProject): boolean {
     return true;
   }
   // The swing is a clip on the held art, which only the quad layer can draw.
-  return !!project.aimClip?.enabled;
+  if (project.aimClip?.enabled) return true;
+  // `HoldSpec` has one hand slot, so a second hand is the layer's.
+  return !!h.extraHand?.enabled;
 }
 
 /** True when a Space press plays the aiming clip instead of firing. */
@@ -1146,6 +1158,41 @@ export function generateLuaCode(project: WeaponProject): string {
           holdRows.push(`    { ${parts.join(', ')} },`);
         }
         holdRows.push('  },');
+        // The ghost trail: `sb.hold` evaluates the same clip at earlier ticks,
+        // so nothing is recorded and every peer draws the same smear.
+        const echo = clip.echo;
+        if (echo?.enabled) {
+          holdRows.push(
+            `  echo = { count = ${Math.round(echo.count)}, every = ${Math.round(
+              echo.every,
+            )}, fade = ${formatNumber(echo.fade)}, blend = ${luaQuote(echo.blend)} },`,
+          );
+        }
+        holdRows.push('},');
+      }
+      // A second hand on the weapon. `HoldSpec` has one hand slot, so the aim
+      // layer draws this one with the engine's own hand maths; its art is its
+      // own upload or, the usual case, the first hand's sheet.
+      const extra = h.extraHand;
+      if (extra?.enabled) {
+        const rotation = (deg: number) =>
+          (1 + deg / 180).toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
+        holdRows.push('extra_hand = {');
+        const own = extraHandSheetPath(project);
+        if (own) holdRows.push(`  sheet = ${luaQuote(own)},`);
+        holdRows.push(`  radius = ${formatNumber(extra.radius)},`);
+        holdRows.push(`  rotation = ${rotation(extra.rotation)},`);
+        holdRows.push('  radial_rotation = 1,');
+        holdRows.push(`  scale = ${formatNumber(extra.scale)},`);
+        // The quad layer measures the cell itself; the engine ignores this key.
+        holdRows.push(
+          `  size = ${Math.max(1, Math.round(extra.sheetWidth || h.sheetWidth || 60))},`,
+        );
+        if ((extra.offsetX ?? 0) !== 0 || (extra.offsetY ?? 0) !== 0) {
+          holdRows.push(
+            `  offset = { x = ${formatNumber(extra.offsetX)}, y = ${formatNumber(extra.offsetY)} },`,
+          );
+        }
         holdRows.push('},');
       }
       // The firing role. Its own sheet, cell, size, strip, window and hand, so
@@ -1158,21 +1205,15 @@ export function generateLuaCode(project: WeaponProject): string {
           h.sheetFile ? (h.sheetHeight ?? fallback.height) / holdFrames : fallback.height,
         );
         const fireFrames = Math.max(1, Math.round(h.fireFrames ?? 1));
-        const flashHeight = h.flashHeight ?? 0;
-        const cellH = Math.max(
-          1,
-          fireFrames > 1 && flashHeight > 0
-            ? Math.floor(flashHeight / fireFrames)
-            : Math.min(h.flashWidth ?? 0, flashHeight) || holdCell,
-        );
-        const cellW = Math.max(
-          1,
-          Math.round(
-            fireFrames > 1 && h.flashWidth
-              ? h.flashWidth
-              : Math.min(h.flashWidth ?? 0, flashHeight) || holdCell,
-          ),
-        );
+        const flashW = Math.max(0, h.flashWidth ?? 0);
+        const flashH = Math.max(0, h.flashHeight ?? 0);
+        // The firing sheet is WA's own strip rule (`load_strip_bytes`): the
+        // cell is the sheet's **width** and its height over the frame count, so
+        // one frame is the whole picture (a muzzle flash is wide, not square)
+        // and a strip is cut out of the height. The cell used to be forced
+        // square, which drew a 113x32 flash into a 32x32 quad, squashed.
+        const cellH = Math.max(1, flashH > 0 ? Math.floor(flashH / fireFrames) : holdCell);
+        const cellW = Math.max(1, flashW > 0 ? flashW : cellH);
         const fireFps = Math.max(1, Number(h.fireFps) || 15);
         const fireScale = h.fireScale ?? h.scale ?? 1;
         const fireRadius = h.fireWeapRadius ?? h.weapRadius ?? 6;
@@ -1220,7 +1261,10 @@ export function generateLuaCode(project: WeaponProject): string {
             `  hand_offset = { x = ${formatNumber(h.fireHandOffsetX ?? 0)}, y = ${formatNumber(h.fireHandOffsetY ?? 0)} },`,
           );
         }
-        if (h.fireDrawHand === false) holdRows.push('  draw_hand = false,');
+        // The panel's checkbox is `fireDrawHand ?? drawHand`, so the emitted
+        // key has to resolve the same way: with only the aim hand turned off,
+        // the firing role used to keep drawing a hand at `hand_radius`.
+        if ((h.fireDrawHand ?? h.drawHand) === false) holdRows.push('  draw_hand = false,');
         holdRows.push('},');
       }
     }
@@ -1364,6 +1408,10 @@ export function generateLuaCode(project: WeaponProject): string {
   if (usesHold && project.hold?.flashFile) {
     packSprites.push(luaQuote(flashSheetPath(project)));
   }
+  // A quad resolves its path through the claim's registry, so the second hand
+  // has to be listed here whenever it has art of its own.
+  const extraHandPath = usesHold ? extraHandSheetPath(project) : null;
+  if (extraHandPath) packSprites.push(luaQuote(extraHandPath));
   if (usesMissileSprite) {
     packSprites.push(luaQuote(missileFlightSheetPath(project)));
     if (bitMode === 'builder') {
@@ -3626,6 +3674,23 @@ export function generateModToml(project: WeaponProject): string {
     lines.push(`frames = ${project.hold.frames}`);
     lines.push(`fps = ${project.hold.fps || 15}`);
     lines.push('play = "loop"');
+  }
+
+  // The firing sheet is a strip too, and the layer walks it by `fire.frames`.
+  // Without the declaration the engine slices by its own rule (height / width),
+  // which disagrees with a typed frame count: a 60x240 sheet typed as 8 frames
+  // would be cut into 4, and every quad would show half of one cell.
+  const fireStripFrames = Math.max(1, Math.round(project.hold?.fireFrames ?? 1));
+  if (usesHold && project.hold?.flashFile && fireStripFrames > 1) {
+    const sheetPath = flashSheetPath(project);
+    if (!emitted.has(sheetPath)) {
+      emitted.add(sheetPath);
+      lines.push('');
+      lines.push(`[sprites.${luaQuote(sheetPath)}]`);
+      lines.push(`frames = ${fireStripFrames}`);
+      lines.push(`fps = ${Math.max(1, Number(project.hold.fireFps) || 15)}`);
+      lines.push('play = "loop"');
+    }
   }
 
   // Sheets uploaded for the fields that accept pack art. The engine slices and

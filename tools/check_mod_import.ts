@@ -16,7 +16,12 @@ import type { WeaponProject } from '../src/types/weapon';
 import type { ModFile } from '../src/utils/modLib/scan';
 import { readBundles, readWeapons } from '../src/utils/modLib/scan';
 import { importBundleWeapon } from '../src/utils/modLib/importWeapon';
-import { generateLuaCode, generateModToml, holdSheetPath } from '../src/utils/luaGenerator';
+import {
+  extraHandSheetPath,
+  generateLuaCode,
+  generateModToml,
+  holdSheetPath,
+} from '../src/utils/luaGenerator';
 import {
   DEFAULT_IMPORT_HOLD,
   DEFAULT_IMPORT_MISSILE,
@@ -65,7 +70,7 @@ check(
   bundles.some((bundle) => bundle.id === 'wfws.sdk'),
   bundles.map((bundle) => bundle.id).join(', '),
 );
-check('test pack has 47 weapons', weapons.length === 47, String(weapons.length));
+check('test pack has 49 weapons', weapons.length === 49, String(weapons.length));
 
 const byName = new Map(weapons.map((weapon) => [weapon.name, weapon]));
 const projects = new Map<string, WeaponProject>();
@@ -933,6 +938,103 @@ return {
     'WF 47: the swing claims its hold sheet',
     lua.includes(`sprites = { "${holdSheetPath(fullProject(p, 'WF 47 Swing Idle'))}" }`),
     'the swing cannot draw: the sheet is not in the claim sprites',
+  );
+}
+
+// ---- a wide firing sheet and a hand that is off (WF 32, re-celled) -------
+// The firing sheet is WA's strip: the cell is the sheet's width and its height
+// over the frame count. Forcing it square drew a 113x32 muzzle flash into a
+// 32x32 quad (squashed), and the hand key did not follow the aim hand's off
+// switch, so the firing pass kept drawing a hand the panel said was hidden.
+{
+  const base = fullProject(project('WF 32 Hold Flash')!, 'Wide Flash');
+  near('WF 32: the case has a firing sheet', !!base.hold?.flashFile, true);
+  const wide: WeaponProject = {
+    ...base,
+    hold: {
+      ...base.hold!,
+      // The author's own numbers: one 113x32 frame, hands off on both tabs.
+      fireFrames: 1,
+      flashWidth: 113,
+      flashHeight: 32,
+      drawHand: false,
+      fireDrawHand: undefined,
+    },
+  };
+  const lua = generateLuaCode(wide);
+  check(
+    'WF 32: a one-frame firing sheet keeps its own shape',
+    lua.includes('cell_w = 113,') && lua.includes('cell_h = 32,'),
+    'the quad is square, so a wide muzzle flash is drawn squashed',
+  );
+  check(
+    'WF 32: the firing hand follows the aim hand',
+    lua.includes('draw_hand = false,'),
+    'the firing pass keeps drawing a hand the panel shows as off',
+  );
+  const strip: WeaponProject = {
+    ...base,
+    hold: { ...base.hold!, fireFrames: 4, flashWidth: 60, flashHeight: 240 },
+  };
+  const stripLua = generateLuaCode(strip);
+  check(
+    'WF 32: a strip is cut out of the height',
+    stripLua.includes('cell_w = 60,') && stripLua.includes('cell_h = 60,'),
+    'the strip cell is not width x (height / frames)',
+  );
+}
+
+// ---- the ghost trail (WF 48) ---------------------------------------------
+{
+  const p = project('WF 48 Echo Trail')!;
+  const echo = p.aimClip?.echo;
+  near('WF 48: the trail imports enabled', echo?.enabled, true);
+  near('WF 48: the ghost count', echo?.count, 5);
+  near('WF 48: the spacing', echo?.every, 3);
+  near('WF 48: the fade', echo?.fade, 0.6);
+  near('WF 48: the blend', echo?.blend, 'add');
+  const lua = generateLuaCode(fullProject(p, 'WF 48 Echo Trail'));
+  check(
+    'WF 48: the trail is emitted with the clip',
+    lua.includes('echo = { count = 5, every = 3, fade = 0.6, blend = "add" },'),
+    'the ghosts are dropped, so the swing draws a single blade',
+  );
+  check(
+    'WF 48: a re-export keeps the trail',
+    generateLuaCode(fullProject(p, 'WF 48 Echo Trail')).includes('echo = { count = 5,'),
+    'the ghost trail is lost on re-export',
+  );
+}
+
+// ---- the second hand (WF 49) ---------------------------------------------
+{
+  const p = project('WF 49 Second Hand')!;
+  const extra = p.hold?.extraHand;
+  near('WF 49: the second hand imports enabled', extra?.enabled, true);
+  near('WF 49: its radius', extra?.radius, -6);
+  near('WF 49: its scale', extra?.scale, 0.9);
+  near('WF 49: its nudge', `${extra?.offsetX},${extra?.offsetY}`, '2,-3');
+  near('WF 49: its art comes with it', !!extra?.file, true);
+  const full = fullProject(p, 'WF 49 Second Hand');
+  const lua = generateLuaCode(full);
+  check(
+    'WF 49: the second hand is emitted',
+    lua.includes('extra_hand = {') &&
+      lua.includes(`  sheet = "${extraHandSheetPath(full)}",`) &&
+      lua.includes('  radius = -6,') &&
+      lua.includes('  offset = { x = 2, y = -3 },') &&
+      lua.includes('  radial_rotation = 1,'),
+    'the engine has one hand slot, so a layer-drawn second hand is the only way it draws',
+  );
+  check(
+    'WF 49: the aim layer is required for it',
+    lua.includes('local hold = sb.hold(ctx, {') && lua.includes('silent_sheet = '),
+    'the second hand cannot be drawn by the engine hold',
+  );
+  check(
+    'WF 49: its sheet is in the claim sprites',
+    lua.includes(`"${extraHandSheetPath(full)}"`),
+    'wa.draw.quad cannot resolve hand2.png',
   );
 }
 

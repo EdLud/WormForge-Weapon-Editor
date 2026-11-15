@@ -334,6 +334,37 @@ pixels and scaled by `hand_scale`, and it also forces the layer. `hand_rotation`
 needs no layer: the engine has the field (`rot + PI*hand_rotation`), so the
 editor writes `1 + degrees/180` there and only the layer's quads read it back.
 
+The layer's hand is placed exactly as the engine places it, `grow(counter) *
+hand_scale`, **without** `weap_scale` and without the clip's `scale`. The engine
+always draws its own hand (`draw_holds` places `config.hand` whatever sheet the
+weapon is pointed at), so matching it is what keeps the two coincident: a bigger
+quad showed as a second hand on every weapon whose `weap_scale` was not 1. A
+nudged hand (`hand_offset`, or a clip's `dx`/`dy`) does move away from the
+engine's copy, which is the one visible limit of taking the aim pose over.
+
+### A second hand (`extra_hand`)
+
+`HoldSpec` has one hand slot, so a second hand (a support hand on a foregrip, a
+two-handed grip) is the layer's:
+
+```lua
+extra_hand = {
+  sheet = "sprites/<mod>/hand2.png",  -- optional: the first hand's art otherwise
+  radius = -6, rotation = 1, radial_rotation = 1, scale = 0.9, size = 60,
+  offset = { x = 2, y = -3 },
+},
+```
+
+- It uses the engine's own hand maths: position at `rot - PI*radial_rotation` x
+  `radius` (mirrored by `facing`), drawn angle `rot + PI*rotation`, cell `size`
+  scaled by `grow(counter) * scale` (the first hand's rule), and `offset` in the
+  hand cell's pixels, mirrored with the side and turned with the drawn angle.
+- It carries a swing's `dx`/`dy` with the weapon, so a two-handed swing does not
+  slide apart, and it is skipped on the echo ghosts and on the firing pass (the
+  firing role has its own hand).
+- It forces the layer (`hold_needs_lua`), and its sheet has to be in the claim
+  `sprites` like the hold sheet: the quad resolves through the same registry.
+
 ### Firing frames (`keep_firing`, `fire`)
 
 WA draws the held sheet on its two firing states (0x6A/0x6B) only while
@@ -363,6 +394,16 @@ a hold needs no second library and the art follows the aim geometry exactly.
     firing role shows, so the sheet replaces the gun instead of stacking on it.
   - Frame 0 is up, as everywhere in the builder, and the art is turned by the
     worm's live aim; `hand_size = 60` is the hand cell PX's sheets use.
+  - **`cell_w` / `cell_h` are the sheet's own cell**: its width, and its height
+    over the frame count (one frame is the whole picture, however wide). The quad
+    is drawn at that size times `scale`, so a square cell squashes a wide muzzle
+    flash.
+  - **`draw_hand = false` hides the role's hand**; leave it out and the hand is
+    drawn at `hand_radius`. A bundle that turns the aiming hand off has to write
+    it here too, because the firing pass is a separate draw.
+  - A strip (`frames > 1`) has to be declared in `mod.toml`
+    (`[sprites."<path>"] frames = n`), otherwise the engine slices the sheet by
+    its own height / width rule and the frames disagree with `frames` here.
   - **`offset = { x, y }`** nudges the firing art inside its own cell, in sheet
     pixels and scaled with the role's `scale`, the same channel the held art
     has (`hand_offset` for the hand, scaled with `hand_scale`). The firing role
@@ -400,6 +441,27 @@ arithmetic the editor's preview runs.
   leaves a projectile, so without it the worm would sit in its aim pose for ever.
   Leave it out (`finish = "none"`) when a hit box or a custom `on_fire` ends the
   shot itself.
+
+### The ghost trail (`swing.echo`)
+
+`echo = { count, every, fade, blend = "add" | "alpha" }` inside the `swing`
+table draws the same clip a few ticks behind itself:
+
+- Ghost `k` is `clip_pose(t - k * every)` at `fade ^ k` opacity, drawn from the
+  farthest to the nearest so the live art lands on its own smear. `count` is
+  clamped to 1..8 and `every` to at least 1 tick.
+- **Nothing is recorded.** The pose is a pure function of the tick, so a ghost
+  costs one `clip_pose` and one quad, every peer draws the same smear, and no
+  history has to be kept in the simulation.
+- `blend = "add"` is the usual choice for a blade (it glows); dark art wants
+  `"alpha"`. The blend is set on the reused quad table on every call, so it can
+  never leak into the live draw.
+- The hand is **not** part of the trail: it is anchored to the worm, and a smear
+  of it reads as a bug rather than as motion.
+- `echo` only reaches this branch through `swing` (`clip_prepare(spec.swing or
+  spec.clip)` normalises it); a bare `spec.echo` still forces the layer but draws
+  nothing, which is the old key's behaviour.
+
 
 ## Verify in game
 

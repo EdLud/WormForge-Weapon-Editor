@@ -32,7 +32,12 @@ import type {
   TerrainStampImpactConfig,
   WeaponProject,
 } from '../../types/weapon';
-import { CLIP_EASES, type AimClipKey, type ClipEase } from '../../data/aimClip';
+import {
+  CLIP_EASES,
+  DEFAULT_AIM_ECHO,
+  type AimClipKey,
+  type ClipEase,
+} from '../../data/aimClip';
 import {
   DEFAULT_DIG_ROLE_ART,
   DEFAULT_ROAM_ROLE_ART,
@@ -544,15 +549,16 @@ export async function readBundleFeatures(args: {
     const flashAsset = flashSource
       ? await readAsset(files, bundleDir, str(flashSource.sheet))
       : undefined;
-    // The firing sheet's cell, the way the generator slices it: the frame count
-    // divides the height, and one frame falls back to the smaller side. `size`
-    // is that cell times the role's scale, so the scale can be read back.
+    // The firing sheet's cell, the way the generator slices it: the sheet's
+    // width, and its height over the frame count (one frame is the whole
+    // picture, so a wide flash stays wide). `size` is that cell times the
+    // role's scale, so the scale can be read back from older bundles.
     const fireFrameCount = Math.max(1, Math.round(num(fireTable?.frames) ?? 1));
     const flashCell =
       flashAsset?.width && flashAsset.height
         ? fireFrameCount > 1
           ? Math.floor(flashAsset.height / fireFrameCount)
-          : Math.min(flashAsset.width, flashAsset.height)
+          : flashAsset.width
         : 0;
     const weapRadius = Number(hold.weapRadius ?? 6);
     const weapScale = Number(hold.scale) || 1;
@@ -713,13 +719,56 @@ export async function readBundleFeatures(args: {
         });
       }
       if (keys.length > 0) {
+        // The ghost trail rides the clip, so it is read with it.
+        const echoTable = isTable(swingTable.echo) ? swingTable.echo : undefined;
+        const echo = echoTable
+          ? {
+              enabled: true,
+              count: Math.max(1, Math.min(8, Math.round(num(echoTable.count) ?? 4))),
+              every: Math.max(1, Math.round(num(echoTable.every) ?? 2)),
+              fade: Math.max(0.05, Math.min(0.95, num(echoTable.fade) ?? 0.55)),
+              blend: (str(echoTable.blend) === 'alpha' ? 'alpha' : 'add') as 'alpha' | 'add',
+            }
+          : { ...DEFAULT_AIM_ECHO, enabled: false };
         project.aimClip = {
           enabled: true,
           ticks: Math.max(1, Math.round(num(swingTable.ticks) ?? keys[keys.length - 1].t)),
           finish: str(swingTable.finish) === 'end_turn' ? 'endTurn' : 'none',
           keys,
+          echo,
         };
+        if (echo.enabled) notes.push('ghost trail');
       }
+    }
+    // The second hand: the aim layer's own `extra_hand` table (the engine's
+    // `HoldSpec` has one hand slot, so it is only ever emitted for the layer).
+    const extraHandTable = isTable(holdTable.extra_hand) ? holdTable.extra_hand : undefined;
+    if (extraHandTable) {
+      const extraSheet = str(extraHandTable.sheet);
+      const extraAsset = extraSheet
+        ? await readAsset(files, bundleDir, extraSheet)
+        : undefined;
+      // `rotation` is written in the engine's turn unit (`1 + deg/180`).
+      const extraRotation =
+        num(extraHandTable.rotation) !== undefined
+          ? Math.round(((num(extraHandTable.rotation) as number) - 1) * 180 * 1e4) / 1e4
+          : 0;
+      project.hold = {
+        ...project.hold,
+        extraHand: {
+          enabled: true,
+          file: extraAsset?.file,
+          preview: extraAsset?.preview,
+          sheetWidth: extraAsset?.width,
+          sheetHeight: extraAsset?.height,
+          radius: num(extraHandTable.radius) ?? 10,
+          rotation: extraRotation,
+          scale: num(extraHandTable.scale) ?? 1,
+          offsetX: num(isTable(extraHandTable.offset) ? extraHandTable.offset.x : undefined) ?? 0,
+          offsetY: num(isTable(extraHandTable.offset) ? extraHandTable.offset.y : undefined) ?? 0,
+        },
+      };
+      notes.push(extraSheet ? 'second hand + its art' : 'second hand');
     }
     notes.push(flashSource ? 'hold art + firing sprite' : 'hold art');
     if (project.aimClip) notes.push('space swing');

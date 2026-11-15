@@ -10,6 +10,7 @@ import {
   bitFlightSheetPath,
   behaviorStateSheetPath,
   customSoundPath,
+  extraHandSheetPath,
   flashSheetPath,
   holdNeedsAimLayer,
   missileFlightSheetPath,
@@ -73,6 +74,12 @@ export async function exportModZip(project: WeaponProject): Promise<Blob> {
     // exists, so nothing dangles when it is off.
     if (project.hold.flashFile) {
       zip.file(`${modFolder}/${flashSheetPath(project)}`, project.hold.flashFile);
+    }
+    // The second hand's own art. Without an upload the layer draws the first
+    // hand's sheet, so there is nothing to write.
+    const hand2 = extraHandSheetPath(project);
+    if (hand2 && project.hold.extraHand?.file) {
+      zip.file(`${modFolder}/${hand2}`, project.hold.extraHand.file);
     }
     // The aiming manager's mute: a 1x1 transparent sheet the claim loads as
     // `hold.sheets[1]`, which the quad layer switches to while it draws the aim

@@ -602,7 +602,7 @@ Reference implementation: `WormForgeNew/crates/weapons/src/record.rs`,
   `impact.enabled` defaults **true**, which is safe only because of the gate
   above: the constant is shared by every new project and by `gen_test_pack`'s
   `makeOp`, so without `terrainStamp.enabled` in `usesImpactDamage` a fresh
-  weapon (and all 47 test weapons) would pierce with its blast zeroed. With the
+  weapon (and all 49 test weapons) would pierce with its blast zeroed. With the
   gate, the default is a visible preference and the enablement stays explicit.
   The card says so while it is inert: a ticked Pierce Targets with Enable Stamp
   off shows an amber note rather than doing nothing quietly.
@@ -773,6 +773,34 @@ Reference implementation: `WormForgeNew/crates/weapons/src/record.rs`,
   and, unless `finish = "none"`, hands the turn back with
   `wa.world.set_turn_clock(0)` when the clip runs out; otherwise the worm would
   sit in its aim pose for ever with no shot and no turn end.
+  **Ghost trail (`project.aimClip.echo`, wfws.sdk 0.11.0).** `echo = { count,
+  every, fade, blend }` inside the `swing` table draws the same clip at earlier
+  ticks: ghost `k` is `clip_pose(t - k * every)` at `fade^k`, farthest first so
+  the live art lands on its own smear, `blend = "add"` (a blade glows) or
+  `"alpha"` (dark art). **Nothing is recorded**, the pose is a pure function of
+  the tick, so every peer draws the same smear for one `clip_pose` and one quad
+  per ghost. The hand is not part of the trail (it is anchored to the worm, and
+  a smear of it reads as a bug), which is what `hold_draw_aim`'s `weapon_only`
+  is for. `blend` is written on the reused `HOLD_QUAD` table on every call, or
+  an additive ghost would leak into the live draw. Docs: SDK README, "The ghost
+  trail".
+  **A second hand (`project.hold.extraHand`, wfws.sdk 0.11.0).** `HoldSpec` has
+  one hand slot, so `extra_hand = { sheet?, radius, rotation, radial_rotation,
+  scale, size, offset }` is the layer's: the engine's own hand maths
+  (`rot - PI*radial_rotation` for the position, `rot + PI*rotation` for the
+  drawn angle), its own art or the first hand's sheet, the swing's `dx`/`dy`
+  carried with the weapon, and no hand on the echo ghosts or the firing pass.
+  It forces `holdNeedsAimLayer`, and its sheet is claimed in `sprites` whenever
+  the author uploaded one (`extraHandSheetPath`), because `wa.draw.quad`
+  resolves through that registry. The card is the aim tab's hand column, only
+  there (the firing role has its own hand).
+  **The layer's hand is the engine's hand.** It is placed at `grow(counter) *
+  hand_scale` with **no** `weap_scale` and no clip `scale`, because `draw_holds`
+  always draws `config.hand` whatever sheet the weapon is pointed at: matching
+  it keeps the engine's copy exactly underneath the quad (a `weap_scale`-sized
+  hand showed as a second hand on every scaled weapon). A nudged hand
+  (`hand_offset`, or a clip's `dx`/`dy`) does move off the engine's copy, which
+  is the layer's one visible limit.
   Known limits: `worm.aim` is the record's own fraction, not WA's interpolated
   render position, so a worm still sliding into its aim pose can be a sub-pixel
   out for a frame; and the layer is per weapon (one `hold_sheet` choice), which
@@ -1181,7 +1209,7 @@ The pack ships the editor's own `wf-lib/wfws_sdk/` (copied from `spec/`, like an
 export does), so its weapons run against the version they were generated for
 instead of an older installed copy of the library.
 
-It writes one bundle with 47 components, one profile ("WF Test Pack") and art
+It writes one bundle with 49 components, one profile ("WF Test Pack") and art
 derived from `spec/` sheets, one per role (the sprite builder, cluster bits, the
 homing window, the homing bit, the roaming animal and native trails). Each
 test carries its intent, expected result and failure symptom in
@@ -1197,8 +1225,11 @@ WA's own blast left in place, and 43 the electrical pierce (a taze with no burst
 and no stamp); 44 the terrain stamp's frame coming from `sb.heading` (the
 builder's drawn angle, not the velocity), 45 the builder `offset` (the art
 12 px off the flight path both ways round) and 46 the hold `offset`, which is
-what puts the aimed weapon on the quad layer, and 47 the Space swing (`eat_fire`,
-the clip's keys, and the turn ending when it finishes). The stamp art is a built-up arrow
+what puts the aimed weapon on the quad layer, 47 the Space swing (`eat_fire`,
+the clip's keys, and the turn ending when it finishes), 48 the ghost trail
+(five additive ghosts three ticks apart behind a cut, hand excluded) and
+49 the second hand (`extra_hand` with its own sheet, a negative radius, 0.9
+scale and a nudge, both hands travelling with a swing). The stamp art is a built-up arrow
 pointing up, so a wrong frame index is obvious in game.
 
 Stock record values (PX's default scheme, from `WormForgeNew`):
@@ -1229,7 +1260,7 @@ bun run tools/gen_test_pack.ts
 bun run tools/check_mod_import.ts
 ```
 
-It imports all 47 test weapons and asserts the features come back with their
+It imports all 49 test weapons and asserts the features come back with their
 files: held art and its scale, `sb.flight` roles, `size`/`angle` and `offset`, the ribbon
 trail and its target, both explosion modes with every burst field and the preset,
 `fire_seq` counts/speed/offsets, custom WAVs, pack sheets, roaming strips and the
@@ -1238,7 +1269,9 @@ fixed angle read back as degrees), and the impact table's damage/radius/impulse/
 kind/`spare_shooter` with the record's blast zeroed, and the electric bursts'
 `damageType` (named by the blast's `kind`, or by the arm alone in overlay mode)
 with their `zap` require, arm line and `px.electric` dependency, and the arm
-kept out of the recovered custom `on_explode`.
+kept out of the recovered custom `on_explode`; the Space clip with its echoes
+(`count`/`every`/`fade`/`blend`), and the second hand with its radius, scale,
+nudge and its own sheet.
 It also regenerates each weapon and checks the original feature calls survive.
 
 Compiler check (lives in the code-editor repo):
@@ -1543,6 +1576,22 @@ Done and validated:
   `wf.sdk` + `wfws.sdk`). The Hold page's **Firing Frames** tab is a complete
   role: sheet, strip, window, hand and placement, with the main weapon hideable.
   Test Pack WF 32/36 and `tools/check_mod_import.ts` cover it.
+  **The firing cell is the sheet's own shape:** `cell_w` is the image's width
+  and `cell_h` is its height over the frame count (WA's `load_strip_bytes` rule),
+  so one frame is the whole picture. The cell used to be forced square, which
+  drew a 113x32 muzzle flash into a 32x32 quad, squashed. Its hand resolves the
+  way the panel's checkbox does, `fireDrawHand ?? drawHand`, so turning off the
+  aim hand stops the firing pass drawing one at `hand_radius` too, and a strip
+  (`fireFrames > 1`) is declared in `mod.toml` (`frames`/`fps`/`play`) or the
+  engine slices it by height / width instead of the typed count.
+- **Ghost trail + second hand (wfws.sdk 0.11.0).** `aimClip.echo` draws the swing
+  at earlier ticks (faint, additive or alpha, hand excluded, nothing recorded);
+  `hold.extraHand` is a support hand the aim layer draws with the engine's own
+  hand maths, with its own art, radius, rotation, scale and cell nudge. Same
+  pass: the layer's own hand is now placed at the engine's size exactly, so the
+  hand `draw_holds` always draws no longer shows through as a second one on a
+  `weap_scale`d weapon, and the Firing tab's preview draws the firing sheet
+  before its hand, the order `sb.hold` uses. WF 48 and WF 49 cover them.
 - **Hold offset through `sb.hold` (wfws.sdk 0.8.0), the first half of the aiming
   plan.** A held sheet whose art is not at its cell centre is nudged with
   `hold.offsetX/offsetY` (sheet pixels, scaled with the art, mirrored with the

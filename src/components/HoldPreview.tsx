@@ -6,6 +6,7 @@ import {
   BehaviorArtKey,
   FlightRoleArt,
   RoamSheetAsset,
+  ExtraHandConfig,
 } from '../types/weapon';
 import {
   bitFlightSheetPath,
@@ -36,6 +37,7 @@ import {
 import {
   CLIP_EASES,
   DEFAULT_AIM_CLIP,
+  DEFAULT_AIM_ECHO,
   evalClip,
   type AimClipConfig,
   type AimClipKey,
@@ -396,8 +398,11 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
   // ticks after the fire message. The preview "Test" button does the same at
   // 20 ms a tick.
   const flashFileInputRef = useRef<HTMLInputElement>(null);
+  const extraHandFileInputRef = useRef<HTMLInputElement>(null);
   const flashImgRef = useRef<HTMLImageElement | null>(null);
   const [flashLoadedImg, setFlashLoadedImg] = useState<HTMLImageElement | null>(null);
+  const extraHandImgRef = useRef<HTMLImageElement | null>(null);
+  const [extraHandLoadedImg, setExtraHandLoadedImg] = useState<HTMLImageElement | null>(null);
   // 50 Hz ticks on the firing tab: the strip's frame is derived from them the
   // way `sb.hold` derives it from the world clock, so the tab shows the
   // firing animation running instead of a single still.
@@ -503,6 +508,24 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
         : null,
     [playerClip, swingStart, swingTick],
   );
+  // The ghost trail, the way `sb.hold` draws it: the clip at earlier ticks, each
+  // ghost `fade ^ k` opaque, farthest first. Nothing is recorded, the pose is a
+  // function of the tick.
+  const clipEcho = playerClip.echo ?? DEFAULT_AIM_ECHO;
+  const echoPoses: { pose: ClipPose; alpha: number; additive: boolean }[] = useMemo(() => {
+    if (!playerClip.enabled || !clipEcho.enabled || swingStart === null) return [];
+    const tick = Math.min(swingTick, playerClip.ticks);
+    const out: { pose: ClipPose; alpha: number; additive: boolean }[] = [];
+    for (let k = Math.max(1, Math.round(clipEcho.count)); k >= 1; k -= 1) {
+      const ghostTick = tick - k * Math.max(1, Math.round(clipEcho.every));
+      if (ghostTick < 0) continue;
+      const pose = evalClip(playerClip, ghostTick);
+      if (!pose) continue;
+      out.push({ pose, alpha: Math.pow(clipEcho.fade, k), additive: clipEcho.blend === 'add' });
+    }
+    return out;
+  }, [playerClip, clipEcho, swingStart, swingTick]);
+
   const triggerSwing = () => {
     if (!playerClip.enabled) return;
     setSwingTick(0);
@@ -529,6 +552,28 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
   }, [playerClip.enabled]);
   const updateHold = (patch: Partial<typeof hold>) => {
     onChange({ hold: { ...hold, ...patch } });
+  };
+
+  // The second hand. Its defaults copy the aim hand's radius, so switching it
+  // on puts it on the grip instead of at the worm's feet.
+  const extraHand = hold.extraHand;
+  const updateExtraHand = (patch: Partial<ExtraHandConfig>) => {
+    updateHold({
+      // A second hand is held art: with custom held art off there is no hold
+      // spec to hang it on, so ticking Draw turns it on rather than doing
+      // nothing quietly.
+      ...(patch.enabled === true ? { enabled: true } : {}),
+      extraHand: {
+        enabled: true,
+        radius: hold.handRadius ?? 10,
+        rotation: hold.handRotation ?? 0,
+        scale: hold.handScale ?? 1,
+        offsetX: 0,
+        offsetY: 0,
+        ...extraHand,
+        ...patch,
+      },
+    });
   };
 
   const currentHandType = hold.handType || 'mid';
@@ -766,6 +811,23 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
     }
   }, [hold.flashPreview]);
 
+  // The second hand's own art, when it has one. Without it the preview draws
+  // the first hand's sheet, exactly as the layer does.
+  const extraHandPreview = hold.extraHand?.enabled ? hold.extraHand.preview : undefined;
+  useEffect(() => {
+    if (extraHandPreview) {
+      const img = new Image();
+      img.onload = () => {
+        extraHandImgRef.current = img;
+        setExtraHandLoadedImg(img);
+      };
+      img.src = extraHandPreview;
+    } else {
+      extraHandImgRef.current = null;
+      setExtraHandLoadedImg(null);
+    }
+  }, [extraHandPreview]);
+
   // Preload missile sprite image
   useEffect(() => {
     if (missile.sheetPreview) {
@@ -985,20 +1047,29 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
     // (`(base + swing) * facing`), so the art cuts the same way on both sides.
     const weapAngle = rot + weapRotRad + ((swingPose?.angle ?? 0) * Math.PI) / 180;
 
+    // The held art for one pose. The swing's ghost trail calls this again with an
+    // earlier pose, a lower alpha and the additive blend, so the preview shows
+    // the same smear the layer draws in game (a ghost is the clip at an earlier
+    // tick, never a copy of the live pose).
+    const drawHeldArt = (pose: ClipPose | null, alphaMul = 1, additive = false) => {
+    const poseScaleLocal = pose?.scale ?? 1;
+    const localScale = roleScale * putAwayShrink * poseScaleLocal;
+    const localAngle = rot + weapRotRad + ((pose?.angle ?? 0) * Math.PI) / 180;
     offCtx.save();
     offCtx.imageSmoothingEnabled = false;
-    offCtx.globalAlpha = swingPose?.alpha ?? 1;
+    offCtx.globalAlpha = (pose?.alpha ?? 1) * alphaMul;
+    if (additive) offCtx.globalCompositeOperation = 'lighter';
     offCtx.translate(weapX, weapY);
-    offCtx.rotate(weapAngle);
-    offCtx.scale(scale, scale);
+    offCtx.rotate(localAngle);
+    offCtx.scale(localScale, localScale);
     // `offset` (`sb.hold`): the art nudged inside its own cell, in sheet pixels,
     // scaled with the art. Translating inside the scaled, rotated frame is the
     // same nudge the aiming manager draws, and the cell's mirror carries it to
     // the left-facing pose exactly as the game's `facing` does.
     // `offset` (`sb.hold`) and the swing's `dx`/`dy` share one frame: sheet
     // pixels, scaled with the art, turned with the drawn angle.
-    const holdOffsetX = firingView ? 0 : Number(hold.offsetX ?? 0) + (swingPose?.dx ?? 0);
-    const holdOffsetY = firingView ? 0 : Number(hold.offsetY ?? 0) + (swingPose?.dy ?? 0);
+    const holdOffsetX = firingView ? 0 : Number(hold.offsetX ?? 0) + (pose?.dx ?? 0);
+    const holdOffsetY = firingView ? 0 : Number(hold.offsetY ?? 0) + (pose?.dy ?? 0);
     if (holdOffsetX || holdOffsetY) offCtx.translate(holdOffsetX, holdOffsetY);
 
     // `fire.hide_main`: the firing role replaces the held weapon, so its tab
@@ -1012,8 +1083,8 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
       // A clip key can name a frame (`frame = 3`), which steps the strip on a
       // beat of its own instead of the engine's loop.
       const shownFrame =
-        swingPose?.frame !== undefined
-          ? Math.min(totalFrames - 1, Math.max(0, Math.round(swingPose.frame)))
+        pose?.frame !== undefined
+          ? Math.min(totalFrames - 1, Math.max(0, Math.round(pose.frame)))
           : currentFrame;
       const sy = (shownFrame % totalFrames) * frameHeight;
 
@@ -1058,77 +1129,21 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
       offCtx.fill();
     }
     offCtx.restore();
+    };
 
-    // 3. Hand Sprite
-    if ((firingView ? (hold.fireDrawHand ?? hold.drawHand) : hold.drawHand) !== false) {
-      const handRadius = Number(
-        firingView
-          ? (hold.fireHandRadius ?? hold.handRadius ?? 10)
-          : (hold.handRadius ?? 10),
-      );
-      const roleHandRotation = Number(
-        (firingView
-          ? (hold.fireHandRotation ?? hold.handRotation)
-          : hold.handRotation) || 0,
-      );
-      const roleHandScale = Number(
-        (firingView ? (hold.fireHandScale ?? hold.handScale) : hold.handScale) || 1,
-      );
-      // worm_hold.rs: `rot_h = rot - PI * hand_radial_rotation`; the
-      // generator emits `hand_radial_rotation = 1`.
-      const rotH = rot - Math.PI;
-      let handX = cx + Math.sin(rotH) * handRadius;
-      let handY = cy - Math.cos(rotH) * handRadius;
-      // `hand_rotation` is in turns of PI (`rot + PI*hand_rotation`), and the
-      // panel's degrees become `1 + deg/180` the way `weap_rotation` does.
-      const handAngle = rot + Math.PI * (1 + roleHandRotation / 180);
-      // The hand offset and a swing's carry ride the hand's own size, which
-      // already includes `hand_scale` and the clip's `scale`. Each role has its
-      // own nudge: `hand_offset` for the held art, `fire.hand_offset` for the
-      // hand on WA's firing frames. Neither needs the quad layer's permision,
-      // the layer is drawing this hand already.
-      const handCarry = roleHandScale * putAwayShrink * poseScale;
-      const handNudgeX = firingView
-        ? Number(hold.fireHandOffsetX ?? 0)
-        : Number(hold.handOffsetX ?? 0) + (swingPose?.dx ?? 0);
-      const handNudgeY = firingView
-        ? Number(hold.fireHandOffsetY ?? 0)
-        : Number(hold.handOffsetY ?? 0) + (swingPose?.dy ?? 0);
-      const hox = handNudgeX * handCarry;
-      const hoy = handNudgeY * handCarry;
-      if (hox || hoy) {
-        handX += hox * Math.cos(handAngle) - hoy * Math.sin(handAngle);
-        handY += hox * Math.sin(handAngle) + hoy * Math.cos(handAngle);
-      }
-
-      let handImg = handMidImgRef.current;
-      if (hold.handType === 'lower') handImg = handLowerImgRef.current;
-      else if (hold.handType === 'upper') handImg = handUpperImgRef.current;
-
-      if (handImg && handImg.complete && handImg.naturalWidth > 0) {
-        const handScale = roleHandScale * putAwayShrink * poseScale;
-        offCtx.save();
-        offCtx.imageSmoothingEnabled = false;
-        offCtx.globalAlpha = swingPose?.alpha ?? 1;
-        offCtx.translate(handX, handY);
-        // worm_hold.rs: `rot + PI * hand_rotation` (hand_rotation = 1).
-        offCtx.rotate(handAngle);
-        offCtx.scale(handScale, handScale);
-        offCtx.drawImage(handImg, -handImg.naturalWidth / 2, -handImg.naturalHeight / 2);
-        offCtx.restore();
-      } else {
-        offCtx.fillStyle = '#f472b6';
-        offCtx.beginPath();
-        offCtx.arc(handX, handY, 2.5, 0, Math.PI * 2);
-        offCtx.fill();
-      }
+    // The ghost trail: farthest first, so the live art lands on its own smear.
+    for (const ghost of echoPoses) {
+      drawHeldArt(ghost.pose, ghost.alpha, ghost.additive);
     }
+    drawHeldArt(swingPose);
 
-    // 3b. Firing-state sprite. PX's FAMAS pattern, which the generator emits: a
-    // firing role (`fire` in the `sb.hold` spec) drawn on WA's firing frames with the
+    // 3. Firing sheet. PX's FAMAS pattern, which the generator emits: a firing
+    // role (`fire` in the `sb.hold` spec) drawn on WA's firing frames with the
     // same placement as the gun, same pivot, radius, rotation and `weap_scale`,
     // mirrored by the worm's facing with the rest of the cell. It has its own
     // picture, so it is drawn at its own pixel size, not stretched to the gun.
+    // It goes down before the hand because that is the order `sb.hold` uses:
+    // the firing sheet, then its hand on top of it.
     const flashImg = flashLoadedImg || flashImgRef.current;
     if (firingView && flashImg && flashImg.complete && flashImg.naturalWidth > 0) {
       // The firing sheet is a vertical strip: `fireFrames` slices it, and the
@@ -1162,6 +1177,112 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
         cellH
       );
       offCtx.restore();
+    }
+
+    // 4. Hand Sprite, over the sheet it holds: the engine draws the hand after
+    // the weapon, and `sb.hold`'s firing pass does the same.
+    if ((firingView ? (hold.fireDrawHand ?? hold.drawHand) : hold.drawHand) !== false) {
+      const handRadius = Number(
+        firingView
+          ? (hold.fireHandRadius ?? hold.handRadius ?? 10)
+          : (hold.handRadius ?? 10),
+      );
+      const roleHandRotation = Number(
+        (firingView
+          ? (hold.fireHandRotation ?? hold.handRotation)
+          : hold.handRotation) || 0,
+      );
+      const roleHandScale = Number(
+        (firingView ? (hold.fireHandScale ?? hold.handScale) : hold.handScale) || 1,
+      );
+      // worm_hold.rs: `rot_h = rot - PI * hand_radial_rotation`; the
+      // generator emits `hand_radial_rotation = 1`.
+      const rotH = rot - Math.PI;
+      let handX = cx + Math.sin(rotH) * handRadius;
+      let handY = cy - Math.cos(rotH) * handRadius;
+      // `hand_rotation` is in turns of PI (`rot + PI*hand_rotation`), and the
+      // panel's degrees become `1 + deg/180` the way `weap_rotation` does.
+      const handAngle = rot + Math.PI * (1 + roleHandRotation / 180);
+      // The hand offset and a swing's carry ride the hand's own size, which
+      // already includes `hand_scale` and the clip's `scale`. Each role has its
+      // own nudge: `hand_offset` for the held art, `fire.hand_offset` for the
+      // hand on WA's firing frames. Neither needs the quad layer's permision,
+      // the layer is drawing this hand already.
+      // The engine places the hand at `grow(counter) * hand_scale`: no
+      // `weap_scale`, no clip scale. `sb.hold` matches it exactly, so the
+      // hand here is the one the game draws.
+      const handCarry = roleHandScale * putAwayShrink;
+      const handNudgeX = firingView
+        ? Number(hold.fireHandOffsetX ?? 0)
+        : Number(hold.handOffsetX ?? 0) + (swingPose?.dx ?? 0);
+      const handNudgeY = firingView
+        ? Number(hold.fireHandOffsetY ?? 0)
+        : Number(hold.handOffsetY ?? 0) + (swingPose?.dy ?? 0);
+      const hox = handNudgeX * handCarry;
+      const hoy = handNudgeY * handCarry;
+      if (hox || hoy) {
+        handX += hox * Math.cos(handAngle) - hoy * Math.sin(handAngle);
+        handY += hox * Math.sin(handAngle) + hoy * Math.cos(handAngle);
+      }
+
+      let handImg = handMidImgRef.current;
+      if (hold.handType === 'lower') handImg = handLowerImgRef.current;
+      else if (hold.handType === 'upper') handImg = handUpperImgRef.current;
+
+      if (handImg && handImg.complete && handImg.naturalWidth > 0) {
+        const handScale = roleHandScale * putAwayShrink;
+        offCtx.save();
+        offCtx.imageSmoothingEnabled = false;
+        offCtx.globalAlpha = swingPose?.alpha ?? 1;
+        offCtx.translate(handX, handY);
+        // worm_hold.rs: `rot + PI * hand_rotation` (hand_rotation = 1).
+        offCtx.rotate(handAngle);
+        offCtx.scale(handScale, handScale);
+        offCtx.drawImage(handImg, -handImg.naturalWidth / 2, -handImg.naturalHeight / 2);
+        offCtx.restore();
+      } else {
+        offCtx.fillStyle = '#f472b6';
+        offCtx.beginPath();
+        offCtx.arc(handX, handY, 2.5, 0, Math.PI * 2);
+        offCtx.fill();
+      }
+    }
+
+    // 5. The second hand. `HoldSpec` has one hand slot, so `sb.hold` draws this
+    // one with the engine's own hand maths: the same radius/rotation rules, its
+    // own scale, cell nudge and art (the first hand's unless it names one). It
+    // belongs to the held art, so the firing tab does not repeat it.
+    const extra = !firingView && hold.extraHand?.enabled ? hold.extraHand : null;
+    if (extra) {
+      const rotX = rot - Math.PI;
+      let xX = cx + Math.sin(rotX) * (extra.radius ?? 0);
+      let xY = cy - Math.cos(rotX) * (extra.radius ?? 0);
+      const xAngle = rot + Math.PI * (1 + (extra.rotation ?? 0) / 180);
+      const xSize = Number(extra.scale ?? 1) * putAwayShrink;
+      const xNudgeX = Number(extra.offsetX ?? 0) + (swingPose?.dx ?? 0);
+      const xNudgeY = Number(extra.offsetY ?? 0) + (swingPose?.dy ?? 0);
+      if (xNudgeX || xNudgeY) {
+        const ox = xNudgeX * xSize;
+        const oy = xNudgeY * xSize;
+        xX += ox * Math.cos(xAngle) - oy * Math.sin(xAngle);
+        xY += ox * Math.sin(xAngle) + oy * Math.cos(xAngle);
+      }
+      let xImg = extraHandLoadedImg || extraHandImgRef.current;
+      if (!xImg) {
+        xImg = handMidImgRef.current;
+        if (hold.handType === 'lower') xImg = handLowerImgRef.current;
+        else if (hold.handType === 'upper') xImg = handUpperImgRef.current;
+      }
+      if (xImg && xImg.complete && xImg.naturalWidth > 0) {
+        offCtx.save();
+        offCtx.imageSmoothingEnabled = false;
+        offCtx.globalAlpha = swingPose?.alpha ?? 1;
+        offCtx.translate(xX, xY);
+        offCtx.rotate(xAngle);
+        offCtx.scale(xSize, xSize);
+        offCtx.drawImage(xImg, -xImg.naturalWidth / 2, -xImg.naturalHeight / 2);
+        offCtx.restore();
+      }
     }
 
     // Compose the same 300x300 scene the retired physics preview used, then
@@ -1211,7 +1332,7 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
       ctx.drawImage(offscreen, 0, 0, SIZE, SIZE, cellX, cellY, SIZE, SIZE);
     }
     ctx.restore();
-  }, [hold, aimAngleIndex, currentFrame, facingRight, assetsLoaded, weaponLoadedImg, defaultHoldLoaded, putAwayCounter, flashLoadedImg, firePreviewFrame, fireStripFrames, aimZoom, swingPose, aimTab]);
+  }, [hold, aimAngleIndex, currentFrame, facingRight, assetsLoaded, weaponLoadedImg, defaultHoldLoaded, putAwayCounter, flashLoadedImg, extraHandLoadedImg, firePreviewFrame, fireStripFrames, aimZoom, swingPose, echoPoses, aimTab]);
 
   // Derive active preview role settings for the 50 Hz simulation canvas
   const activeRolePreviewCfg = (() => {
@@ -1949,6 +2070,28 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
     if (flashFileInputRef.current) flashFileInputRef.current.value = '';
   };
 
+  const handleUploadExtraHand = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const previewUrl = URL.createObjectURL(file);
+    let sheetWidth: number | undefined;
+    let sheetHeight: number | undefined;
+    try {
+      const px = await imagePixelSize(previewUrl);
+      sheetWidth = px.width;
+      sheetHeight = px.height;
+    } catch {
+      // The browser still draws it; the quad layer falls back to 60 px.
+    }
+    updateExtraHand({ enabled: true, file, preview: previewUrl, sheetWidth, sheetHeight });
+  };
+
+  const removeExtraHandSheet = () => {
+    if (extraHand?.preview) URL.revokeObjectURL(extraHand.preview);
+    updateExtraHand({ file: undefined, preview: undefined, sheetWidth: undefined, sheetHeight: undefined });
+    if (extraHandFileInputRef.current) extraHandFileInputRef.current.value = '';
+  };
+
   const handleUploadMissileSheet = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -2346,6 +2489,130 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
                   step={1}
                 />
               </div>
+            </div>
+
+            {/* The second hand. `HoldSpec` has one hand slot, so the aim layer
+                draws it with the engine's own hand maths. */}
+            <div className="space-y-1.5 rounded-lg border border-stone-200 bg-white p-3 dark:border-stone-700 dark:bg-stone-800">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-stone-700 dark:text-stone-300">
+                  Second Hand
+                </span>
+                <label
+                  htmlFor="hold-extra-hand-enable"
+                  className="flex cursor-pointer items-center gap-1.5 text-[11px] font-semibold text-stone-700 dark:text-stone-300"
+                >
+                  <input
+                    id="hold-extra-hand-enable"
+                    type="checkbox"
+                    checked={!!extraHand?.enabled}
+                    onChange={(event) => updateExtraHand({ enabled: event.target.checked })}
+                    className="h-3.5 w-3.5 cursor-pointer rounded text-forge-600 focus:ring-forge-500"
+                  />
+                  Draw
+                </label>
+              </div>
+              <p className="text-[10px] leading-snug text-stone-500 dark:text-stone-400">
+                A support hand on the grip. The engine has one hand slot, so the aim layer draws
+                this one with the same maths; with no art of its own it reuses the hand above.
+                Drawing it turns on custom held art.
+              </p>
+              {extraHand?.enabled && (
+                <>
+                  <HoldDial
+                    id="hold-extra-hand-radius"
+                    label="Second Hand Radius"
+                    value={extraHand.radius}
+                    onChange={(value) => updateExtraHand({ radius: value })}
+                    min={-35}
+                    max={35}
+                    step={1}
+                    unit="px"
+                    title="How far from the worm the hand sits along the aim, the same slider the first hand has. Negative puts it on the other side."
+                  />
+                  <HoldDial
+                    id="hold-extra-hand-rotation"
+                    label="Second Hand Rotation"
+                    value={extraHand.rotation}
+                    onChange={(value) => updateExtraHand({ rotation: value })}
+                    min={-180}
+                    max={180}
+                    step={1}
+                    unit="deg"
+                    title="Extra turn on top of the hand's own half turn, so a mirrored or upside-down hand sheet can be lined up."
+                  />
+                  <HoldDial
+                    id="hold-extra-hand-scale"
+                    label="Second Hand Scale"
+                    value={extraHand.scale}
+                    onChange={(value) => updateExtraHand({ scale: value })}
+                    min={0.5}
+                    max={2}
+                    step={0.05}
+                    unit="x"
+                    title="The second hand's own cell size, the same rule the first hand uses, so two hands at 1x are the same size."
+                  />
+                  <div
+                    className="space-y-1.5 border-t border-stone-200 pt-2 dark:border-stone-700"
+                    title="Moves the second hand inside its own cell, in sheet pixels: positive Y is down the sheet, positive X to the sheet's right. Scaled with the second hand scale and mirrored with the side."
+                  >
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="font-semibold text-stone-700 dark:text-stone-300">
+                        Second Hand Offset
+                      </span>
+                      <span className="font-mono text-[10px] text-stone-500 dark:text-stone-400">
+                        {extraHand.offsetX}, {extraHand.offsetY} px
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <HoldDial
+                        id="hold-extra-hand-offset-x"
+                        label="X"
+                        value={extraHand.offsetX}
+                        onChange={(value) => updateExtraHand({ offsetX: value })}
+                        min={-32}
+                        max={32}
+                        step={1}
+                      />
+                      <HoldDial
+                        id="hold-extra-hand-offset-y"
+                        label="Y"
+                        value={extraHand.offsetY}
+                        onChange={(value) => updateExtraHand({ offsetY: value })}
+                        min={-32}
+                        max={32}
+                        step={1}
+                      />
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <input
+                      ref={extraHandFileInputRef}
+                      type="file"
+                      accept="image/png,image/gif"
+                      onChange={handleUploadExtraHand}
+                      className="hidden"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => extraHandFileInputRef.current?.click()}
+                      className="flex items-center gap-1.5 rounded-lg border border-stone-300 bg-white px-2 py-1 text-[11px] font-semibold text-stone-800 shadow-2xs transition-colors hover:bg-stone-100 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200 dark:hover:bg-stone-700"
+                    >
+                      <Upload className="h-3 w-3 text-forge-600 dark:text-forge-400" />
+                      {extraHand.file ? 'Change PNG' : 'Upload Hand PNG'}
+                    </button>
+                    {extraHand.preview && (
+                      <button
+                        type="button"
+                        onClick={removeExtraHandSheet}
+                        className="text-[11px] font-medium text-rose-500 hover:text-rose-600"
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
             </div>
               </>
             ) : (
@@ -3399,6 +3666,118 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
                 <span className="font-mono text-[11px] text-stone-500 dark:text-stone-400">
                   {playerClip.ticks} ticks = {Math.round(playerClip.ticks * 20)} ms
                 </span>
+              </div>
+
+              {/* Ghost trail: the swing at earlier ticks, faint behind it. */}
+              <div className="space-y-2 rounded-xl border border-stone-200 bg-white p-3 dark:border-stone-700 dark:bg-stone-800">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <span className="text-xs font-bold uppercase tracking-wider text-stone-900 dark:text-stone-100">
+                      Ghost Trail
+                    </span>
+                    <p className="mt-0.5 max-w-2xl text-[11px] text-stone-500 dark:text-stone-400">
+                      The blade a few ticks behind itself, each ghost fainter, drawn under the live
+                      art. Nothing is recorded: the layer evaluates the same clip at an earlier tick,
+                      so every peer draws the same smear. One quad per ghost.
+                    </p>
+                  </div>
+                  <label
+                    htmlFor="hold-echo-enable"
+                    className="flex h-8 shrink-0 cursor-pointer items-center gap-2 rounded-lg border border-stone-300 bg-white px-2.5 text-xs font-semibold text-stone-800 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200"
+                  >
+                    <input
+                      id="hold-echo-enable"
+                      type="checkbox"
+                      checked={!!clipEcho.enabled}
+                      onChange={(event) =>
+                        updateClip({ echo: { ...clipEcho, enabled: event.target.checked } })
+                      }
+                      className="h-4 w-4 cursor-pointer rounded text-forge-600 focus:ring-forge-500"
+                    />
+                    Enable
+                  </label>
+                </div>
+
+                {clipEcho.enabled && (
+                  <>
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      <HoldDial
+                        id="hold-echo-count"
+                        label="Ghosts"
+                        value={clipEcho.count}
+                        onChange={(value) =>
+                          updateClip({
+                            echo: { ...clipEcho, count: Math.min(8, Math.max(1, Math.round(value))) },
+                          })
+                        }
+                        min={1}
+                        max={8}
+                        step={1}
+                        unit="q"
+                        title="How many copies trail the swing. Above four or five they stop reading as motion and start reading as a smear."
+                      />
+                      <HoldDial
+                        id="hold-echo-every"
+                        label="Spacing"
+                        value={clipEcho.every}
+                        onChange={(value) =>
+                          updateClip({
+                            echo: { ...clipEcho, every: Math.min(8, Math.max(1, Math.round(value))) },
+                          })
+                        }
+                        min={1}
+                        max={8}
+                        step={1}
+                        unit="t"
+                        title="Ticks between two ghosts (20 ms each). One tick is a tight smear, four or more separate afterimages."
+                      />
+                      <HoldDial
+                        id="hold-echo-fade"
+                        label="Fade"
+                        value={clipEcho.fade}
+                        onChange={(value) =>
+                          updateClip({
+                            echo: {
+                              ...clipEcho,
+                              fade: Math.min(0.95, Math.max(0.2, Math.round(value * 100) / 100)),
+                            },
+                          })
+                        }
+                        min={0.2}
+                        max={0.95}
+                        step={0.05}
+                        unit="x"
+                        title="Each ghost is this times the one in front of it, so 0.55 makes a long fade and 0.2 a short one."
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label
+                        htmlFor="hold-echo-blend"
+                        className="text-xs font-semibold text-stone-700 dark:text-stone-300"
+                      >
+                        Blend
+                      </label>
+                      <select
+                        id="hold-echo-blend"
+                        value={clipEcho.blend}
+                        onChange={(event) =>
+                          updateClip({
+                            echo: { ...clipEcho, blend: event.target.value as 'alpha' | 'add' },
+                          })
+                        }
+                        className="h-8 w-full cursor-pointer rounded-lg border border-stone-300 bg-white px-2 text-xs text-stone-800 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-200"
+                      >
+                        <option value="add">Add (glows, the usual choice for a blade)</option>
+                        <option value="alpha">Alpha (a plain fade, for dark art)</option>
+                      </select>
+                      <p className="text-[10px] leading-snug text-stone-500 dark:text-stone-400">
+                        Additive art vanishes on black, which is why a smoke or shadow sheet wants
+                        alpha instead.
+                      </p>
+                    </div>
+                  </>
+                )}
               </div>
             </>
           )}
