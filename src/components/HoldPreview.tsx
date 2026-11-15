@@ -809,6 +809,13 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
     offCtx.translate(weapX, weapY);
     offCtx.rotate(weapAngle);
     offCtx.scale(scale, scale);
+    // `offset` (`sb.hold`): the art nudged inside its own cell, in sheet pixels,
+    // scaled with the art. Translating inside the scaled, rotated frame is the
+    // same nudge the aiming manager draws, and the cell's mirror carries it to
+    // the left-facing pose exactly as the game's `facing` does.
+    const holdOffsetX = Number(hold.offsetX ?? 0);
+    const holdOffsetY = Number(hold.offsetY ?? 0);
+    if (holdOffsetX || holdOffsetY) offCtx.translate(holdOffsetX, holdOffsetY);
 
     const weaponImg = weaponLoadedImg || weaponImgRef.current;
     if (weaponImg && weaponImg.complete && weaponImg.naturalWidth > 0) {
@@ -1331,6 +1338,12 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
       // its remembered side instead (`roamMirror`).
       const zoom = missileZoom;
       ctx.scale(facing * scaleMult * (zoom / 4), scaleMult * (zoom / 4));
+      // `offset` is in sheet pixels and already scaled by the builder, so a
+      // translate inside the scaled frame is the same nudge, and `facing`
+      // mirrors it exactly as the game does.
+      const offsetX = missile.offsetX ?? 0;
+      const offsetY = missile.offsetY ?? 0;
+      if (offsetX || offsetY) ctx.translate(offsetX, offsetY);
 
       const activeImg =
         activeFlightRole === 'primary'
@@ -1764,6 +1777,9 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
     if (missile.z !== undefined && missile.z !== 5) modLines.push(`  z = ${missile.z},`);
     if (missile.size !== undefined && missile.size !== 1) modLines.push(`  size = ${missile.size},`);
     if (missile.angle) modLines.push(`  angle = ${missile.angle},`);
+    if (missile.offsetX || missile.offsetY) {
+      modLines.push(`  offset = { x = ${missile.offsetX ?? 0}, y = ${missile.offsetY ?? 0} },`);
+    }
 
     if (clustersEnabled && bitFlight.mode === 'builder') {
       modLines.push(`  bits = {`);
@@ -2207,6 +2223,64 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
                 onChange={(e) => updateHold({ scale: Number(e.target.value) })}
                 className="w-full accent-forge-500 cursor-pointer"
               />
+            </div>
+
+            {/* Row: Pivot offset (`sb.hold`'s quad layer) and the atlas mode. */}
+            <div
+              className="space-y-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 p-3"
+              title="Moves the held art inside its own cell, in sheet pixels: positive Y is down the sheet, positive X to the sheet's right. Scaled with the art and mirrored with the side, so art whose grip is not its centre lines up with the hand at every aim. A non-zero offset hands the aiming poses to the WFWS quad layer, because the engine's hold has no offset field."
+            >
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-semibold text-stone-700 dark:text-stone-300">Offset</span>
+                <span className="font-mono text-forge-600 dark:text-forge-400 font-bold">
+                  {hold.offsetX ?? 0}, {hold.offsetY ?? 0} px
+                </span>
+              </div>
+              {(
+                [
+                  { axis: 'X' as const, key: 'offsetX' as const },
+                  { axis: 'Y' as const, key: 'offsetY' as const },
+                ]
+              ).map(({ axis, key }) => (
+                <div key={key} className="flex items-center gap-2">
+                  <label
+                    htmlFor={`hold-offset-${axis.toLowerCase()}`}
+                    className="w-3 shrink-0 text-[10px] font-semibold uppercase text-stone-500"
+                  >
+                    {axis}
+                  </label>
+                  <input
+                    id={`hold-offset-${axis.toLowerCase()}`}
+                    type="range"
+                    min={-32}
+                    max={32}
+                    step={1}
+                    value={hold[key] ?? 0}
+                    onChange={(e) => updateHold({ [key]: Number(e.target.value) })}
+                    className="w-full accent-forge-500 cursor-pointer"
+                  />
+                </div>
+              ))}
+              <p className="text-[10px] leading-snug text-stone-500 dark:text-stone-400">
+                {hold.enabled && ((hold.offsetX ?? 0) !== 0 || (hold.offsetY ?? 0) !== 0) ? (
+                  <>
+                    <span className="font-semibold text-amber-600 dark:text-amber-400">
+                      WFWS quad layer
+                    </span>
+                    : the aim poses are drawn from the sheet, the engine&apos;s silent sheet keeps it
+                    from drawing a second copy. Walking, put-away and the firing pose stay the
+                    engine&apos;s.
+                  </>
+                ) : (
+                  <>
+                    <span className="font-semibold text-forge-600 dark:text-forge-400">
+                      Rust native
+                    </span>
+                    : the engine draws the held art itself, no extra atlas slot. An offset turns the
+                    quad layer on.
+                  </>
+                )}
+              </p>
             </div>
 
             {/* Row: Animate Put-Away and Keep While Firing checkboxes */}
@@ -3038,6 +3112,48 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
                     onChange={(e) => updateMissile({ angle: Number(e.target.value) })}
                     className="w-full accent-forge-500 cursor-pointer"
                   />
+                </div>
+
+                {/* Pivot nudge: the art moved inside its own cell, in sheet
+                    pixels. Scaled with the art and turned with the drawn angle,
+                    so an off-centre pivot stays put at every heading. */}
+                <div
+                  className="space-y-1.5 p-3 rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50/70 dark:bg-stone-800/40"
+                  title="Moves the art inside its own cell, in sheet pixels: positive Y is down the sheet, positive X to the sheet's right. Scaled with the art, turned with the drawn angle and mirrored with the side, so art whose pivot is not its centre lines up with the flight path both ways round."
+                >
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-semibold text-stone-700 dark:text-stone-300">
+                      Offset
+                    </span>
+                    <span className="font-mono text-forge-600 dark:text-forge-400 font-bold">
+                      {(missile.offsetX ?? 0).toFixed(0)}, {(missile.offsetY ?? 0).toFixed(0)} px
+                    </span>
+                  </div>
+                  {(
+                    [
+                      { axis: 'X' as const, key: 'offsetX' as const },
+                      { axis: 'Y' as const, key: 'offsetY' as const },
+                    ]
+                  ).map(({ axis, key }) => (
+                    <div key={key} className="flex items-center gap-2">
+                      <label
+                        htmlFor={`flight-offset-${axis.toLowerCase()}`}
+                        className="w-3 shrink-0 text-[10px] font-semibold uppercase text-stone-500"
+                      >
+                        {axis}
+                      </label>
+                      <input
+                        id={`flight-offset-${axis.toLowerCase()}`}
+                        type="range"
+                        min={-32}
+                        max={32}
+                        step={1}
+                        value={missile[key] ?? 0}
+                        onChange={(e) => updateMissile({ [key]: Number(e.target.value) })}
+                        className="w-full accent-forge-500 cursor-pointer"
+                      />
+                    </div>
+                  ))}
                 </div>
 
                 {/* Roam tilt preset: `anim = "roam"` only. The ground pose is

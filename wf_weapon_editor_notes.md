@@ -2384,3 +2384,96 @@ with a sprite it writes the stamp, without one it is the switch for the damage
 alone. Bundle import sets `enabled: true` when
 it reads a `STAMP_HIT`, so a pierce-only bundle keeps its damage on re-export.
 
+
+## Builder offset, phase 1 of the melee plan
+
+`reqs/aim_spb/IMPLEMENTATION_PLAN.md` breaks the melee work into seven phases:
+offsets and fading echoes first, then the unified `sb.hold`, then the swing clip
+and its hit box. Phase 1 is the offset, because it is small, it touches every
+role, and the swing needs it as a base transform.
+
+**`offset = { x, y }` is a third weapon-wide builder knob, beside `size` and
+`angle`**, and it is deliberately expressed in **sheet pixels**: the art nudged
+inside its own cell, then scaled with the art (`size` times the role's own
+`scale`) by `resolve`. That is the only frame in which one number is right at
+every scale, and it is the same frame the author sees in the preview.
+
+Two properties come with that choice, and both are load-bearing:
+
+- **it turns with the drawn angle.** `drawn` (`angle` included, and negated for
+  a left-facing roam pose) rotates the offset pair, so a `track` sheet's `y`
+  is "along the nose" and its `x` is "across it". A screen-space offset would
+  have made the same number mean a different thing at every aim;
+- **it mirrors with the side.** `x` is negated when the follower is mirrored, as
+  the engine flips the sheet about its own vertical axis before rotating. Without
+  it a left-firing rocket's art would jump to the other side of the round.
+
+Everything happens on the follower actor's position (`b.x`/`b.y`), which is
+`collide = false`, gravity-free and never read by the simulation, so the round's
+path is untouched. The dig override table copies `ox`/`oy` too, because its sheet
+is the same cell.
+
+WF 45 draws a `size = 2` bazooka sheet with `offset = { x = 6, y = -6 }` under
+`anim = "none"`, which is 12 px up and 12 px to the firing side of the actual
+flight path, mirrored when fired the other way. The import check asserts the
+`offset` line both survives the import and is emitted again on re-export.
+
+## The aiming manager, `sb.hold`, and the hold offset
+
+The engine draws the held weapon itself (`crates/engine/src/worm_hold.rs`) from
+the claim's `hold =` table, which is why hold art costs no Lua at all. It has no
+offset field, though, and the aiming plan needs one (and, later, keyframed
+swings on the same quad), so `wfws.sdk` 0.8.0 gained `sb.hold`.
+
+**The engine stays the base.** `sb.hold(ctx, spec)` copies only the keys
+`HoldSpec` reads (`HOLD_KEYS`) into the table it returns, so a hold with no
+Lua-only feature returns exactly what the generator used to write inline. The
+quad layer attaches only when `M.hold_needs_lua(spec)` says the engine cannot
+express the spec, which today means a non-zero `offset` (`draw_mode` can force
+either way, and `clip`/`echo`/`swing` are reserved for the later phases). So an
+unoffset weapon is pixel-identical to before, with no draw hook and no extra
+atlas slot, and `holdNeedsAimLayer(project)` in the generator is the same test
+the exporter and the UI's **Atlas Mode** line read.
+
+**The takeover is a mute, not a replacement.** `wa.weapons.hold_sheet(weapon, n)`
+switches which of the claim's held sheets the engine draws; the module appends a
+1x1 transparent `silent.png` to `hold.sheets` (loaded by the claim itself, so no
+`sprites` entry and no `mod.toml` line) and points the engine at it **only while
+a worm aims with the weapon**, restoring sheet 0 the moment nobody does. That is
+what keeps the walk pose, WA's put-away retreat and the fire pose the engine's:
+PX's aiming has no put-away animation of its own, and `px_hold_art` still covers
+the repeat-fire frames. `gpu::collect_draws` runs the Lua hooks *before*
+`worm_hold::draw_holds`, so the swap is in effect in the same frame and no frame
+draws both copies. The swap is `pcall`ed because a refused one (the weapon not
+placed yet) would otherwise drop every quad for the frame.
+
+**The geometry is the engine's, line for line.** The aim branch of
+`draw_holds`: `rot = (1 - aim) * PI`, `rot_w = rot + PI * weap_radial_rotation`,
+`rot_h = rot - PI * hand_radial_rotation`, the weapon at `rot_w` x `weap_radius`
+and the hand at `rot_h` x `hand_radius`, both mirrored by `facing`; the drawn
+angle `(PI - PI*aim - PI*(1 - weap_rotation)) * facing` with
+`static = { weap, hand }` in turns of PI overriding it; the 20-frame
+`grow(counter - 1)` draw-out, first frame deliberately blank; the frame from
+`floor(phase * frames)` on the engine's own `phase += anim_speed * 0.03` clock.
+The clock is advanced **once per `wa.world.frame()`**, never per rendered frame,
+because the render rate is not the game's. The mirror is the corner order (the
+engine's `SPRITE_MIRROR_X` flips the sheet about its own vertical axis before
+rotating), and every quad carries `visibility = worm` so Invisibility and the
+ghost tint stay the engine's, including "an invisible unrevealed team draws
+nothing".
+
+**The offset is measured like `weap_radius`.** Sheet pixels, scaled by
+`weap_scale` (the aim counterpart of the flight builder's `size`), turned with
+the drawn angle, `x` negated on the mirrored side. Positive Y is down the sheet,
+toward the grip, so it simply adds to the radius the engine already uses. The
+preview translates inside its rotated `scale` frame, which is the same
+transform, so the two agree at every angle (checked at 24 px in both axes).
+
+Validation: `bun run lint`, `bun run build`, `gen_test_pack` (46 weapons),
+`check_mod_import` (46, including the WF 46 round trip and the "a centred hold
+keeps the engine draw" negative case), `audit_records`, `check_copyfrom`,
+`wfcheck` on the test pack and on a real export ("no findings"), and a
+Playwright pass over the new Offset card and the aim canvas. What is left to
+the in-game pass: the acceptance test, that WF 46 looks identical to an
+unoffset hold in grow-in, scale, walk pose and put-away, with only the nudge
+differing.

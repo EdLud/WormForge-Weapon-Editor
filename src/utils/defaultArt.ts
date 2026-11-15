@@ -102,3 +102,16 @@ export async function createDefaultMissileSheet(
     return createPlaceholderMissileSheet(anim, frames);
   }
 }
+
+/**
+ * The 1x1 transparent sheet the aiming manager points the engine's hold draw at
+ * while its quads draw (`hold.sheets[1]`, switched with
+ * `wa.weapons.hold_sheet`). The handle claims every `hold.sheets` entry, so the
+ * file only has to exist; nothing is ever drawn from it.
+ */
+export async function createSilentSheet(): Promise<Blob> {
+  const canvas = document.createElement('canvas');
+  canvas.width = 1;
+  canvas.height = 1;
+  return canvasToPng(canvas);
+}

@@ -417,7 +417,20 @@ Reference implementation: `WormForgeNew/crates/weapons/src/record.rs`,
     rotation offset in degrees for art that does not point up, added in the
     drawn frame and negated on a mirrored sheet. Both come from the Hold page's
     **Builder Parameters** card (`MissileSpriteConfig.size` / `.angle`) and only
-    reach the builder, never the record. There is **no glow**: WA glows only
+    reach the builder, never the record. **`offset = { x, y }`** is the third:
+    the art nudged inside its own cell, in **sheet pixels**, scaled with the art
+    (`size` times the role's `scale`) so the emitted numbers are in the sheet's own space, not
+    as game pixels. It is applied to the follower's drawn position turned by
+    `drawn` (the same angle `gfx` gets, `angle` included) with `x` negated on a
+    mirrored sheet, so an off-centre pivot (a hammer head above the handle, a
+    muzzle 4 px off) stays correct at every heading and on both sides; the
+    follower is `collide = false`, so the round itself never moves. A role's own
+    `offset` replaces the weapon-wide one. Test Pack WF 45 draws the sheet 12 px
+    off the flight path both ways round. The hold has the same knob
+    (`hold.offsetX/offsetY`, Test Pack WF 46): the engine's `HoldSpec` has no
+    offset field, so a non-zero one hands the aiming poses to `sb.hold`'s quad
+    layer with a 1x1 silent sheet muting the engine, see the aiming manager
+    below. There is **no glow**: WA glows only
     the natives whitelisted in `wa.assets.load{ wa_sprites }`, and a pack sheet
     has no glow copy.
   - `states = { { scope, sig, sheet/native, … } }` is **legacy**: `sig` assumed
@@ -581,7 +594,7 @@ Reference implementation: `WormForgeNew/crates/weapons/src/record.rs`,
   `impact.enabled` defaults **true**, which is safe only because of the gate
   above: the constant is shared by every new project and by `gen_test_pack`'s
   `makeOp`, so without `terrainStamp.enabled` in `usesImpactDamage` a fresh
-  weapon (and all 43 test weapons) would pierce with its blast zeroed. With the
+  weapon (and all 46 test weapons) would pierce with its blast zeroed. With the
   gate, the default is a visible preference and the enablement stays explicit.
   The card says so while it is inert: a ticked Pierce Targets with Enable Stamp
   off shows an amber note rather than doing nothing quietly.
@@ -670,6 +683,50 @@ Reference implementation: `WormForgeNew/crates/weapons/src/record.rs`,
   swallow a flash). A single shot needs neither: its 0x6A/0x6B pair is the
   shot. The dependency is `px.fire_seq` (that bundle exports the helper) and the
   sheet goes in the claim's `sprites`.
+- **The aiming manager (`sb.hold`) and the hold offset.** The engine's
+  `HoldSpec` has no offset field, so a hold whose art is not at its cell centre
+  is drawn by `sb.hold` instead: the engine gets the same `hold =` table it
+  always gets (the module copies only the keys `HoldSpec` reads, so nothing else
+  changes), and the aiming poses are drawn as quads of the same sheet from
+  `wa.on.draw`. Emission is `local hold = sb.hold(ctx, { ... })` before the
+  claim instead of the inline table, plus `cell_w`/`cell_h` (the sheet's cell,
+  in pixels), `offset = { x, y }` and `silent_sheet`; `cell_*`, `offset`,
+  `silent_sheet`, `weapon`, `size` and `hand_type` are Lua-only keys the engine
+  ignores. `holdNeedsAimLayer(project)` (a non-zero `hold.offsetX/offsetY`) is
+  the single gate: the generator's `sb.hold` call, the exporter's silent sheet,
+  the `wfws.sdk` dependency and the UI's **Atlas Mode** line all read it, so a
+  centred hold keeps the engine's draw with no extra atlas slot and no draw
+  hook, and an untouched pack re-exports byte-identical.
+  **The mute is `wa.weapons.hold_sheet(weapon, n)`**, pointing the engine at a
+  1x1 transparent `silent.png` (appended to `hold.sheets`, which the claim loads
+  by itself, so it needs no `sprites` entry and no `mod.toml` line) **only while
+  a worm aims with the weapon**, restored to sheet 0 the moment nobody does:
+  the walk pose, the put-away retreat and WA's fire pose stay the engine's,
+  which is why PX's aiming needs no put-away of its own. `collect_draws` runs
+  the Lua hooks *before* `worm_hold::draw_holds`, so the swap lands in the same
+  frame and there is no double-draw frame; a refused swap is `pcall`ed so a
+  not-yet-placed weapon cannot take the whole draw callback down.
+  **The quads copy the engine's aim branch** (`worm_hold::draw_holds`): the
+  weapon at `rot_w = rot + PI*weap_radial_rotation` x `weap_radius`, the hand at
+  `rot_h = rot - PI*hand_radial_rotation`, drawn angle
+  `(PI - PI*aim - PI*(1 - weap_rotation)) * facing` (mirrored by the corner
+  order, which is the engine's own SPRITE_MIRROR_X), `static = { weap, hand }`
+  in turns of PI, the 20-frame `grow(counter - 1)` draw-out (so the first aim
+  frame is deliberately blank), and the frame from the engine's 50 Hz
+  `phase += anim_speed * 0.03` clock, advanced **once per `wa.world.frame()`**
+  and never per rendered frame. Every quad carries `visibility = worm`, so
+  Invisibility is the engine's: an invisible unrevealed team draws nothing and a
+  revealed one gets the ghost tint.
+  **`offset` is in sheet pixels**, scaled with the art by `weap_scale` (the aim
+  counterpart of the flight builder's `size`), turned with the drawn angle and
+  mirrored with the side: positive Y is down the sheet, toward the grip, so it
+  adds to the engine's own `weap_radius` measurement. The preview applies the
+  same `translate` inside its rotated `scale` frame, which is why the two agree
+  at every angle.
+  Known limits: `worm.aim` is the record's own fraction, not WA's interpolated
+  render position, so a worm still sliding into its aim pose can be a sub-pixel
+  out for a frame; and the layer is per weapon (one `hold_sheet` choice), which
+  is fine because only the turn player can be aiming.
 - **Hold animation:** `worm_hold.rs` does
   `phase += anim_speed * 0.03` once per 50 Hz game frame, so the sheet plays
   `1.5 × frames × anim_speed` frames per second. The UI asks for the real
@@ -1048,7 +1105,7 @@ The pack ships the editor's own `wf-lib/wfws_sdk/` (copied from `spec/`, like an
 export does), so its weapons run against the version they were generated for
 instead of an older installed copy of the library.
 
-It writes one bundle with 43 components, one profile ("WF Test Pack") and art
+It writes one bundle with 46 components, one profile ("WF Test Pack") and art
 derived from `spec/` sheets, one per role (the sprite builder, cluster bits, the
 homing window, the homing bit, the roaming animal and native trails). Each
 test carries its intent, expected result and failure symptom in
@@ -1061,7 +1118,10 @@ blast, so the stamp survives the crater) and fixed angle / dither / true colours
 `pingpong` frame reversal (with `anim = "none"`, so the cycle is the only
 motion), 41 the electric blast's taze on a replaced blast, 42 the same taze with
 WA's own blast left in place, and 43 the electrical pierce (a taze with no burst
-and no stamp). The stamp art is a built-up arrow
+and no stamp); 44 the terrain stamp's frame coming from `sb.heading` (the
+builder's drawn angle, not the velocity), 45 the builder `offset` (the art
+12 px off the flight path both ways round) and 46 the hold `offset`, which is
+what puts the aimed weapon on the quad layer. The stamp art is a built-up arrow
 pointing up, so a wrong frame index is obvious in game.
 
 Stock record values (PX's default scheme, from `WormForgeNew`):
@@ -1092,8 +1152,8 @@ bun run tools/gen_test_pack.ts
 bun run tools/check_mod_import.ts
 ```
 
-It imports all 43 test weapons and asserts the features come back with their
-files: held art and its scale, `sb.flight` roles and `size`/`angle`, the ribbon
+It imports all 46 test weapons and asserts the features come back with their
+files: held art and its scale, `sb.flight` roles, `size`/`angle` and `offset`, the ribbon
 trail and its target, both explosion modes with every burst field and the preset,
 `fire_seq` counts/speed/offsets, custom WAVs, pack sheets, roaming strips and the
 terrain stamp's strip, mode, angle, `soften`/`blend`/`true_colour` (with the
@@ -1386,6 +1446,15 @@ Done and validated:
   WF 39 covers it.
 - **Electrical blast damage** (`kind = "taze"`) is now selectable in the burst
   card's custom hit values, not just emitted from a preset.
+- **Hold offset through `sb.hold` (wfws.sdk 0.8.0), the first half of the aiming
+  plan.** A held sheet whose art is not at its cell centre is nudged with
+  `hold.offsetX/offsetY` (sheet pixels, scaled with the art, mirrored with the
+  side, turned with the aim). Because `HoldSpec` has no offset field, a
+  non-zero one hands the aiming poses to the SDK's quad layer, which copies the
+  engine's geometry exactly and mutes the engine with a 1x1 `silent.png` while
+  it draws; a centred hold keeps the engine path untouched. Emitted by
+  `local hold = sb.hold(ctx, {...})`, exported with the silent sheet, read back
+  on import, and covered by Test Pack WF 46 + `check_mod_import`.
 - GitHub Pages workflow, `.gitignore`, Pages-subpath smoke test.
 
 Likely next steps:

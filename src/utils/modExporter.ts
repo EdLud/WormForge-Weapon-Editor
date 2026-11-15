@@ -11,8 +11,10 @@ import {
   behaviorStateSheetPath,
   customSoundPath,
   flashSheetPath,
+  holdNeedsAimLayer,
   missileFlightSheetPath,
   packArtPath,
+  silentHoldSheetPath,
   wfwsRoleFlags,
   PACK_ART_SLOTS,
   sanitizeModFolder,
@@ -27,6 +29,7 @@ import {
 import {
   createDefaultHoldSheet,
   createDefaultMissileSheet,
+  createSilentSheet,
 } from './defaultArt';
 
 export async function exportModZip(project: WeaponProject): Promise<Blob> {
@@ -70,6 +73,12 @@ export async function exportModZip(project: WeaponProject): Promise<Blob> {
     // exists, so nothing dangles when it is off.
     if (project.hold.flashFile) {
       zip.file(`${modFolder}/${flashSheetPath(project)}`, project.hold.flashFile);
+    }
+    // The aiming manager's mute: a 1x1 transparent sheet the claim loads as
+    // `hold.sheets[1]`, which the quad layer switches to while it draws the aim
+    // poses itself. The generated Lua names it, so it always has to exist.
+    if (holdNeedsAimLayer(project)) {
+      zip.file(`${modFolder}/${silentHoldSheetPath(project)}`, await createSilentSheet());
     }
   }
 

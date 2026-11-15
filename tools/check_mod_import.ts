@@ -65,7 +65,7 @@ check(
   bundles.some((bundle) => bundle.id === 'wfws.sdk'),
   bundles.map((bundle) => bundle.id).join(', '),
 );
-check('test pack has 44 weapons', weapons.length === 44, String(weapons.length));
+check('test pack has 46 weapons', weapons.length === 46, String(weapons.length));
 
 const byName = new Map(weapons.map((weapon) => [weapon.name, weapon]));
 const projects = new Map<string, WeaponProject>();
@@ -757,6 +757,63 @@ return {
     lua.includes('local sb = require("wf-lib/wfws_sprite_builder")') &&
       lua.indexOf('local sb = require') < lua.indexOf('sb.heading and sb.heading(ev.missile)'),
     'sb is not in scope where the frame is written',
+  );
+}
+
+// ---- builder offset (WF 45) ----------------------------------------------
+{
+  const p = project('WF 45 Builder Offset')!;
+  near('WF 45: the size survives', p.missileSprite?.size, 2);
+  near('WF 45: offset x', p.missileSprite?.offsetX, 6);
+  near('WF 45: offset y', p.missileSprite?.offsetY, -6);
+  const lua = generateLuaCode(fullProject(p, 'WF 45 Builder Offset'));
+  check(
+    'WF 45: the offset reaches the builder',
+    lua.includes('offset = { x = 6, y = -6 },'),
+    'the sb.flight call has no offset',
+  );
+  // Re-exporting the imported project must keep the same call, or the round
+  // imports with its art centred and silently loses the pivot fix.
+  check(
+    'WF 45: a re-export keeps the offset',
+    generateLuaCode(fullProject(p, 'WF 45 Builder Offset')).includes(
+      'offset = { x = 6, y = -6 },',
+    ),
+    'the offset is dropped on re-export',
+  );
+}
+
+// ---- hold offset / aiming manager (WF 46) --------------------------------
+{
+  const p = project('WF 46 Hold Offset')!;
+  near('WF 46: the hold offset survives', p.hold?.offsetX, 8);
+  near('WF 46: the hold offset y survives', p.hold?.offsetY, -10);
+  const lua = generateLuaCode(fullProject(p, 'WF 46 Hold Offset'));
+  check(
+    'WF 46: the hold is built by the aiming manager',
+    lua.includes('local hold = sb.hold(ctx, {') && lua.includes('hold = hold,'),
+    'the quad layer is not used, so the offset cannot reach the engine',
+  );
+  check(
+    'WF 46: the offset and the mute are emitted',
+    lua.includes('offset = { x = 8, y = -10 },') && lua.includes('silent_sheet = "sprites/'),
+    'the SB call is missing the offset or the silent sheet',
+  );
+  // A hold without an offset must stay on the engine's own table: no quad
+  // layer, no extra atlas slot, no silent sheet in the bundle.
+  const plain = fullProject({ ...p, hold: { ...p.hold!, offsetX: 0, offsetY: 0 } }, 'WF 46 Hold Offset');
+  const plainLua = generateLuaCode(plain);
+  check(
+    'WF 46: a centred hold keeps the engine draw',
+    !plainLua.includes('sb.hold') &&
+      !plainLua.includes('silent.png') &&
+      /^\s+hold = \{$/m.test(plainLua),
+    'a hold with no offset was pushed onto the quad layer',
+  );
+  check(
+    'WF 46: a re-export keeps the offset',
+    generateLuaCode(fullProject(p, 'WF 46 Hold Offset')).includes('offset = { x = 8, y = -10 },'),
+    'the offset is dropped on re-export',
   );
 }
 

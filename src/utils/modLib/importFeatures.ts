@@ -291,6 +291,15 @@ function readHold(table: LuaTable, fallback: HoldConfig): HoldConfig {
     keepWhileFiring: bool(table.keep_while_firing) ?? false,
     thrown: bool(table.thrown) ?? false,
     putAway: bool(table.put_away) ?? false,
+    // `offset = { x, y }` (sheet pixels) is what put the hold on the aiming
+    // manager's quad layer; without it the re-export would silently go back to
+    // the engine's centred draw.
+    ...(isTable(table.offset)
+      ? {
+          offsetX: num((table.offset as LuaTable).x) ?? 0,
+          offsetY: num((table.offset as LuaTable).y) ?? 0,
+        }
+      : {}),
   };
 }
 
@@ -465,8 +474,14 @@ export async function readBundleFeatures(args: {
   const explosionBase = args.explosionBase ?? DEFAULT_EXPLOSION_EFFECT;
 
   // ---- hold ---------------------------------------------------------------
+  // Two emission shapes: the inline `hold = { ... }` the engine reads (and
+  // `px_hold_art` re-reads), and the aiming manager's `sb.hold(ctx, { ... })`
+  // call, which returns the same table and may attach the quad layer.
+  const sbHold = readCallTable(moduleText, 'sb.hold');
   const sourceHold = source?.hold;
-  const holdTable = isTable(sourceHold) ? sourceHold : firstTable(scan, 'hold');
+  const holdTable = isTable(sourceHold)
+    ? sourceHold
+    : (sbHold?.table ?? firstTable(scan, 'hold'));
   if (
     holdTable &&
     (str(holdTable.sheet) !== undefined ||
@@ -552,6 +567,13 @@ export async function readBundleFeatures(args: {
       hideStock: true,
       size: num(f.size) ?? 1,
       angle: num(f.angle) ?? 0,
+      // `offset = { x, y }`: the sheet-pixel nudge for an off-centre pivot.
+      ...(isTable(f.offset)
+        ? {
+            offsetX: num((f.offset as LuaTable).x) ?? 0,
+            offsetY: num((f.offset as LuaTable).y) ?? 0,
+          }
+        : {}),
       // `tilt = { up, down, rest }`: the `anim = "roam"` preset.
       ...(isTable(f.tilt)
         ? {

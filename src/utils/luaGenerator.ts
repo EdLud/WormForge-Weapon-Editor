@@ -209,6 +209,28 @@ export function flashSheetPath(project: WeaponProject): string {
 }
 
 /**
+ * The 1x1 transparent sheet the aiming manager points the engine at while its
+ * quads draw (`hold.sheets[1]` / `wa.weapons.hold_sheet`). It is written by the
+ * exporter, never declared in `mod.toml`: `worm_hold::claim` loads `hold.sheets`
+ * itself, and the file only has to exist.
+ */
+export function silentHoldSheetPath(project: WeaponProject): string {
+  return `sprites/${sanitizeModFolder(project.id)}/silent.png`;
+}
+
+/**
+ * True when the aiming manager (`sb.hold`) has to draw the held art itself.
+ * The engine's `HoldSpec` has no offset field, so an offset on the hold is the
+ * reason today; the same test gates the generator's `sb.hold` call, the silent
+ * sheet the exporter writes and the UI's Atlas Mode line.
+ */
+export function holdNeedsAimLayer(project: WeaponProject): boolean {
+  const h = project.hold;
+  if (!h?.enabled) return false;
+  return (h.offsetX ?? 0) !== 0 || (h.offsetY ?? 0) !== 0;
+}
+
+/**
  * The terrain stamp's baked 32-frame strip, or null when the card is off or has
  * no sheet. `wa.land.stamp` names this path inside the claim `sprites`, and the
  * engine keeps the source pixels so it can write terrain with them.
@@ -764,6 +786,12 @@ export function generateLuaCode(project: WeaponProject): string {
   // own pre-resolved out/side/scale and could drift from it.
   const usesFiringArt = !!usesHold && !!project.hold?.flashFile;
   const usesHoldArt = !!usesHold && (usesFireSequence || usesFiringArt);
+  // The aiming manager (`sb.hold`): the engine's `HoldSpec` has no offset, so a
+  // hold with one is drawn as quads in `wa.on.draw` over the engine's aiming
+  // poses, with the engine pointed at a 1x1 silent sheet while it draws. Every
+  // other hold stays the engine's own table, with no extra atlas slot.
+  const usesAimLayer = holdNeedsAimLayer(project);
+  const usesHoldLocal = usesHoldArt || usesAimLayer;
   const shotSoundPath = usesFireSequence ? customSoundPath(project, 'shot') : null;
   // The effects SDK's ribbon trail follows a missile WA builds from this
   // record, so it only applies to the missile families (a strike's bombs are
@@ -780,8 +808,9 @@ export function generateLuaCode(project: WeaponProject): string {
     // Part of the px.fire_seq bundle: covers WA's two repeat-fire frames.
     lines.push('local hold_art = require("wf-lib/px_hold_art")');
   }
-  if (usesMissileSprite) {
-    // WFWS's fork: primary + cluster-bit + per-behaviour art in one call.
+  if (usesMissileSprite || usesAimLayer) {
+    // WFWS's fork: flight art (primary + cluster-bit + per-behaviour) and the
+    // aiming manager, which share the one module.
     lines.push(`local sb = require(${luaQuote(WFWS_BUILDER_MODULE)})`);
   }
   if (usesFireSequence) {
@@ -1001,6 +1030,28 @@ export function generateLuaCode(project: WeaponProject): string {
     if (h.keepWhileFiring) holdRows.push('keep_while_firing = true,');
     if (h.thrown) holdRows.push('thrown = true,');
     if (h.putAway) holdRows.push('put_away = true,');
+    // `px_hold_art` and the aiming manager both need the weapon id, and the
+    // engine ignores the key.
+    if (usesHoldLocal) holdRows.push('weapon = ctx.id,');
+    if (usesAimLayer) {
+      // The quad layer draws the cell itself, so it needs the sheet's own pixel
+      // size (the engine scales the sheet natively and ignores these keys). It
+      // also needs the mute: a 1x1 transparent sheet as `hold.sheets[1]`, which
+      // is what `wa.weapons.hold_sheet` switches to while the quads draw.
+      const fallback = defaultArtFor(project);
+      const frames = Math.max(1, h.frames || 1);
+      const cellW = Math.max(1, Math.round(h.sheetWidth ?? fallback.width));
+      const cellH = Math.max(
+        1,
+        Math.round(h.sheetFile ? (h.sheetHeight ?? fallback.height) / frames : fallback.height),
+      );
+      holdRows.push(`cell_w = ${cellW},`);
+      holdRows.push(`cell_h = ${cellH},`);
+      holdRows.push(
+        `offset = { x = ${formatNumber(h.offsetX ?? 0)}, y = ${formatNumber(h.offsetY ?? 0)} },`,
+      );
+      holdRows.push(`silent_sheet = ${luaQuote(silentHoldSheetPath(project))},`);
+    }
     if (usesHoldArt) {
       // `px_hold_art` takes the same table plus these two presentation keys
       // (the engine ignores them). It has no scale key: `weap_scale` is folded
@@ -1016,7 +1067,6 @@ export function generateLuaCode(project: WeaponProject): string {
         : fallback.height;
       holdArtSize =
         Math.max(1, Math.round(Math.min(width, cellHeight) * (h.scale ?? 1) * 100) / 100);
-      holdRows.push('weapon = ctx.id,');
       holdRows.push(`size = ${holdArtSize},`);
     }
   }
@@ -1043,10 +1093,13 @@ export function generateLuaCode(project: WeaponProject): string {
       `    fx.install{ trail = ${usesRibbonTrail ? 'true' : 'false'}, depth = { burst = wa.depth.FRONT } }`,
     );
   }
-  if (usesHoldArt) {
-    lines.push('    local hold = {');
+  if (usesHoldLocal) {
+    // With the aiming manager the table is built by `sb.hold`, which returns the
+    // engine's key set and, when the last feature needs it, attaches the quad
+    // layer; `px_hold_art` reads the same table.
+    lines.push(usesAimLayer ? '    local hold = sb.hold(ctx, {' : '    local hold = {');
     for (const row of holdRows) lines.push(`      ${row}`);
-    lines.push('    }');
+    lines.push(usesAimLayer ? '    })' : '    }');
   }
   if (usesFiringArt) {
     // FAMAS' firing sheet: the hold's own placement, its own picture. The helper
@@ -2638,9 +2691,9 @@ export function generateLuaCode(project: WeaponProject): string {
   // Hold Art
   if (usesHold) {
     lines.push('      worm_sprites = holds.PX_POSTURE,');
-    if (usesHoldArt) {
-      // The table itself is declared before the claim (px_hold_art needs it as
-      // a table too); the engine sees the same values here.
+    if (usesHoldLocal) {
+      // The table itself is declared before the claim (px_hold_art and the
+      // aiming manager both build it there); the engine sees the same values.
       lines.push('      hold = hold,');
     } else {
       lines.push('      hold = {');
@@ -3099,12 +3152,18 @@ export function generateLuaCode(project: WeaponProject): string {
       lines.push(`      z = ${m.z},`);
     }
     // Weapon-wide builder parameters: one size multiplier for every role's
-    // sheet, and a rotation offset for art that does not point up.
+    // sheet, a rotation offset for art that does not point up, and an x/y nudge
+    // for art whose pivot is not its centre.
     if (m.size !== undefined && m.size !== 1) {
       lines.push(`      size = ${formatNumber(m.size)},`);
     }
     if (m.angle) {
       lines.push(`      angle = ${formatNumber(m.angle)},`);
+    }
+    if (m.offsetX || m.offsetY) {
+      lines.push(
+        `      offset = { x = ${formatNumber(m.offsetX ?? 0)}, y = ${formatNumber(m.offsetY ?? 0)} },`,
+      );
     }
 
     // Cluster-bit art. `inherit` gives the bits the primary sheet; a builder
@@ -3252,7 +3311,9 @@ export function generateModToml(project: WeaponProject): string {
   const usesHold = project.hold && project.hold.enabled;
   // The primary, bit and state roles all come from the WFWS builder, which is
   // its own library bundle (`wfws.sdk`). It depends on `wf.sdk` for `holds`.
-  const usesWfws = usesWfwsBuilder(project);
+  // The aiming manager (`sb.hold`) ships in the same bundle, so a hold that
+  // needs the quad layer pulls it in too.
+  const usesWfws = usesWfwsBuilder(project) || holdNeedsAimLayer(project);
   const bitMode = bitBuilderMode(project);
   const behaviorStates = resolveBehaviorStates(project);
   // A roaming animal's flown art can be its own role (its own sheet).

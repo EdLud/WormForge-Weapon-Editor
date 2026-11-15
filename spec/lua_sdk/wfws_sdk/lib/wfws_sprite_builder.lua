@@ -241,6 +241,11 @@ end
 --   angle = 90     degrees added to whatever rotation the role's `anim` asked
 --                  for, for art that does not point up. Tracked art stays
 --                  tracked; it just gains the offset.
+--   offset = { x = 0, y = -3 }
+--                  the art nudged inside its own cell, in sheet pixels, scaled
+--                  with the art. It turns with the drawn angle and mirrors with
+--                  the side, so a sheet whose pivot is off-centre stays correct
+--                  at every heading. A role's own `offset` replaces it.
 --
 -- There is no glow here on purpose: WA only glows its own whitelisted sprites
 -- (`wa.assets.load{ wa_sprites }`), and a pack sheet has no glow copy.
@@ -290,7 +295,7 @@ end
 -- Sentinel: a missile (or state) the builder leaves to WA.
 local NATIVE = {}
 
-local function resolve(o, size)
+local function resolve(o, size, offset)
   local anim = o.anim or "none"
   local cfg = {
     sheet = o.sheet,
@@ -306,10 +311,19 @@ local function resolve(o, size)
     frame_fn = o.frame_fn,
     turn_fn = o.turn_fn,
   }
+  -- `offset = { x, y }` is in sheet pixels and scales with the art, so one
+  -- number works at any `size` / `scale`. A role's own offset replaces the
+  -- weapon-wide one instead of adding to it (it is a different pivot error, not
+  -- an extra nudge).
+  local off = o.offset or offset
+  if type(off) == "table" then
+    cfg.ox = (off.x or 0) * cfg.scale
+    cfg.oy = (off.y or 0) * cfg.scale
+  end
   -- `homing = { arm = ms, time = ms, sheet = "...", ... }`: art for the
   -- homing window, resolved once at install like every other role.
   if type(o.homing) == "table" then
-    local h = resolve(o.homing, size)
+    local h = resolve(o.homing, size, offset)
     h.arm = o.homing.arm or 0
     h.time = o.homing.time or 0
     cfg.homing = h
@@ -350,6 +364,8 @@ function M.flight(ctx, opts)
 
   local size = opts.size or 1.0
   local angle = opts.angle or 0.0
+  -- Every role is nudged by the same `offset` unless it names its own.
+  local offset = opts.offset
   -- `anim = "roam"` limits: a resting angle and how far the art may tilt either
   -- way from it, in degrees. One preset for every role, like `size`/`angle`.
   -- `rest = 90` lays a walking animal flat (its sheet points up), which is the
@@ -360,12 +376,12 @@ function M.flight(ctx, opts)
   local up = math.rad(math.abs(tilt.up or 25.0))
   local down = math.rad(math.abs(tilt.down or 25.0))
 
-  local main = resolve(opts, size)
+  local main = resolve(opts, size, offset)
 
   local bit_cfg = NATIVE
   local bit_art = false
   if type(opts.bits) == "table" then
-    bit_cfg = resolve(opts.bits, size)
+    bit_cfg = resolve(opts.bits, size, offset)
     bit_art = true
   elseif opts.bits == "inherit" then
     bit_cfg = main
@@ -374,7 +390,7 @@ function M.flight(ctx, opts)
   local extra = {}
   if type(opts.roles) == "table" then
     for i, r in ipairs(opts.roles) do
-      extra[i] = { name = r.name or ("role" .. i), match = r.match, cfg = resolve(r, size) }
+      extra[i] = { name = r.name or ("role" .. i), match = r.match, cfg = resolve(r, size, offset) }
     end
   end
 
@@ -385,7 +401,7 @@ function M.flight(ctx, opts)
         scope = s.scope or "any",
         sigs = sigset(s.sig),
         when = s.when,
-        cfg = s.native and NATIVE or resolve(s, size),
+        cfg = s.native and NATIVE or resolve(s, size, offset),
       }
     end
   end
@@ -426,7 +442,7 @@ function M.flight(ctx, opts)
   -- A roaming animal may fly on art of its own (`roam = { sheet = ...,
   -- anim = ..., ... }`) instead of the primary sheet. It is still WA's animal
   -- until Space, so this only takes over from the takeoff on.
-  local roam_cfg = roam_ids and roam_ids.sheet and resolve(roam_ids, size) or nil
+  local roam_cfg = roam_ids and roam_ids.sheet and resolve(roam_ids, size, offset) or nil
   local flying = {}      -- [id] = true once WA has the animal airborne
   local armed = {}       -- [id] = Space was seen up since the missile appeared
   local age = {}         -- [id] = frames since first sight, for homing ms
@@ -595,6 +611,9 @@ function M.flight(ctx, opts)
         z = dig.z ~= nil and dig.z or cfg.z,
         scale = dig.scale ~= nil and dig.scale or cfg.scale,
         mirror = dig.mirror ~= nil and dig.mirror or cfg.mirror,
+        -- The underground sheet is the same cell, so it keeps the pivot fix.
+        ox = cfg.ox,
+        oy = cfg.oy,
         frame_fn = cfg.frame_fn,
         turn_fn = cfg.turn_fn,
       }
@@ -721,10 +740,317 @@ function M.flight(ctx, opts)
       depth = active_z,
       scale = active_scale,
     })
+    -- `offset = { x, y }`: the art nudged inside its own cell, in sheet pixels
+    -- and already scaled with the art (`resolve`). `drawn` is the sprite's own
+    -- frame, `angle` included, and a mirrored sheet is flipped about its
+    -- vertical axis first, so x follows `facing` and the pair is then turned
+    -- with the art. The follower is presentation only (no gravity, no
+    -- collision), so this moves no simulation body.
+    local ox, oy = cfg.ox or 0, cfg.oy or 0
+    if ox ~= 0 or oy ~= 0 then
+      if b.facing < 0 then ox = -ox end
+      local rad = math.rad(drawn)
+      local cr, sr = wa.math.cos(rad), wa.math.sin(rad)
+      b.x = m.x + ox * cr - oy * sr
+      b.y = m.y + ox * sr + oy * cr
+    end
   end)
 end
 
 M.PX_POSTURE = shared.PX_POSTURE
 M.PX_HANDS = shared.PX_HANDS
+
+-- ---------------------------------------------------------------------------
+-- Worm hold: WA draws the gun on the aiming poses itself (`worm_hold.rs`), and
+-- authors cannot reach it. `sb.hold` builds the engine's `hold =` table and, when
+-- a feature the engine has no field for is on, takes the aiming poses over with
+-- quads of the same sheet (`wa.on.draw`), mirroring the engine's own maths so
+-- nothing moves but the feature. The engine keeps everything else: walking, the
+-- put-away animation, the firing poses, the flash.
+--
+--   local hold = sb.hold(ctx, {
+--     sheet = "sprites/<mod>/hold.png",
+--     cell_w = 90, cell_h = 90,     -- sheet cell in px (the quad layer only)
+--     offset = { x = 2, y = -3 },   -- forces the layer (sheet px, scaled)
+--     silent_sheet = "sprites/<mod>/silent.png",  -- the mute, 1x1 transparent
+--     weap_radius = 6, weap_rotation = 1, weap_scale = 1,
+--     hand = sb.PX_HANDS[2], hand_radius = 10, hand_size = 60,
+--     frames = 1, anim_speed = 1, keep_while_firing = true, put_away = true,
+--   })
+--
+-- wa.weapons.replace{ hold = hold }
+--
+-- The mute is `wa.weapons.hold_sheet(weapon, n)`: while a worm aims with this
+-- weapon the engine is pointed at `silent_sheet`, so only the quads draw, and it
+-- is pointed back at sheet 0 the moment nobody does. Rust's claim loads
+-- `hold.sheets` by itself, so the silent PNG costs no `sprites` entry.
+-- ---------------------------------------------------------------------------
+local HOLD_DEPTH = 0x10000          -- `worm_hold.rs`: our.depth.FRONT
+local HOLD_HAND_CELL = 60.0         -- PX's three hand sheets are 60x60
+local HOLD_AIM_STATES = {
+  [0x67] = true, [0x68] = true, [0x69] = true,
+}
+-- The keys the engine reads off `hold` (`HoldSpec`). Everything else in the
+-- table is ours: cells, offset, silent sheet, `weapon`, `size`, `hand_size`.
+local HOLD_KEYS = {
+  "sheet", "sheets", "hand", "hand_radius", "hand_rotation",
+  "hand_radial_rotation", "hand_scale", "weap_radius", "weap_scale",
+  "weap_rotation", "weap_radial_rotation", "anim_speed", "frames",
+  "keep_while_firing", "thrown", "put_away", "flash", "static",
+  -- Lua-only keys the engine ignores but `px_hold_art` and PX's own library
+  -- read off the same table, kept so a `sb.hold` table is the inline one.
+  "hand_type", "size",
+}
+
+local hold_entries = {}
+local hold_state = {}              -- [entry][worm id] = { counter, phase, frame, muted }
+local hold_hooked = false
+
+-- `grow` from `worm_hold.rs`: the 20-frame draw-out, one invisible frame first.
+local function hold_grow(counter)
+  local size = 0.0
+  for c = 0, math.min(20, counter) do
+    if c >= 20 then size = 1.0
+    elseif c > 17 then size = c / 20.0
+    elseif c > 9 then size = size - 0.025
+    else size = 2.7 * c / 20.0 end
+  end
+  return size
+end
+
+-- `next_phase` from `worm_hold.rs`: one strip frame every 1 / (0.03 * speed)
+-- 50 Hz frames, so the sheet plays at the engine's rate and not the render's.
+local function hold_next_phase(phase, speed)
+  if phase > 0.99 then return 0.0 end
+  return phase + speed * 0.03
+end
+
+-- A corner of the drawn cell: `render::Sprite::emit`'s rotation (radians,
+-- clockwise, y down), the same one `px_hold_art` uses.
+local function hold_corner(t, cx, cy, cos, sin, lx, ly)
+  t.x = cx + lx * cos - ly * sin
+  t.y = cy + lx * sin + ly * cos
+end
+
+-- One quad spec, refilled per draw: no table in the render callback.
+local HOLD_QUAD = { depth = HOLD_DEPTH, points = { {}, {}, {}, {} } }
+
+local function hold_quad(sheet, cx, cy, angle, half_w, half_h, facing, frame, worm)
+  local cos, sin = wa.math.cos(angle), wa.math.sin(angle)
+  local pts = HOLD_QUAD.points
+  if facing < 0 then
+    hold_corner(pts[1], cx, cy, cos, sin,  half_w, -half_h)
+    hold_corner(pts[2], cx, cy, cos, sin, -half_w, -half_h)
+    hold_corner(pts[3], cx, cy, cos, sin, -half_w,  half_h)
+    hold_corner(pts[4], cx, cy, cos, sin,  half_w,  half_h)
+  else
+    hold_corner(pts[1], cx, cy, cos, sin, -half_w, -half_h)
+    hold_corner(pts[2], cx, cy, cos, sin,  half_w, -half_h)
+    hold_corner(pts[3], cx, cy, cos, sin,  half_w,  half_h)
+    hold_corner(pts[4], cx, cy, cos, sin, -half_w,  half_h)
+  end
+  HOLD_QUAD.sprite = sheet
+  HOLD_QUAD.frame = frame or 0
+  -- Inherit the worm's Invisibility the way `draw_holds` does: an invisible,
+  -- unrevealed team draws nothing, a revealed one gets the ghost tint.
+  HOLD_QUAD.visibility = worm
+  wa.draw.quad(HOLD_QUAD)
+end
+
+-- True when the quads need to own the aiming poses: any feature the engine's
+-- `HoldSpec` cannot express. Everything else stays the engine's fast path, with
+-- no extra atlas slot and no draw hook.
+function M.hold_needs_lua(spec)
+  if type(spec) ~= "table" then return false end
+  if spec.draw_mode == "rust" then return false end
+  if spec.draw_mode == "lua" then return true end
+  local off = spec.offset
+  if type(off) == "table" and ((off.x or 0) ~= 0 or (off.y or 0) ~= 0) then return true end
+  if spec.clip ~= nil or spec.echo ~= nil or spec.swing ~= nil then return true end
+  return false
+end
+
+local function hold_mute(entry, on)
+  if not entry.silent then return end
+  local want = on == true
+  if entry.muted == want then return end
+  local swap = wa.weapons and wa.weapons.hold_sheet
+  if not swap then return end
+  -- A refused swap (the weapon is not placed yet) must not take the whole
+  -- draw callback with it: quads are dropped for the frame when it errors.
+  local ok = pcall(swap, entry.weapon, want and entry.silent or 0)
+  if ok then entry.muted = want end
+end
+
+-- One aiming frame of the engine's draw, as a quad: `draw_holds` in
+-- `worm_hold.rs`, aim branch only. The put-away and firing poses are not drawn
+-- here, because the engine keeps them (PX's aiming has no put-away of its own).
+local function hold_draw_aim(entry, w, ws)
+  local pi = math.pi
+  local facing = w.facing < 0 and -1 or 1
+  local static = entry.static_angles
+  local a = static and 0.5 or (w.aim or 0.5)
+  local rot = (1.0 - a) * pi
+  local rot_w = rot + pi * entry.weap_radial_rotation
+  local rot_h = rot - pi * entry.hand_radial_rotation
+  -- Aim frames use `counter - 1`; the engine's first one is deliberately blank.
+  local size = hold_grow(ws.counter - 1) * entry.weap_scale
+  local frames = math.max(1, entry.frames)
+  local frame = math.floor(ws.phase * frames)
+  if frame >= frames then frame = frames - 1 end
+  if frame < 0 then frame = 0 end
+
+  local cx = w.x + facing * wa.math.sin(rot_w) * entry.weap_radius
+  local cy = w.y - wa.math.cos(rot_w) * entry.weap_radius
+  local ang = (static and static.weap * pi
+    or (pi - pi * a - pi * (1.0 - entry.weap_rotation))) * facing
+
+  -- `offset = { x, y }`: the art nudged inside its own cell, scaled with the
+  -- art like `size`/`angle` on the flight builder. Mirrored with the side and
+  -- turned with the drawn angle, so an off-centre grip stays put at every aim.
+  local ox, oy = entry.ox * size, entry.oy * size
+  if ox ~= 0 or oy ~= 0 then
+    if facing < 0 then ox = -ox end
+    local cr, sr = wa.math.cos(ang), wa.math.sin(ang)
+    cx = cx + ox * cr - oy * sr
+    cy = cy + ox * sr + oy * cr
+  end
+  hold_quad(entry.sheet, cx, cy, ang,
+    entry.cell_w * size * 0.5, entry.cell_h * size * 0.5, facing, frame, w)
+
+  if entry.hand and entry.draw_hand ~= false and (entry.hand_radius or 0) ~= 0 then
+    local hx = w.x + facing * wa.math.sin(rot_h) * entry.hand_radius
+    local hy = w.y - wa.math.cos(rot_h) * entry.hand_radius
+    local h_ang = (static and static.hand * pi or (rot + pi * entry.hand_rotation)) * facing
+    local h_half = (entry.hand_size or HOLD_HAND_CELL) * size * 0.5
+      * (entry.hand_scale or 1.0)
+    hold_quad(entry.hand, hx, hy, h_ang, h_half, h_half, facing, 0, w)
+  end
+end
+
+local function hold_ensure_hook()
+  if hold_hooked then return end
+  if not (wa.on and wa.on.draw and wa.draw and wa.draw.quad) then
+    wa.log("wfws_sprite_builder.hold: this engine build has no wa.on.draw/wa.draw.quad")
+    return
+  end
+  hold_hooked = true
+  wa.on.draw(function()
+    local now = wa.world.frame() or 0
+    local worms = wa.worms.all()
+    for i = 1, #hold_entries do
+      local entry = hold_entries[i]
+      local aiming = false
+      local per_worm = hold_state[entry]
+      if per_worm then
+        for j = 1, #worms do
+          local w = worms[j]
+          local ws = per_worm[w.id]
+          if ws and not (w.hp and w.hp > 0 and w.visible and w.body_visible
+            and w.weapon == entry.weapon and HOLD_AIM_STATES[w.state_id]) then
+            per_worm[w.id] = nil
+          end
+        end
+      end
+      for j = 1, #worms do
+        local w = worms[j]
+        -- The engine's own gate: dead, hidden and body-hidden worms draw no
+        -- hold, and `w.weapon` is the selected weapon the engine tests.
+        if w.hp and w.hp > 0 and w.visible and w.body_visible
+          and w.weapon == entry.weapon and HOLD_AIM_STATES[w.state_id] then
+          aiming = true
+          per_worm = per_worm or {}
+          hold_state[entry] = per_worm
+          local ws = per_worm[w.id]
+          if not ws then
+            ws = { counter = 0, phase = 0.0, frame = -1 }
+            per_worm[w.id] = ws
+          end
+          -- Advance once per 50 Hz frame, never once per rendered frame: the
+          -- render rate is not the game's and differs between machines.
+          if ws.frame ~= now then
+            ws.frame = now
+            ws.counter = math.min(20, ws.counter + 1)
+            if entry.frames > 1 then
+              ws.phase = hold_next_phase(ws.phase, entry.anim_speed)
+            end
+          end
+          hold_draw_aim(entry, w, ws)
+        end
+      end
+      -- Point the engine at the silent sheet only while the quads draw, and
+      -- back at the real one so walking, put-away and the fire pose keep it.
+      hold_mute(entry, aiming)
+    end
+  end)
+end
+
+-- Build a worm hold. Returns the `hold =` table the claim wants; registers the
+-- quad layer only when `M.hold_needs_lua` says the engine cannot do it.
+function M.hold(ctx, spec)
+  if type(spec) ~= "table" or type(spec.sheet) ~= "string" then
+    wa.log("wfws_sprite_builder.hold: sheet is required")
+    return nil
+  end
+  local weapon = spec.weapon or (ctx and ctx.id)
+  local rust = {}
+  for i = 1, #HOLD_KEYS do
+    local k = HOLD_KEYS[i]
+    if spec[k] ~= nil then rust[k] = spec[k] end
+  end
+  if rust.static == nil and type(spec.static_angles) == "table" then
+    rust.static = spec.static_angles
+  end
+  local silent = nil
+  if type(spec.silent_sheet) == "string" then
+    local sheets = {}
+    if type(spec.sheets) == "table" then
+      for i = 1, #spec.sheets do sheets[i] = spec.sheets[i] end
+    end
+    sheets[#sheets + 1] = spec.silent_sheet
+    rust.sheets = sheets
+    silent = #sheets
+  end
+
+  if not M.hold_needs_lua(spec) then return rust end
+  if weapon == nil then
+    wa.log("wfws_sprite_builder.hold: `weapon = ctx.id` is required for the quad layer")
+    return rust
+  end
+  if silent == nil then
+    wa.log("wfws_sprite_builder.hold: the quad layer needs `silent_sheet` to mute the engine draw")
+    return rust
+  end
+
+  local cell = spec.cell_size or HOLD_HAND_CELL
+  local off = type(spec.offset) == "table" and spec.offset or {}
+  local entry = {
+    weapon = weapon,
+    sheet = spec.sheet,
+    silent = silent,
+    muted = false,
+    cell_w = spec.cell_w or cell,
+    cell_h = spec.cell_h or cell,
+    ox = off.x or 0,
+    oy = off.y or 0,
+    weap_radius = spec.weap_radius or 1.0,
+    weap_rotation = spec.weap_rotation or 1.0,
+    weap_radial_rotation = spec.weap_radial_rotation or 1.0,
+    weap_scale = spec.weap_scale or 1.0,
+    hand = spec.hand,
+    hand_radius = spec.hand_radius or 1.0,
+    hand_rotation = spec.hand_rotation or 1.0,
+    hand_radial_rotation = spec.hand_radial_rotation or 1.0,
+    hand_scale = spec.hand_scale or 1.0,
+    hand_size = spec.hand_size or HOLD_HAND_CELL,
+    draw_hand = spec.draw_hand,
+    frames = spec.frames or 1,
+    anim_speed = spec.anim_speed or 1.0,
+    static_angles = rust.static,
+  }
+  hold_entries[#hold_entries + 1] = entry
+  hold_ensure_hook()
+  return rust
+end
 
 return M

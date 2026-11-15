@@ -160,6 +160,16 @@ export interface HoldConfig {
   handRad: number;
   handRadLower: number;
   handRadUpper: number;
+  /**
+   * The held art nudged inside its own cell, in sheet pixels, scaled with
+   * `weap_scale` (the aim counterpart of `MissileSpriteConfig.offsetX/Y`).
+   * The engine's `HoldSpec` has no offset, so a non-zero value moves the hold
+   * to `sb.hold`'s quad layer: the engine is pointed at a 1x1 silent sheet
+   * while the quads draw and gets everything else (walking, put-away, the
+   * fire pose) back.
+   */
+  offsetX?: number;
+  offsetY?: number;
 }
 
 export interface WeaponDefaults {
@@ -554,6 +564,14 @@ export interface MissileSpriteConfig {
    */
   size?: number;
   angle?: number;
+  /**
+   * The art nudged inside its own cell, in sheet pixels, emitted as
+   * `offset = { x, y }` on the `sb.flight` call. Scaled with the art (by `size`
+   * and the role's own `scale`), turned with the drawn angle and mirrored with
+   * the side, so an off-centre pivot stays correct at every heading.
+   */
+  offsetX?: number;
+  offsetY?: number;
   /**
    * The `anim = "roam"` preset: how far the art may tilt away from `rest`, in
    * degrees. A roaming animal walks with no velocity, `track` would leave it

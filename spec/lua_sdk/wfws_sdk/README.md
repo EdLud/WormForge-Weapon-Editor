@@ -55,6 +55,13 @@ resizes the whole weapon, and a rotation offset for art that does not point up
 frame and negated on a mirrored sheet, so the art points the same way on both
 sides; tracked art stays tracked and simply gains the offset.
 
+`offset = { x, y }` is the third knob: the art nudged inside its own cell, in
+**sheet pixels**, scaled with the art (`size` times the role's `scale`). It turns
+with the drawn angle and mirrors with the side, so a sheet whose pivot is not
+its centre (a hammer head above the handle, a muzzle 4 px off) stays correct at
+every heading. A role's own `offset` replaces the weapon-wide one. Being an art
+fix, it never reaches the record.
+
 There is no glow: WA glows only the natives listed in
 `wa.assets.load{ wa_sprites }`, and a pack sheet has no glow copy.
 
@@ -79,6 +86,7 @@ sb.flight(ctx, {
   -- weapon-wide, applied to every role (primary, bits, states, roles):
   size  = 1.25,                  -- multiplies each role's own `scale`
   angle = -90,                   -- degrees added to the drawn rotation
+  offset = { x = 0, y = -3 },    -- art nudged inside its own cell, sheet px
 
   roam = true,                   -- roaming animal (see below)
   -- roam = { walk = 153, fly = 699 }  -- WA draws the walk; the ids it uses
@@ -252,6 +260,52 @@ generator zeroed it to classify), so native is only safe while the record still
 names a real sprite; it is being replaced by per-feature native routes (dig:
 leave the record's indexes alone; roam: `sheep_sprites`; homing: the homing
 sprite field).
+
+## Worm hold (`sb.hold`)
+
+WA draws the gun on its aiming frames itself (`crates/engine/src/worm_hold.rs`),
+from the claim's `hold =` table. That table has no field for an offset, so
+`sb.hold` builds it and, only when a feature needs something the engine cannot
+express, takes the aiming poses over with quads of the same sheet:
+
+```lua
+local hold = sb.hold(ctx, {
+  sheet = "sprites/<mod>/hold.png",
+  hand = holds.PX_HANDS[2], hand_type = 2, hand_radius = 10, hand_size = 60,
+  weap_radius = 6, weap_rotation = 1, weap_radial_rotation = 1, weap_scale = 1,
+  frames = 1, anim_speed = 1, keep_while_firing = true, put_away = true,
+  cell_w = 64, cell_h = 64,          -- the sheet's cell, in pixels
+  offset = { x = 0, y = -4 },        -- forces the quad layer
+  silent_sheet = "sprites/<mod>/silent.png",  -- the mute, 1x1 transparent
+})
+wa.weapons.replace{ copy_from = "stock.bazooka", hold = hold }
+```
+
+`sb.hold` returns exactly the engine's key set (`HOLD_KEYS`), so a hold with no
+Lua-only feature returns what the editor used to write inline and nothing else
+changes: same draw, same speed, no extra atlas slot, no `wa.on.draw` hook.
+
+When the layer is on:
+
+- The engine is pointed at `silent_sheet` (`wa.weapons.hold_sheet(weapon, n)`)
+  only while a worm aims with the weapon, and back at sheet 0 the moment nobody
+  does. The walk/put-away pose and the fire pose stay the engine's, so PX's
+  aiming has no put-away of its own and WA's own retreat is untouched.
+- The quads copy the engine's aim branch: `rot = (1 - aim) * PI`, the weapon at
+  `rot_w` x `weap_radius` mirrored by `facing`, the drawn angle
+  `(PI - PI*aim - PI*(1 - weap_rotation)) * facing`, the hand at `rot_h`, the
+  20-frame `grow()` draw-out on the first aim frames (`counter - 1`, so the
+  first one is deliberately blank), and the frame from the engine's own 50 Hz
+  `phase += anim_speed * 0.03` clock, advanced once per `wa.world.frame()`.
+- `visibility = worm` on every quad, so Invisibility and the ghost tint are the
+  engine's, and an invisible unrevealed team draws nothing.
+- `offset` is in **sheet pixels**, scaled by `weap_scale` (`size`'s aim
+  counterpart), turned with the drawn angle and mirrored with the side:
+  positive Y is down the sheet, toward the grip. The engine's `weap_radius`
+  measures the same way, so the two add up.
+
+`silent_sheet` is appended to `hold.sheets`, which the claim loads by itself, so
+the 1x1 PNG needs no `sprites` entry, only the file at the path.
 
 ## Verify in game
 

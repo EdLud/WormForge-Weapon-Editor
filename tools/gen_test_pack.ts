@@ -40,7 +40,9 @@ import {
   behaviorStateSheetPath,
   missileFlightSheetPath,
   holdSheetPath,
+  holdNeedsAimLayer,
   roamSheetPath,
+  silentHoldSheetPath,
   roamSheetsOwnFlight,
   packArtPath,
   sanitizeModFolder,
@@ -315,6 +317,8 @@ const STAMP_BMP = upArrowBitmap();
 const STAMP_PNG = encodePng(rotationSheet(STAMP_BMP, STAMP_FRAMES));
 
 const AIM_PNG = encodePng(AIM_BMP);
+/** The aiming manager's mute: 1x1 and fully transparent, never drawn. */
+const SILENT_PNG = encodePng({ width: 1, height: 1, rgba: new Uint8Array(4) });
 const GRENADE_PNG = encodePng(GRENADE_BMP);
 const ICE_PNG = encodePng(ICE_BMP);
 /** The drum ships as its own 20-cell strip: nothing to bake. */
@@ -1585,6 +1589,69 @@ const TESTS: TestCase[] = [
     watch:
       'The arrow always pointing along the flight (the velocity helper used instead of the builder angle), or a `nil` heading crashing the callback (it has to fall back, not index it).',
   },
+  {
+    project: makeOp({
+      id: 'wftest.45_builder_offset',
+      name: 'WF 45 Builder Offset',
+      slot: 'bazooka',
+      body: { sprite: 'bazooka', damage: 35 },
+      // `offset = { x, y }`: the art moved inside its own cell, in sheet pixels,
+      // scaled with the art (size 2 doubles both numbers to 12 px). `anim = none`
+      // leaves the sheet upright, so the nudge is plain on screen: the art rides
+      // 12 px up and 12 px to the firing side, never on the rocket's own point.
+      missileSprite: {
+        enabled: true,
+        mode: 'custom',
+        anim: 'none',
+        size: 2,
+        offsetX: 6,
+        offsetY: -6,
+        hideStock: true,
+      },
+    }),
+    intent:
+      'The builder nudges the drawn art inside its own cell (`offset`), scaled with the art and mirrored with the side, without moving the round itself.',
+    expect:
+      'The rocket flies its normal arc while the sheet sits 12 px up and 12 px to the firing side of it; fired to the left the sheet sits on the other side, still 12 px up.',
+    watch:
+      'The art back on the trajectory (the offset not emitted, or emitted in screen space so it fails to mirror), or the round itself veering (`offset` must only move the follower).',
+  },
+  {
+    project: makeOp({
+      id: 'wftest.46_hold_offset',
+      name: 'WF 46 Hold Offset',
+      slot: 'grenade',
+      body: { sprite: 'grenade', damage: 30 },
+      // The aiming manager (`sb.hold`): the engine's `HoldSpec` has no offset,
+      // so a non-zero one hands the aiming poses to quads of the same sheet and
+      // points the engine at a 1x1 silent sheet while it draws. Nothing else
+      // changes: the walk pose, the put-away and the fire pose stay the
+      // engine's, and the grow-in is the engine's own.
+      hold: {
+        enabled: true,
+        handType: 'mid',
+        handRadius: 10,
+        weapRadius: 4,
+        weapRotation: 0,
+        scale: 1,
+        frames: 1,
+        drawHand: true,
+        thrown: false,
+        putAway: true,
+        // Sheet pixels, scaled with `weap_scale`. Positive Y is down the sheet
+        // (toward the grip), positive X across it, so 8/-10 lifts the art off
+        // the hand and 8 to the sheet's right.
+        offsetX: 8,
+        offsetY: -10,
+      },
+    }),
+    intent:
+      'A held weapon whose art does not sit at its cell centre: the aiming poses come from the WFWS quad layer (`sb.hold`), drawn at the engine`s own geometry plus `offset`.',
+    expect:
+      'The grenade is held 8 px across and 10 px up the sheet from the hand at every aim angle, and it still matches the engine exactly in everything else: the same grow-in on select, the same walk/put-away retreat, the same scale.',
+    watch:
+      'A grenade in the hand exactly where an unoffset hold would be (the layer not taken over, or `offset` dropped), two grenades (the engine still drawing its sheet, so the mute did not apply), no grenade at all (the quad failed to load, so the silent sheet is what draws), or a grenade that jumps when the worm starts walking (the layer should not own the walk pose).',
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1648,6 +1715,11 @@ for (const test of TESTS) {
     // different from the held gun, so a missing or stuck flash is obvious.
     if (project.hold.flashFile) {
       writeFileSync(join(BUNDLE, flashSheetPath(project)), ICE_PNG);
+    }
+    // The aiming manager's mute: `hold.sheets` is loaded by the claim, so the
+    // 1x1 transparent sheet only has to exist at the path the Lua names.
+    if (holdNeedsAimLayer(project)) {
+      writeFileSync(join(BUNDLE, silentHoldSheetPath(project)), SILENT_PNG);
     }
   }
 
