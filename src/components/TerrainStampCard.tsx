@@ -208,7 +208,7 @@ export const TerrainStampCard: React.FC<Props> = ({ project, onChange }) => {
         title="Terrain Stamp"
         code="wa.land.stamp"
         icon={<Stamp className="h-4 w-4 text-sky-500" aria-hidden="true" />}
-        desc="Burns the round's picture into the terrain where it bursts: frame 0 points up, the 32-frame strip turns clockwise, and the impact heading picks the frame. A built-in engine verb, so no library dependency."
+        desc="Burns the round's picture into the terrain where it bursts: frame 0 points up, the 32-frame strip turns clockwise, and the round's own rotation picks the frame (velocity for a native sheet). A built-in engine verb, so no library dependency."
         right={
           <label
             className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-1.5 ${
@@ -344,7 +344,7 @@ export const TerrainStampCard: React.FC<Props> = ({ project, onChange }) => {
             <TooltipLabel
               label="Stamp Angle"
               code="frame"
-              desc="Impact angle follows the speed the round bursts with (PX's 32-octant helper). Fixed angle always stamps the same frame, which is what a picture that should stay upright needs."
+              desc="Impact angle stamps the way the round lies when it bursts. A sprite-builder round uses the rotation the builder drew it at (a spin, a slow cycle, a dig pose); a native round only has its velocity, so the heading comes from that. Fixed angle always stamps the same frame, which is what a picture that should stay upright needs."
             />
             <div className="grid grid-cols-2 gap-1 rounded-xl border border-stone-200 bg-stone-100 p-1 dark:border-stone-800 dark:bg-stone-950/60">
               {(

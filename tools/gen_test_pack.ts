@@ -30,7 +30,7 @@
  * the panel with infinite ammo.
  */
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deflateSync, inflateSync } from 'node:zlib';
 import { WeaponProject, PackArtSlot, ClustletConfig } from '../src/types/weapon';
@@ -294,6 +294,21 @@ function upArrowBitmap(size = 40): Bitmap {
   }
   return { width: size, height: size, rgba };
 }
+
+/**
+ * "On Explosion": the stamp tests that are about the picture, not the damage,
+ * turn the pierce off explicitly. The pierce defaults on, and a pierce that hits
+ * something skips the stamp (that is the javelin shape), which would leave the
+ * arrow untested whenever the shot lands on a worm.
+ */
+const NO_PIERCE = {
+  enabled: false,
+  damage: 20,
+  radius: 20,
+  impulse: 0.5,
+  kind: 'bullet' as const,
+  spareShooter: true,
+};
 
 const STAMP_BMP = upArrowBitmap();
 /** 32 cells, frame 0 up, clockwise: the strip `wa.land.stamp` indexes into. */
@@ -1349,6 +1364,7 @@ const TESTS: TestCase[] = [
         // (`stamp_clear`), so nothing is sealed under the picture.
         wormClearance: 12,
         sheet: stampAsset(),
+        impact: NO_PIERCE,
       },
     }),
     intent:
@@ -1377,6 +1393,7 @@ const TESTS: TestCase[] = [
         // Off, so the same test covers the unguarded call too.
         wormClearance: 0,
         sheet: stampAsset(),
+        impact: NO_PIERCE,
       },
     }),
     intent:
@@ -1527,6 +1544,46 @@ const TESTS: TestCase[] = [
       'No blast and no crater, the round sticks in the land only when it hit nothing, and the worm it stabbed crackles for about 0.4 s and is thrown along the flight. A mine or crate in the way is hit instead.',
     watch:
       'A worm taking damage but never sparking (`zap` missing, or the arm placed after the hurt), a native blast on top of the pierce, or the firing worm tazed by its own round (`spare_shooter` is on).',
+  },
+  {
+    project: makeOp({
+      id: 'wftest.44_stamp_builder_angle',
+      name: 'WF 44 Stamp Builder Angle',
+      slot: 'bazooka',
+      body: { sprite: 'bazooka', damage: 35 },
+      // The stamp follows the rotation the builder drew the round at, not the
+      // velocity, so a round the builder spins keeps spinning into the land.
+      // `slow` is a fixed spin: the art turns steadily whatever the heading is,
+      // which is what makes the difference visible. The custom blast carves the
+      // crater inside `on_explode` so WA's own crater cannot erase the stamp.
+      missileSprite: {
+        enabled: true,
+        mode: 'custom',
+        anim: 'slow',
+        frames: 4,
+        spinRate: 2,
+        hideStock: true,
+      },
+      explosion: { enabled: true, mode: 'blast', damage: 35, push: 100, hole: 40, sound: 'none' },
+      terrainStamp: {
+        enabled: true,
+        onImpact: true,
+        soften: 3,
+        blend: 'mix',
+        trueColour: false,
+        wormClearance: 0,
+        sheet: stampAsset(),
+        // The arrow has to land on a worm too, so the pierce stays off and the
+        // custom blast carves the crater.
+        impact: NO_PIERCE,
+      },
+    }),
+    intent:
+      'The stamp frame comes from `sb.heading(ev.missile)`: the arrow lies the way the builder had the round drawn when it burst, and only falls back to the velocity heading when the round is a stock one.',
+    expect:
+      'The rocket spins in flight and the arrow is burned in at whatever angle the art had reached, so two shots fired alike leave arrows at different angles, none of them tracking the trajectory.',
+    watch:
+      'The arrow always pointing along the flight (the velocity helper used instead of the builder angle), or a `nil` heading crashing the callback (it has to fall back, not index it).',
   },
 ];
 
@@ -1754,6 +1811,17 @@ for (const [path, decl] of spriteDecls) {
 }
 
 writeFileSync(join(BUNDLE, 'mod.toml'), toml.join('\n'));
+
+// The editor's own library bundle travels with every export, so the pack has to
+// carry it too: without it the weapons resolve `wf-lib/wfws_sprite_builder` from
+// whatever copy happens to be installed in `Mods/`, which may be an older
+// version without the API they use (that is how WF 44 lost its stamp:
+// `sb.heading` did not exist and the callback aborted on the nil call).
+for (const rel of ['mod.toml', 'lib/wfws_sprite_builder.lua']) {
+  const dest = join(BUNDLE, 'wf-lib', 'wfws_sdk', rel);
+  mkdirSync(dirname(dest), { recursive: true });
+  writeFileSync(dest, readFileSync(join(ROOT, 'spec', 'lua_sdk', 'wfws_sdk', rel)));
+}
 
 // Profile: every test weapon placed, infinite ammo, plus the stock donors and
 // the two always-available utilities.

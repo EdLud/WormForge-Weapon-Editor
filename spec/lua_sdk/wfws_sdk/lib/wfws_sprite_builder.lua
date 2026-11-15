@@ -82,6 +82,43 @@ local ANIM_TYPE = {
 }
 local ANIM_SPEED = { slow = 0.5, medium = 0.8, fast = 1.35 }
 
+-- The rotation each missile was last drawn at, by `m.id`, so another module can
+-- ask how the round lay at the moment it burst (the terrain stamp bakes its
+-- picture with that angle instead of the velocity heading). A lockstep id, the
+-- same one `wa.on.missile_frame` gives (`m.id`) and the one `ev.missile` carries
+-- into `on_explode`. Degrees clockwise from up, which is how a rotation strip is
+-- authored; `M.heading` returns nil for a missile this builder never drew, so a
+-- caller falls back to its own guess (a stock round's velocity heading).
+--
+-- This is the *world* rotation, without the weapon-wide `angle`: that offset
+-- exists because an uploaded sheet may not point up, and a stamp's own art is
+-- authored pointing up, so carrying the offset over would tilt every stamp of
+-- an off-axis sheet. A mirrored (left-facing) pose keeps its side in the sign.
+--
+-- Entries are not dropped on despawn: the explosion callback runs around the
+-- same time, and the id may still be needed for a frame. The table is bounded
+-- instead, and a reset only costs one frame for anything still in flight.
+local drawn_by = {}
+local drawn_count = 0
+local DRAWN_MAX = 256
+
+local function remember_drawn(id, deg)
+  if drawn_by[id] == nil then
+    drawn_count = drawn_count + 1
+    if drawn_count > DRAWN_MAX then
+      drawn_by, drawn_count = {}, 1
+    end
+  end
+  drawn_by[id] = deg
+end
+
+-- The last drawn rotation of a missile, in degrees clockwise from up (nil when
+-- this builder never drew it: a stock sheet, or a role it left to WA).
+function M.heading(id)
+  if id == nil then return nil end
+  return drawn_by[id]
+end
+
 local function current_worm()
   for _, w in ipairs(wa.worms.all()) do
     if w.turn then return w end
@@ -676,6 +713,9 @@ function M.flight(ctx, opts)
     else
       drawn = math.deg(rot) + (b.facing < 0 and -angle or angle)
     end
+    local world_deg = math.deg(rot)
+    if roam_anim and roam_left then world_deg = -world_deg end
+    remember_drawn(id, world_deg % 360)
     b:gfx({
       angle = drawn % 360,
       depth = active_z,

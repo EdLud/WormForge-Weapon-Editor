@@ -1017,6 +1017,17 @@ export async function readBundleFeatures(args: {
       },
     };
     notes.push('impact damage');
+  } else {
+    // `impact.enabled` defaults to true, but a bundle without `STAMP_HIT` did
+    // not pierce: leaving the default in place would make the panel promise a
+    // pierce the weapon never had, and the next export would add one.
+    project.terrainStamp = {
+      ...(project.terrainStamp ?? DEFAULT_TERRAIN_STAMP),
+      impact: {
+        ...(project.terrainStamp?.impact ?? DEFAULT_TERRAIN_STAMP.impact),
+        enabled: false,
+      },
+    };
   }
 
   // ---- custom on_explode body --------------------------------------------

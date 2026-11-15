@@ -518,7 +518,23 @@ Reference implementation: `WormForgeNew/crates/weapons/src/record.rs`,
   fixed angle is a literal frame (`90° → 8`). `frame` reads `ev.vx`/`ev.vy`, the
   speed the round bursts with (`weapon_emit` passes `ENT_SPEED_X/Y`); they are
   **nil for a mine**, hence `or 0`, which keeps a real zero because 0 is truthy
-  in Lua. `mod.toml` declares the strip with `frames = 32` and the exporter
+  in Lua.
+  **With the flight builder on, the frame follows the drawn art, not the
+  velocity:** the helper takes a third argument, `sb.heading(ev.missile)`, and
+  rounds it to the nearest of the 32 cells (11.25° each). `wfws_sprite_builder`
+  records the world rotation it last drew each missile at, keyed by the same
+  lockstep id `ev.missile` carries, so a round the builder spins, cycles, digs
+  or tilts leaves its picture in the land the way the player last saw it; a
+  native sheet (or an id the bounded 256-entry cache dropped) returns nil and
+  the velocity octants take over, which is the old behaviour. The call is
+  guarded (`sb.heading and sb.heading(ev.missile)`): `M.heading` arrived in
+  wfws.sdk 0.7.0, a weapon can be loaded against an older shared
+  `Mods/wf-lib/wfws_sdk` even though the bundle ships its own copy, and calling
+  a missing field aborts the whole `on_explode` (blast and stamp both). The cached angle
+  is the **world** rotation without the weapon-wide `angle` offset: that offset
+  corrects a sheet that does not point up, and the stamp's own art does point
+  up, so carrying it over would tilt every stamp of an off-axis sheet.
+  `mod.toml` declares the strip with `frames = 32` and the exporter
   writes it; both come from `terrainStampPath()` so a declaration always has a
   file. **Order matters:** WA's own blast runs *after* the callback, so its
   crater erases the stamp; only the custom explosion in `blast` mode carves the
@@ -1027,6 +1043,10 @@ Test pack for engine behaviour (dev only, output is git-ignored):
 ```powershell
 bun run tools/gen_test_pack.ts   # -> test_pack/wftest_pack/ + test_pack/README.md
 ```
+
+The pack ships the editor's own `wf-lib/wfws_sdk/` (copied from `spec/`, like an
+export does), so its weapons run against the version they were generated for
+instead of an older installed copy of the library.
 
 It writes one bundle with 43 components, one profile ("WF Test Pack") and art
 derived from `spec/` sheets, one per role (the sprite builder, cluster bits, the

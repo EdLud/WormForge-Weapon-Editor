@@ -56,8 +56,16 @@ const files: ModFile[] = walk(BUNDLE).map((full) => {
 
 const bundles = readBundles(files);
 const weapons = readWeapons(bundles, files);
-check('test pack has one bundle', bundles.length === 1, String(bundles.length));
-check('test pack has 43 weapons', weapons.length === 43, String(weapons.length));
+// Two bundles: the pack itself and the `wf-lib/wfws_sdk` library it ships (the
+// reader finds nested bundles by their own mod.toml, and the editor's exports
+// carry that library the same way).
+check('test pack has two bundles', bundles.length === 2, String(bundles.length));
+check(
+  'test pack ships the wfws.sdk library',
+  bundles.some((bundle) => bundle.id === 'wfws.sdk'),
+  bundles.map((bundle) => bundle.id).join(', '),
+);
+check('test pack has 44 weapons', weapons.length === 44, String(weapons.length));
 
 const byName = new Map(weapons.map((weapon) => [weapon.name, weapon]));
 const projects = new Map<string, WeaponProject>();
@@ -719,6 +727,36 @@ return {
     'WF 42: px.electric declared',
     generateModToml(fullProject(p, 'WF 42 Electric Overlay')).includes('"px.electric"'),
     'dependency missing',
+  );
+}
+
+// ---- stamp frame from the builder's angle (WF 44) -------------------------
+{
+  const p = project('WF 44 Stamp Builder Angle')!;
+  near('WF 44: the stamp is on', p.terrainStamp?.enabled, true);
+  near('WF 44: impact angle mode', p.terrainStamp?.onImpact, true);
+  near('WF 44: the pierce is off', p.terrainStamp?.impact?.enabled, false);
+  near('WF 44: the spin survives', p.missileSprite?.anim, 'slow');
+  near('WF 44: the spin rate survives', p.missileSprite?.spinRate, 2);
+  const lua = generateLuaCode(fullProject(p, 'WF 44 Stamp Builder Angle'));
+  check(
+    'WF 44: the frame comes from the builder angle',
+    lua.includes(
+      'frame = stamp_orientation(ev.vx or 0, ev.vy or 0, sb.heading and sb.heading(ev.missile))',
+    ),
+    'the velocity helper is used instead',
+  );
+  check(
+    'WF 44: the helper falls back to the velocity',
+    lua.indexOf('if deg then return math.floor(deg / 11.25 + 0.5) % 32 end') > 0 &&
+      lua.includes('if vx == 0 then return vy > 0 and 16 or 0 end'),
+    'the fallback chain is missing',
+  );
+  check(
+    'WF 44: the builder is required for the lookup',
+    lua.includes('local sb = require("wf-lib/wfws_sprite_builder")') &&
+      lua.indexOf('local sb = require') < lua.indexOf('sb.heading and sb.heading(ev.missile)'),
+    'sb is not in scope where the frame is written',
   );
 }
 

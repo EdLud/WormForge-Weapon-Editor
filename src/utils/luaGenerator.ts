@@ -812,7 +812,22 @@ export function generateLuaCode(project: WeaponProject): string {
     // a heading maps straight to a frame. Screen space, y down, so 8 is right
     // and 16 is down. It sits outside the callback to keep `on_explode` flat.
     lines.push('-- PX\'s 32 stamp orientations: frame 0 points up, clockwise.');
-    lines.push('local function stamp_orientation(vx, vy)');
+    if (usesMissileSprite) {
+      // The builder gives the round a rotation of its own (a spin, a `slow`
+      // cycle, a dig pose, the roam tilt), so the picture in the land should lie
+      // the way the round looked, not the way it happened to be moving.
+      // `sb.heading` is nil for a round the builder handed back to WA (a stock
+      // sheet), and that is when the velocity is the only heading there is, so
+      // the argument is a fallback chain rather than a switch. It carries the
+      // world rotation only: the weapon-wide `angle` is the art's own offset and
+      // would tilt a stamp whose art is authored pointing up.
+      lines.push('-- A builder-drawn round bursts at the angle it was drawn at; a');
+      lines.push('-- native one only has its velocity.');
+      lines.push('local function stamp_orientation(vx, vy, deg)');
+      lines.push('  if deg then return math.floor(deg / 11.25 + 0.5) % 32 end');
+    } else {
+      lines.push('local function stamp_orientation(vx, vy)');
+    }
     lines.push('  local function trunc(n) return n < 0 and math.ceil(n) or math.floor(n) end');
     lines.push('  if vx == 0 then return vy > 0 and 16 or 0 end');
     lines.push('  if vy == 0 then return vx > 0 and 8 or 24 end');
@@ -2889,7 +2904,14 @@ export function generateLuaCode(project: WeaponProject): string {
       // velocity, hence `or 0`, which keeps a real zero because 0 is truthy
       // in Lua. A mine therefore wants the fixed angle.
       const frame = terrainStamp!.onImpact
-        ? 'stamp_orientation(ev.vx or 0, ev.vy or 0)'
+        ? usesMissileSprite
+          ? // `sb.heading` only exists in wfws.sdk 0.7.0+. A weapon can be loaded
+            // against an older installed copy of the library (the bundle ships its
+            // own, but a shared `Mods/wf-lib/wfws_sdk` may win), and calling a
+            // missing field would abort the whole callback, losing the stamp and
+            // the burst with it. Guarded, it falls back to the velocity heading.
+            'stamp_orientation(ev.vx or 0, ev.vy or 0, sb.heading and sb.heading(ev.missile))'
+          : 'stamp_orientation(ev.vx or 0, ev.vy or 0)'
         : String(stampFrameForAngle(terrainStamp!.fixedAngle));
       const stampRows = (indent: string) => {
         lines.push(`${indent}wa.land.stamp{`);

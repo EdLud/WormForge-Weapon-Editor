@@ -2325,6 +2325,42 @@ the same boolean with one inverted, so exactly one is always ticked and the
 alternative is visible. Clicking the ticked one does nothing (a pair, not two
 switches), and the unticked box explains itself in its own tooltip.
 
+**The stamp follows the round that was drawn, not the velocity that carried
+it.** PX's helper only ever had the burst speed: the right answer for a native
+sheet (WA rotates that from the flight direction) and the wrong one for a
+builder round, because a spinning saw, a `slow` cycle, a digging animal or a
+tilted roamer is drawn at an angle of its own. The picture in the land disagreed
+with what the player had just been watching.
+
+`wfws_sprite_builder` now keeps the world rotation it drew each missile at
+(`remember_drawn`, keyed by the lockstep `m.id` that `ev.missile` also carries)
+and exports `M.heading(missile_id)`; the generator emits
+`stamp_orientation(ev.vx or 0, ev.vy or 0, sb.heading(ev.missile))` when the
+builder owns the flight art, and a `nil` heading falls through to the old
+octants. Three details are load-bearing:
+
+- the cached angle is the **world** rotation, not the drawn one, because `angle`
+  is the correction that makes off-axis art travel correctly and the stamp's art
+  is authored pointing up;
+- the cache is bounded at 256 entries rather than cleared per missile, because
+  the explosion callback can run in the frame the follower actor goes away;
+- the lookup is a *fallback chain*, not a switch, so a round the builder handed
+  back to WA (a native sheet) still stamps from its velocity.
+
+WF 44 covers it with `anim = "slow"`: the arrow lands at whatever angle the spin
+had reached instead of following the trajectory, and two alike shots differ.
+
+**The first version of WF 44 did not stamp at all**, and the cause was the
+library, not the stamp: the test pack did not ship `wf-lib/wfws_sdk/`, so the
+weapons resolved the builder from the copy installed in `Mods/`, which was 0.6.0
+and had no `M.heading`. `sb.heading(ev.missile)` was a call on a nil field, the
+error aborted the whole `on_explode`, and the blast survived only because it runs
+first. Two fixes, both kept: `gen_test_pack.ts` now writes the editor's own SDK
+folders into the pack (the exporter always did), and the generated call is
+guarded with `sb.heading and sb.heading(ev.missile)` so an older shared copy
+degrades to the velocity heading instead of killing the callback. A missing
+optional field must never be able to take a weapon's blast with it.
+
 `impact.enabled` now defaults to true, and the reason that is safe is a second
 change: **the pierce rides the card's own Enable Stamp checkbox**
 (`usesImpactDamage` requires `terrainStamp.enabled` too). The user found the

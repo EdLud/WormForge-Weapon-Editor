@@ -58,6 +58,15 @@ sides; tracked art stays tracked and simply gains the offset.
 There is no glow: WA glows only the natives listed in
 `wa.assets.load{ wa_sprites }`, and a pack sheet has no glow copy.
 
+`sb.heading(missile_id)` answers "how was this round drawn a frame ago", in
+degrees clockwise from up, for anything that needs the art's orientation rather
+than the velocity's. The terrain stamp uses it to pick a frame, so a spinning,
+cycling or digging round leaves its picture in the land at the angle it was
+drawn at; a round this builder never drew (a native sheet, or an id it has
+forgotten) returns `nil` and the caller falls back to the velocity heading. The
+angle is the world rotation, without the weapon-wide `angle` offset: that offset
+corrects art that does not point up, and a stamp's own art does.
+
 ```lua
 sb.flight(ctx, {
   weapon = ctx.id,
