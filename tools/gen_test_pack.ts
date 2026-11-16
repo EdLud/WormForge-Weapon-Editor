@@ -57,6 +57,7 @@ import { DEFAULT_CUSTOM_SOUNDS } from '../src/data/soundPresets';
 import { DEFAULT_FIRE_SEQUENCE } from '../src/data/fireSequence';
 import { DEFAULT_TERRAIN_STAMP, STAMP_FRAMES } from '../src/data/terrainStamp';
 import { DEFAULT_AIM_CLIP } from '../src/data/aimClip';
+import { DEFAULT_MELEE } from '../src/data/melee';
 import {
   DEFAULT_ROAM_ROLE_ART,
   DEFAULT_ROLE_ART,
@@ -535,6 +536,8 @@ function makeOp(partial: {
   hold?: Partial<WeaponProject['hold']>;
   /** The Space swing played on the held art (`aimClip`). */
   aimClip?: Partial<NonNullable<WeaponProject['aimClip']>>;
+  /** The melee strike the swing lands (`sb.hold`'s `melee`). */
+  melee?: Partial<NonNullable<WeaponProject['melee']>>;
   /** `wa.land.stamp` picture burned into the terrain (`terrainStamp`). */
   terrainStamp?: Partial<WeaponProject['terrainStamp']>;
   defaults?: Partial<WeaponProject['defaults']>;
@@ -643,6 +646,7 @@ function makeOp(partial: {
         ? { keys: partial.aimClip.keys.map((key) => ({ ...key })) }
         : {}),
     },
+    melee: { ...DEFAULT_MELEE, ...partial.melee },
     packArt: { ...(partial.packArt || {}) },
     customSprites: {},
     recordOverrides: { ...(partial.overrides || {}) },
@@ -1346,6 +1350,22 @@ const TESTS: TestCase[] = [
         fireHandRadius: 14,
         fireHandRotation: -10,
         fireHandScale: 0.9,
+        // A support hand that is on the gun in both roles, with its own firing
+        // grip: the firing pass is its own pose, so the hand can sit elsewhere
+        // on the sheet without moving the aiming hand.
+        extraHand: {
+          enabled: true,
+          radius: -6,
+          rotation: 0,
+          scale: 0.9,
+          offsetX: 2,
+          offsetY: -3,
+          fireRadius: -14,
+          fireRotation: 20,
+          fireScale: 0.8,
+          fireOffsetX: -3,
+          fireOffsetY: 5,
+        },
       },
     }),
     intent:
@@ -1820,6 +1840,60 @@ const TESTS: TestCase[] = [
       'The worm holds the bat with two hands: the usual one at the grip and a second one further up the shaft, both swinging together when Space is pressed, and both drawn at every aim angle including straight up and straight down.',
     watch:
       'Only one hand (the layer not taken over for `extra_hand`), the second hand stuck at the worm`s feet (`radius` ignored), the second hand drawn but missing its sheet (the claim `sprites` does not list `hand2.png`, so the quad cannot resolve), the two hands sliding apart during a swing (the clip`s `dx`/`dy` not carried), or the second hand drawn twice during a firearm burst (`weapon_only` not honoured for the firing pass).',
+  },
+  {
+    project: makeOp({
+      id: 'wftest.50_melee_strike',
+      name: 'WF 50 Melee Strike',
+      slot: 'baseball_bat',
+      fireType: 'melee',
+      body: { sprite: 'baseball_bat', damage: 0 },
+      hold: {
+        enabled: true,
+        handType: 'mid',
+        handRadius: 10,
+        weapRadius: 4,
+        weapRotation: 0,
+        scale: 1,
+        frames: 1,
+        drawHand: true,
+        thrown: false,
+        putAway: true,
+      },
+      // A cut that lands mid-swing, with the box following the blade so it
+      // sweeps through the arc instead of pointing where the aim does.
+      aimClip: {
+        enabled: true,
+        ticks: 16,
+        finish: 'endTurn',
+        keys: [
+          { t: 0, angle: 0, dx: 0, dy: 0, scale: 1, ease: 'out_quad' },
+          { t: 4, angle: -25, dx: -2, dy: 2, scale: 1, ease: 'in_quad' },
+          { t: 8, angle: 55, dx: 3, dy: -3, scale: 1.1, ease: 'out_cubic' },
+          { t: 16, angle: 0, dx: 0, dy: 0, scale: 1, ease: 'out_quad' },
+        ],
+      },
+      melee: {
+        enabled: true,
+        radius: 30,
+        width: 14,
+        followSwing: true,
+        hitFrame: 8,
+        damage: 24,
+        kind: 'normal',
+        pushMode: 'aim',
+        pushPower: 3.5,
+        lift: 2,
+        oncePerTarget: true,
+        spareShooter: true,
+      },
+    }),
+    intent:
+      'The melee strike: Space swings the bat, and on the hit frame the scan box the panel draws in red is tested against the living worms in front of the striker.',
+    expect:
+      'A worm standing in the box (in front, within the reach and the arc) takes 24 damage and is thrown away from the striker with a little lift; the swinger is never hit, and each worm only takes it once per swing. Nothing is fired and no ammo is used, and the turn ends when the clip does.',
+    watch:
+      'No damage at all (the `melee` table not registered because `sb.hold` took the engine path, or the hit frame past the end of the clip), damage on every frame the box overlaps (the once-per-worm table not resetting per swing), the swinger hurting itself (spare_shooter), a worm behind the striker taking it (the scan vector mirrored wrongly, so the box points backwards on one side), or a hit that lands a frame or two late (the tick read from the render clock instead of the 50 Hz one).',
   },
 ];
 

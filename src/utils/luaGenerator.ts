@@ -252,13 +252,17 @@ export function holdNeedsAimLayer(project: WeaponProject): boolean {
   }
   // The swing is a clip on the held art, which only the quad layer can draw.
   if (project.aimClip?.enabled) return true;
+  // A melee strike lands on the swing's hit frame, so it is the layer's too.
+  if (project.melee?.enabled) return true;
   // `HoldSpec` has one hand slot, so a second hand is the layer's.
   return !!h.extraHand?.enabled;
 }
 
 /** True when a Space press plays the aiming clip instead of firing. */
 export function swingOn(project: WeaponProject): boolean {
-  return !!project.hold?.enabled && !!project.aimClip?.enabled;
+  // A melee strike is the swing: its hit frame is a tick of the clip, so it
+  // turns the clip on rather than depending on the author ticking two boxes.
+  return !!project.hold?.enabled && (!!project.aimClip?.enabled || !!project.melee?.enabled);
 }
 
 /**
@@ -793,7 +797,10 @@ export function generateLuaCode(project: WeaponProject): string {
   // The javelin's pierce takes the same hit kinds, so its `taze` needs the same
   // arm: `o:hurt{ kind = "taze" }` is a Prod to WA and nothing more.
   const usesElectricImpact = usesImpactDamage && stampImpact!.kind === 'taze';
-  const usesZap = usesElectricBlast || usesElectricImpact;
+  // A melee strike's electrical hit is `px.electric`'s own `hurt_electric`: WA's
+  // "taze" kind alone is a Prod to it and nothing more.
+  const usesElectricMelee = !!project.melee?.enabled && project.melee.kind === 'taze';
+  const usesZap = usesElectricBlast || usesElectricImpact || usesElectricMelee;
   const usesIntervalSound =
     !!intervalSoundPath &&
     (project.fireType === 'power' || (project.fireType === 'drop' && !!project.body.fuse));
@@ -1136,7 +1143,8 @@ export function generateLuaCode(project: WeaponProject): string {
       // The Space swing. Data, not Lua: `sb.hold` evaluates the keys on the
       // 50 Hz clock, so the preview and the game run the same arithmetic.
       const clip = project.aimClip;
-      if (clip?.enabled && clip.keys.length > 0) {
+      const clipOn = !!clip?.enabled || !!project.melee?.enabled;
+      if (clipOn && clip && clip.keys.length > 0) {
         const keys = [...clip.keys].sort((a, b) => a.t - b.t);
         holdRows.push('swing = {');
         holdRows.push(`  ticks = ${formatNumber(Math.max(1, clip.ticks))},`);
@@ -1170,6 +1178,44 @@ export function generateLuaCode(project: WeaponProject): string {
         }
         holdRows.push('},');
       }
+      // The melee strike: the scan box the swing lands, and the hit itself. The
+      // geometry and the timing stay in `sb.hold` (one clock, one formula the
+      // panel's red box also uses); the weapon owns what a hit *does*, so the
+      // damage, the kind and the taze module stay in this file.
+      const melee = project.melee;
+      if (melee?.enabled) {
+        const hitFrame = Math.max(0, Math.round(melee.hitFrame));
+        const damage = Math.max(0, Math.round(melee.damage));
+        holdRows.push('melee = {');
+        holdRows.push(`  radius = ${formatNumber(Math.max(1, melee.radius))},`);
+        holdRows.push(`  width = ${formatNumber(Math.max(0, melee.width))},`);
+        holdRows.push(`  follow_swing = ${melee.followSwing === false ? 'false' : 'true'},`);
+        holdRows.push(`  hit_frame = ${hitFrame},`);
+        if (melee.pushMode === 'fixed') {
+          holdRows.push(
+            `  push = { x = ${formatNumber(melee.pushVx)}, y = ${formatNumber(melee.pushVy)} },`,
+          );
+        } else {
+          holdRows.push('  push = "aim",');
+          holdRows.push(`  power = ${formatNumber(melee.pushPower)},`);
+        }
+        if ((melee.lift ?? 0) !== 0) holdRows.push(`  lift = ${formatNumber(melee.lift)},`);
+        if (melee.oncePerTarget === false) holdRows.push('  once = false,');
+        if (melee.spareShooter === false) holdRows.push('  spare_shooter = false,');
+        // What a hit does. `sb.hold` tests the box and hands over the victim and
+        // the throw; this callback is the weapon's own.
+        if (melee.kind === 'taze') {
+          holdRows.push(
+            `  hit = function(victim, vx, vy) zap.hurt_electric(victim, ${damage}, ` +
+              '{ frames = 25, push_x = vx, push_y = vy, retain = true }) end,',
+          );
+        } else {
+          holdRows.push(
+            `  hit = function(victim, vx, vy) victim:hurt{ amount = ${damage}, vx = vx, vy = vy } end,`,
+          );
+        }
+        holdRows.push('},');
+      }
       // A second hand on the weapon. `HoldSpec` has one hand slot, so the aim
       // layer draws this one with the engine's own hand maths; its art is its
       // own upload or, the usual case, the first hand's sheet.
@@ -1191,6 +1237,29 @@ export function generateLuaCode(project: WeaponProject): string {
         if ((extra.offsetX ?? 0) !== 0 || (extra.offsetY ?? 0) !== 0) {
           holdRows.push(
             `  offset = { x = ${formatNumber(extra.offsetX)}, y = ${formatNumber(extra.offsetY)} },`,
+          );
+        }
+        // The firing role's own grip, written only where it differs: the
+        // firing pass is its own pose, and an unset key means "the aiming
+        // numbers" (`fire_draw` defaults on, so the hand does not vanish). No
+        // firing pass, no firing keys.
+        const hasFiringPass = usesFiringArt || usesFiringHold;
+        if (hasFiringPass && extra.fireDraw === false) holdRows.push('  fire_draw = false,');
+        if (hasFiringPass && extra.fireRadius !== undefined) {
+          holdRows.push(`  fire_radius = ${formatNumber(extra.fireRadius)},`);
+        }
+        if (hasFiringPass && extra.fireRotation !== undefined) {
+          holdRows.push(`  fire_rotation = ${rotation(extra.fireRotation)},`);
+        }
+        if (hasFiringPass && extra.fireScale !== undefined && extra.fireScale !== 1) {
+          holdRows.push(`  fire_scale = ${formatNumber(extra.fireScale)},`);
+        }
+        if (
+          hasFiringPass &&
+          ((extra.fireOffsetX ?? 0) !== 0 || (extra.fireOffsetY ?? 0) !== 0)
+        ) {
+          holdRows.push(
+            `  fire_offset = { x = ${formatNumber(extra.fireOffsetX ?? 0)}, y = ${formatNumber(extra.fireOffsetY ?? 0)} },`,
           );
         }
         holdRows.push('},');
@@ -3501,6 +3570,9 @@ export function generateModToml(project: WeaponProject): string {
   // The aiming manager (`sb.hold`) ships in the same bundle, so a hold that
   // needs the quad layer pulls it in too.
   const usesWfws = usesWfwsBuilder(project) || holdNeedsAimLayer(project);
+  // An electrical melee strike hits through `px.electric`'s damage module, the
+  // same one the burst and the pierce use: a declared dependency must exist.
+  const usesElectricMelee = !!project.melee?.enabled && project.melee.kind === 'taze';
   const bitMode = bitBuilderMode(project);
   const behaviorStates = resolveBehaviorStates(project);
   // A roaming animal's flown art can be its own role (its own sheet).
@@ -3552,7 +3624,9 @@ export function generateModToml(project: WeaponProject): string {
   if (usesHold) dependencies.push('wf.sdk');
   if (usesWfws) dependencies.push('wfws.sdk');
   if (usesRibbonTrail || usesExplosionEffect) dependencies.push('effects.sdk');
-  if (usesElectricBlast || usesElectricImpact) dependencies.push('px.electric');
+  if (usesElectricBlast || usesElectricImpact || usesElectricMelee) {
+    dependencies.push('px.electric');
+  }
   // `px.fire_seq` is the sequencer's bundle; the held art no longer needs it.
   if (usesFireSequence) dependencies.push('px.fire_seq');
   // Extra library bundles the author asked for (they may be used from the

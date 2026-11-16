@@ -2831,3 +2831,55 @@ moment an author types a different count, which shows as a half-cell jumping
 inside the quad. The declaration is written whenever `fireFrames > 1`, from the
 same numbers the Lua uses, and the test pack writes the file and the declaration
 from one place (`spriteDecls`).
+
+## Melee: the aiming phase is the attack
+
+A bat or an axe has no projectile: the food chain in WA is aim, Space, swing,
+and a hit that happens when the weapon is in front of a worm. `swing` (the aim
+clip) already gave the editor the animation, so the strike became the third
+consumer of the same clock rather than a simulation of its own:
+`project.melee` emits `melee = { … }` into the `sb.hold` spec, and the swing loop
+- which already ticks once per 50 Hz frame and already knows the tick since the
+Space press - tests a box on the frame `hit_frame` names.
+
+**The box is the engine's placement, not a new frame of reference.** The hold is
+drawn at `rot_w = rot + PI * weap_radial_rotation` from the worm, so the unit
+vector "out along the weapon" is `(sin rot_w, -cos rot_w)`, and `follow_swing`
+turns it by the clip's angle at the hit frame, mirrored with the side exactly as
+the drawn angle is. Getting this wrong is invisible in a straight-ahead test and
+obvious in a game, which is why the editor draws the same formula in red on the
+aim preview and one function (`src/data/melee.ts`) feeds the panel, the Lua and
+the test pack.
+
+The sign of `weap_radius` cost a round of screenshots. The engine's offset is
+`weap_radius` * `(sin rot_w, -cos rot_w)`, so a **negative** radius - which is
+the editor's own default (`-8`) and what most hand-drawn art wants, its grip
+above the pivot - puts the weapon on the opposite side of the worm. The first box
+pointed backwards. Both the TypeScript and the Lua multiply by the sign now, and
+the preview draws it from the worm's map pivot in the offscreen's right-facing
+convention with one horizontal flip for the side, which is the engine's
+`facing`.
+
+**Determinism, and one hit per swing.** `wa.worms.all()` is a deterministic list,
+so the victim set and order are identical on every peer; `once` (default on)
+records each victim in `ws.melee_hit`, which resets on the Space edge and not on
+a timer, so a long animation cannot hit the same worm twice and a wiggle cannot
+hit it once per frame. `spare_shooter` (default on) skips the worm that swung.
+
+**What a hit does stays in the weapon.** The library hands over `(victim, vx,
+vy)` and the emitted callback calls `victim:hurt{ amount, vx, vy }`, or
+`zap.hurt_electric(victim, damage, { frames, push_x, push_y, retain })` for
+`kind = "taze"` - the same `px.electric` module the burst and the pierce use, so
+an electrical strike tazes without WA learning a new kind. The call is `pcall`ed
+so a broken weapon cannot take the 50 Hz message down with it.
+
+Two gaps worth knowing: `hold_needs_lua` had to learn `melee` or a centred hold
+would take the engine path and never register the strike at all, and
+`stopOnTerrain` plus a dedicated swing WAV are still unmodelled - the record's
+own `fires` sound plays, which covers the family in practice.
+
+**Ticks commit on blur now.** The clip's keys are sorted by `t`, so typing the
+`1` of "16" re-sorted the table and remounted the row being typed in between two
+keystrokes, and the box the author was in jumped to a different key. `KeyTickInput`
+keeps a draft and commits on Enter/blur (Escape cancels), and the rows are keyed
+by position so a commit cannot remount the row underneath them.

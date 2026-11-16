@@ -9,6 +9,7 @@ import {
   Wrench,
   Flame,
   Navigation,
+  Swords,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { FireType } from '../types/weapon';
@@ -23,6 +24,7 @@ export type RecordTabId =
   | 'gun'
   | 'strike'
   | 'gun_mine'
+  | 'melee'
   | 'burst_bit'
   | 'burst_bit_collision'
   | 'burst_bit_bounce'
@@ -46,6 +48,7 @@ export const RECORD_TABS: RecordTabDef[] = [
   { id: 'sprite', label: 'Sprites & Trail', hint: 'Missile sprite, smoke trail & sounds', icon: Sliders },
   { id: 'gun', label: 'Firearm Specs', hint: 'Bullets, spread cone, pellets & hits', icon: Crosshair },
   { id: 'gun_mine', label: 'Tool & Setup', hint: 'Mine, arrow, teleport or special tool', icon: Wrench },
+  { id: 'melee', label: 'Melee Strike', hint: 'Scan box, hit frame & how the victim is thrown', icon: Swords },
   { id: 'callbacks', label: 'Lua Script', hint: 'Custom game event hooks', icon: Code2 },
 ];
 
@@ -115,6 +118,18 @@ export function visibleRecordTabs(
   if (fireType === 'arrow') {
     return [
       { id: 'gun_mine', label: 'Arrow Specs', hint: 'Direct-hit damage & firing animation', icon: Wrench },
+      { id: 'callbacks', label: 'Lua Script', hint: 'Custom game event hooks', icon: Code2 },
+    ];
+  }
+
+  if (fireType === 'melee') {
+    return [
+      {
+        id: 'melee',
+        label: 'Melee Strike',
+        hint: 'Scan box, hit frame, damage & how the victim is thrown',
+        icon: Swords,
+      },
       { id: 'callbacks', label: 'Lua Script', hint: 'Custom game event hooks', icon: Code2 },
     ];
   }

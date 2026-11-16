@@ -32,6 +32,7 @@ import type {
   TerrainStampImpactConfig,
   WeaponProject,
 } from '../../types/weapon';
+import { DEFAULT_MELEE } from '../../data/melee';
 import {
   CLIP_EASES,
   DEFAULT_AIM_ECHO,
@@ -753,6 +754,17 @@ export async function readBundleFeatures(args: {
         num(extraHandTable.rotation) !== undefined
           ? Math.round(((num(extraHandTable.rotation) as number) - 1) * 180 * 1e4) / 1e4
           : 0;
+      const extraOffset = isTable(extraHandTable.offset) ? extraHandTable.offset : undefined;
+      const extraFireOffset = isTable(extraHandTable.fire_offset)
+        ? extraHandTable.fire_offset
+        : undefined;
+      // The firing grip is written only where it differs, so an unset key means
+      // "the aiming numbers" (and `fire_draw` absent means "shown").
+      const fireRadius = num(extraHandTable.fire_radius);
+      const fireRotation = num(extraHandTable.fire_rotation);
+      const fireScale = num(extraHandTable.fire_scale);
+      const fireOffsetX = num(extraFireOffset?.x);
+      const fireOffsetY = num(extraFireOffset?.y);
       project.hold = {
         ...project.hold,
         extraHand: {
@@ -764,11 +776,50 @@ export async function readBundleFeatures(args: {
           radius: num(extraHandTable.radius) ?? 10,
           rotation: extraRotation,
           scale: num(extraHandTable.scale) ?? 1,
-          offsetX: num(isTable(extraHandTable.offset) ? extraHandTable.offset.x : undefined) ?? 0,
-          offsetY: num(isTable(extraHandTable.offset) ? extraHandTable.offset.y : undefined) ?? 0,
+          offsetX: num(extraOffset?.x) ?? 0,
+          offsetY: num(extraOffset?.y) ?? 0,
+          ...(extraHandTable.fire_draw === false ? { fireDraw: false } : {}),
+          ...(fireRadius !== undefined ? { fireRadius } : {}),
+          ...(fireRotation !== undefined
+            ? { fireRotation: Math.round((fireRotation - 1) * 180 * 1e4) / 1e4 }
+            : {}),
+          ...(fireScale !== undefined ? { fireScale } : {}),
+          ...(fireOffsetX !== undefined ? { fireOffsetX } : {}),
+          ...(fireOffsetY !== undefined ? { fireOffsetY } : {}),
         },
       };
       notes.push(extraSheet ? 'second hand + its art' : 'second hand');
+    }
+    // The melee strike: the box, the tick and the callback the swing hands a
+    // victim to. Damage and kind live in that callback's text, because what a
+    // hit does is the weapon's own code (`victim:hurt{ amount = 24 }` or
+    // `zap.hurt_electric(victim, 24, ...)`).
+    const meleeTable = isTable(holdTable.melee) ? holdTable.melee : undefined;
+    if (meleeTable) {
+      const meleeText = sbHold?.text ?? '';
+      const hitAt = meleeText.indexOf('hit = function');
+      const hitLine = hitAt >= 0 ? meleeText.slice(hitAt) : '';
+      const amount =
+        /victim:hurt\{\s*amount\s*=\s*(-?\d+(?:\.\d+)?)/.exec(hitLine) ??
+        /hurt_electric\(victim,\s*(-?\d+(?:\.\d+)?)/.exec(hitLine);
+      const push = meleeTable.push;
+      project.melee = {
+        enabled: true,
+        radius: num(meleeTable.radius) ?? DEFAULT_MELEE.radius,
+        width: num(meleeTable.width) ?? DEFAULT_MELEE.width,
+        followSwing: meleeTable.follow_swing !== false,
+        hitFrame: Math.max(0, Math.round(num(meleeTable.hit_frame) ?? 0)),
+        damage: amount ? Number(amount[1]) : DEFAULT_MELEE.damage,
+        kind: /hurt_electric/.test(hitLine) ? 'taze' : 'normal',
+        pushMode: isTable(push) ? 'fixed' : 'aim',
+        pushPower: num(meleeTable.power) ?? DEFAULT_MELEE.pushPower,
+        pushVx: isTable(push) ? num(push.x) ?? 0 : 0,
+        pushVy: isTable(push) ? num(push.y) ?? 0 : 0,
+        lift: num(meleeTable.lift) ?? 0,
+        oncePerTarget: meleeTable.once !== false,
+        spareShooter: meleeTable.spare_shooter !== false,
+      };
+      notes.push('melee strike');
     }
     notes.push(flashSource ? 'hold art + firing sprite' : 'hold art');
     if (project.aimClip) notes.push('space swing');

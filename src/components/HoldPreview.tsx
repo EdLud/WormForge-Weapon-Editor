@@ -43,6 +43,7 @@ import {
   type AimClipKey,
   type ClipPose,
 } from '../data/aimClip';
+import { MELEE_SLACK, meleeScan } from '../data/melee';
 import mapBackgroundSrc from '../../spec/pre_weapon_preview.png';
 import normalIconSrc from '../../spec/normal.png';
 import homingIconSrc from '../../spec/hmissil1.png';
@@ -312,6 +313,52 @@ const AIM_ZOOM_MIN = 0.5;
  * box for the value the export actually gets) and the slider under it. The
  * offset pairs put two of these side by side, because X and Y are one thought.
  */
+/**
+ * A keyframe's tick, committed on blur or Enter instead of on every keystroke.
+ *
+ * The clip's keys are sorted by `t`, so writing `1` and then `6` to type "16"
+ * re-sorts the table (and remounts the row the author is typing in) between the
+ * two keystrokes: the box they are in jumps to another key and the rest of the
+ * row moves with it. Typing the whole number first and committing once makes the
+ * table move once, on purpose.
+ */
+const KeyTickInput: React.FC<{
+  value: number;
+  label: string;
+  className: string;
+  onCommit: (value: number) => void;
+}> = ({ value, label, className, onCommit }) => {
+  const [draft, setDraft] = useState<string | null>(null);
+  const commit = () => {
+    if (draft === null) return;
+    const text = draft.trim();
+    setDraft(null);
+    if (text === '') return;
+    const next = Number(text);
+    if (Number.isNaN(next) || next === value) return;
+    onCommit(Math.max(0, next));
+  };
+  return (
+    <input
+      type="number"
+      min={0}
+      aria-label={label}
+      value={draft ?? String(value)}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          commit();
+        } else if (event.key === 'Escape') {
+          setDraft(null);
+        }
+      }}
+      className={className}
+    />
+  );
+};
+
 const HoldDial: React.FC<{
   id: string;
   label: string;
@@ -1251,16 +1298,29 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
     // 5. The second hand. `HoldSpec` has one hand slot, so `sb.hold` draws this
     // one with the engine's own hand maths: the same radius/rotation rules, its
     // own scale, cell nudge and art (the first hand's unless it names one). It
-    // belongs to the held art, so the firing tab does not repeat it.
-    const extra = !firingView && hold.extraHand?.enabled ? hold.extraHand : null;
+    // is drawn on the firing frames too, at full size, because a support hand
+    // should not vanish when the firing sheet replaces the gun.
+    const extra =
+      hold.extraHand?.enabled && !(firingView && hold.extraHand.fireDraw === false)
+        ? hold.extraHand
+        : null;
     if (extra) {
+      // The firing pass is its own pose, so its grip is its own too; unset
+      // keys mean the aiming numbers (`hold_draw_extra_hand`).
+      const xRadius = (firingView ? extra.fireRadius : undefined) ?? extra.radius ?? 0;
+      const xRotation = (firingView ? extra.fireRotation : undefined) ?? extra.rotation ?? 0;
+      const xScale = (firingView ? extra.fireScale : undefined) ?? extra.scale ?? 1;
+      const xOffX = (firingView ? extra.fireOffsetX : undefined) ?? extra.offsetX ?? 0;
+      const xOffY = (firingView ? extra.fireOffsetY : undefined) ?? extra.offsetY ?? 0;
       const rotX = rot - Math.PI;
-      let xX = cx + Math.sin(rotX) * (extra.radius ?? 0);
-      let xY = cy - Math.cos(rotX) * (extra.radius ?? 0);
-      const xAngle = rot + Math.PI * (1 + (extra.rotation ?? 0) / 180);
-      const xSize = Number(extra.scale ?? 1) * putAwayShrink;
-      const xNudgeX = Number(extra.offsetX ?? 0) + (swingPose?.dx ?? 0);
-      const xNudgeY = Number(extra.offsetY ?? 0) + (swingPose?.dy ?? 0);
+      let xX = cx + Math.sin(rotX) * xRadius;
+      let xY = cy - Math.cos(rotX) * xRadius;
+      const xAngle = rot + Math.PI * (1 + xRotation / 180);
+      // The firing frames are drawn at full size (`base = 1`), the aim frames
+      // on the engine's draw-out (`putAwayShrink`).
+      const xSize = Number(xScale) * (firingView ? 1 : putAwayShrink);
+      const xNudgeX = Number(xOffX) + (firingView ? 0 : swingPose?.dx ?? 0);
+      const xNudgeY = Number(xOffY) + (firingView ? 0 : swingPose?.dy ?? 0);
       if (xNudgeX || xNudgeY) {
         const ox = xNudgeX * xSize;
         const oy = xNudgeY * xSize;
@@ -1331,8 +1391,41 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
     } else {
       ctx.drawImage(offscreen, 0, 0, SIZE, SIZE, cellX, cellY, SIZE, SIZE);
     }
+
+    // The melee strike's scan box, in red: the exact test `sb.hold` runs on the
+    // hit frame. It is drawn on the map, from the worm's own pivot, at 1:1 (the
+    // numbers are game pixels), and in the offscreen's right-facing convention:
+    // the side is one horizontal flip, which is the engine's `facing`.
+    const meleeCfg = project.melee;
+    if (meleeCfg?.enabled && !firingView) {
+      const hitPose =
+        project.aimClip && project.aimClip.keys.length > 0
+          ? evalClip(project.aimClip, Math.max(0, Math.round(meleeCfg.hitFrame)))
+          : null;
+      const scan = meleeScan(
+        aimT,
+        1,
+        meleeCfg.followSwing === false ? 0 : hitPose?.angle ?? 0,
+        1,
+        weapRadius,
+      );
+      const reach = Math.max(1, meleeCfg.radius);
+      const halfWidth = Math.max(0, meleeCfg.width);
+      ctx.save();
+      ctx.translate(cellX + cx, cellY + cy);
+      ctx.scale(facingRight ? 1 : -1, 1);
+      ctx.rotate(scan.angle);
+      // The slack is the near edge's forgiveness, drawn so the panel shows the
+      // same reach the simulation tests.
+      ctx.fillStyle = 'rgba(244, 63, 94, 0.22)';
+      ctx.fillRect(-MELEE_SLACK, -halfWidth, reach + MELEE_SLACK, halfWidth * 2);
+      ctx.strokeStyle = 'rgba(244, 63, 94, 0.85)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(-MELEE_SLACK, -halfWidth, reach + MELEE_SLACK, halfWidth * 2);
+      ctx.restore();
+    }
     ctx.restore();
-  }, [hold, aimAngleIndex, currentFrame, facingRight, assetsLoaded, weaponLoadedImg, defaultHoldLoaded, putAwayCounter, flashLoadedImg, extraHandLoadedImg, firePreviewFrame, fireStripFrames, aimZoom, swingPose, echoPoses, aimTab]);
+  }, [hold, project.melee, project.aimClip, aimAngleIndex, currentFrame, facingRight, assetsLoaded, weaponLoadedImg, defaultHoldLoaded, putAwayCounter, flashLoadedImg, extraHandLoadedImg, firePreviewFrame, fireStripFrames, aimZoom, swingPose, echoPoses, aimTab]);
 
   // Derive active preview role settings for the 50 Hz simulation canvas
   const activeRolePreviewCfg = (() => {
@@ -2689,6 +2782,121 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
                     lines up without moving the aiming pose.
                   </p>
                 </div>
+
+                {/* The second hand on the firing frames: its own grip, the way
+                    the firing hand has one. Unset numbers inherit the aim grip. */}
+                <div className="space-y-1.5 rounded-lg border border-stone-200 bg-white p-3 dark:border-stone-700 dark:bg-stone-800">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-stone-700 dark:text-stone-300">
+                      Second Hand
+                    </span>
+                    <label
+                      htmlFor="hold-fire-extra-hand-draw"
+                      title="Draw the support hand on the firing frames. It travels with the firing pose, using the grip below."
+                      className="flex cursor-pointer items-center gap-1.5 text-[11px] font-semibold text-stone-700 dark:text-stone-300"
+                    >
+                      <input
+                        id="hold-fire-extra-hand-draw"
+                        type="checkbox"
+                        checked={hold.extraHand?.fireDraw !== false}
+                        disabled={!hold.extraHand?.enabled}
+                        onChange={(event) => updateExtraHand({ fireDraw: event.target.checked })}
+                        className="h-3.5 w-3.5 cursor-pointer rounded text-forge-600 focus:ring-forge-500 disabled:opacity-40"
+                      />
+                      Show
+                    </label>
+                  </div>
+                  {hold.extraHand?.enabled ? (
+                    <>
+                      <HoldDial
+                        id="hold-fire-extra-hand-radius"
+                        label="Second Hand Radius"
+                        value={hold.extraHand.fireRadius ?? hold.extraHand.radius ?? 10}
+                        onChange={(value) => updateExtraHand({ fireRadius: value })}
+                        min={-35}
+                        max={35}
+                        step={1}
+                        unit="px"
+                        title="The support hand's distance from the worm on the firing frames. Touching this pins a firing value; it starts as the aiming radius."
+                      />
+                      <HoldDial
+                        id="hold-fire-extra-hand-rotation"
+                        label="Second Hand Rotation"
+                        value={hold.extraHand.fireRotation ?? hold.extraHand.rotation ?? 0}
+                        onChange={(value) => updateExtraHand({ fireRotation: value })}
+                        min={-180}
+                        max={180}
+                        step={1}
+                        unit="deg"
+                      />
+                      <HoldDial
+                        id="hold-fire-extra-hand-scale"
+                        label="Second Hand Scale"
+                        value={hold.extraHand.fireScale ?? hold.extraHand.scale ?? 1}
+                        onChange={(value) => updateExtraHand({ fireScale: value })}
+                        min={0.5}
+                        max={2}
+                        step={0.05}
+                        unit="x"
+                      />
+                      <div
+                        className="space-y-1.5 border-t border-stone-200 pt-2 dark:border-stone-700"
+                        title="Moves the support hand inside its own cell on the firing frames, in sheet pixels."
+                      >
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="font-semibold text-stone-700 dark:text-stone-300">
+                            Second Hand Offset
+                          </span>
+                          <span className="font-mono text-[10px] text-stone-500 dark:text-stone-400">
+                            {hold.extraHand.fireOffsetX ?? hold.extraHand.offsetX ?? 0},{' '}
+                            {hold.extraHand.fireOffsetY ?? hold.extraHand.offsetY ?? 0} px
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <HoldDial
+                            id="hold-fire-extra-hand-offset-x"
+                            label="X"
+                            value={hold.extraHand.fireOffsetX ?? hold.extraHand.offsetX ?? 0}
+                            onChange={(value) => updateExtraHand({ fireOffsetX: value })}
+                            min={-32}
+                            max={32}
+                            step={1}
+                          />
+                          <HoldDial
+                            id="hold-fire-extra-hand-offset-y"
+                            label="Y"
+                            value={hold.extraHand.fireOffsetY ?? hold.extraHand.offsetY ?? 0}
+                            onChange={(value) => updateExtraHand({ fireOffsetY: value })}
+                            min={-32}
+                            max={32}
+                            step={1}
+                          />
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateExtraHand({
+                            fireRadius: undefined,
+                            fireRotation: undefined,
+                            fireScale: undefined,
+                            fireOffsetX: undefined,
+                            fireOffsetY: undefined,
+                          })
+                        }
+                        title="Clear the firing grip so the support hand follows the aiming numbers again"
+                        className="w-full rounded-lg border border-stone-300 bg-white px-2 py-1 text-[11px] font-semibold text-stone-800 hover:bg-stone-100 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200 dark:hover:bg-stone-700"
+                      >
+                        Follow the aiming grip
+                      </button>
+                    </>
+                  ) : (
+                    <p className="text-[10px] leading-snug text-stone-500 dark:text-stone-400">
+                      Turn on the second hand on the Aim &amp; Swing tab first. Its art is shared
+                      between the two roles; only the grip differs.
+                    </p>
+                  )}
+                </div>
               </>
             )}
           </div>
@@ -3486,16 +3694,13 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
                         const cell =
                           'w-[62px] rounded border border-stone-300 bg-white px-1 py-0.5 text-right font-mono text-[11px] text-stone-900 dark:border-stone-700 dark:bg-stone-900 dark:text-white';
                         return (
-                          <tr key={`${key.t}-${index}`}>
+                          <tr key={index}>
                             <td className="px-1">
-                              <NumberInput
+                              <KeyTickInput
                                 aria-label={`Key ${index + 1} tick`}
+                                label={`Key ${index + 1} tick`}
                                 value={key.t}
-                                onChange={(event) => {
-                                  const value = Number(event.target.value);
-                                  if (event.target.value.trim() === '' || Number.isNaN(value)) return;
-                                  patchKey({ t: Math.max(0, value) });
-                                }}
+                                onCommit={(value) => patchKey({ t: value })}
                                 className={cell}
                               />
                             </td>

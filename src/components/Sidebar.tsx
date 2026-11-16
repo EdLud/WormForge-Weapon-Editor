@@ -46,6 +46,7 @@ const ARCHETYPE_BADGE: Record<string, string> = {
   arrow: 'Arrow',
   spray: 'Flame',
   special: 'Special',
+  melee: 'Melee',
 };
 
 const ProjectCard: React.FC<{ project: WeaponProject; onCopyId: () => void }> = ({ project, onCopyId }) => {

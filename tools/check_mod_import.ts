@@ -70,7 +70,7 @@ check(
   bundles.some((bundle) => bundle.id === 'wfws.sdk'),
   bundles.map((bundle) => bundle.id).join(', '),
 );
-check('test pack has 49 weapons', weapons.length === 49, String(weapons.length));
+check('test pack has 50 weapons', weapons.length === 50, String(weapons.length));
 
 const byName = new Map(weapons.map((weapon) => [weapon.name, weapon]));
 const projects = new Map<string, WeaponProject>();
@@ -351,6 +351,7 @@ function fullProject(p: WeaponProject, name: string): WeaponProject {
     extraDependencies: p.extraDependencies ?? [],
     hold: p.hold ?? DEFAULT_IMPORT_HOLD,
     aimClip: p.aimClip,
+    melee: p.melee,
     packArt: p.packArt ?? {},
     customSprites: {},
     recordOverrides: p.recordOverrides ?? {},
@@ -1035,6 +1036,95 @@ return {
     'WF 49: its sheet is in the claim sprites',
     lua.includes(`"${extraHandSheetPath(full)}"`),
     'wa.draw.quad cannot resolve hand2.png',
+  );
+  check(
+    'WF 49: no firing pass, so no firing grip keys',
+    !lua.includes('fire_radius =') && !lua.includes('fire_draw ='),
+    'the firing grip is emitted for a weapon that never fires a sheet',
+  );
+}
+
+// ---- the second hand's own firing grip (WF 32) ---------------------------
+// The firing pass is its own pose, so the support hand has its own numbers for
+// it; the keys are only written when there is a firing pass at all.
+{
+  const p = project('WF 32 Hold Flash')!;
+  const extra = p.hold?.extraHand;
+  near('WF 32: the second hand is on this weapon', extra?.enabled, true);
+  near('WF 32: its aim radius', extra?.radius, -6);
+  near('WF 32: its firing radius', extra?.fireRadius, -14);
+  near('WF 32: its firing rotation', extra?.fireRotation, 20);
+  near('WF 32: its firing scale', extra?.fireScale, 0.8);
+  near('WF 32: its firing nudge', `${extra?.fireOffsetX},${extra?.fireOffsetY}`, '-3,5');
+  const lua = generateLuaCode(fullProject(p, 'WF 32 Hold Flash'));
+  check(
+    'WF 32: the firing grip is emitted next to the aim grip',
+    lua.includes('  radius = -6,') &&
+      lua.includes('  fire_radius = -14,') &&
+      lua.includes('  fire_offset = { x = -3, y = 5 },') &&
+      lua.includes('  fire_scale = 0.8,'),
+    'the support hand cannot sit anywhere else on the firing sheet',
+  );
+  check(
+    'WF 32: a re-export keeps the firing grip',
+    generateLuaCode(fullProject(p, 'WF 32 Hold Flash')).includes('fire_radius = -14,'),
+    'the firing grip is lost on re-export',
+  );
+}
+
+// ---- the melee strike (WF 50) --------------------------------------------
+{
+  const p = project('WF 50 Melee Strike')!;
+  const m = p.melee;
+  near('WF 50: the strike imports enabled', m?.enabled, true);
+  near('WF 50: the reach', m?.radius, 30);
+  near('WF 50: the arc width', m?.width, 14);
+  near('WF 50: it follows the swing', m?.followSwing, true);
+  near('WF 50: the hit frame', m?.hitFrame, 8);
+  near('WF 50: the damage', m?.damage, 24);
+  near('WF 50: the throw', `${m?.pushMode},${m?.pushPower},${m?.lift}`, 'aim,3.5,2');
+  const full = fullProject(p, 'WF 50 Melee Strike');
+  const lua = generateLuaCode(full);
+  check(
+    'WF 50: the strike is emitted inside the hold spec',
+    lua.includes('melee = {') &&
+      lua.includes('  hit_frame = 8,') &&
+      lua.includes('  follow_swing = true,') &&
+      lua.includes('  push = "aim",') &&
+      lua.includes('  power = 3.5,') &&
+      lua.includes('  lift = 2,'),
+    'the swing has no box to land',
+  );
+  check(
+    "WF 50: the hit is the weapon's own callback",
+    lua.includes('hit = function(victim, vx, vy) victim:hurt{ amount = 24, vx = vx, vy = vy } end,'),
+    'the damage (and its kind) has to stay in the weapon, not in the library',
+  );
+  check(
+    'WF 50: a strike owns the trigger',
+    /eat_fire = true,/.test(lua) && lua.includes('local hold = sb.hold(ctx, {'),
+    'WA would fire the donor record as well as swinging',
+  );
+  check(
+    'WF 50: a re-export keeps the strike',
+    generateLuaCode(full).includes('hit_frame = 8,'),
+    'the strike is dropped on re-export',
+  );
+  // The electrical hit is `px.electric`'s own `hurt_electric`, which needs the
+  // module declared as `zap` and the dependency that ships it.
+  const taze: WeaponProject = { ...full, melee: { ...m!, kind: 'taze' } };
+  const tazeLua = generateLuaCode(taze);
+  check(
+    'WF 50: an electrical strike tazes through px.electric',
+    /^local zap$/m.test(tazeLua) &&
+      tazeLua.includes('zap = require("wf-lib/electric/damage")') &&
+      tazeLua.includes('zap.hurt_electric(victim, 24,'),
+    "WA's taze kind alone is a Prod: the worm would not spark",
+  );
+  check(
+    'WF 50: the electrical strike declares px.electric',
+    generateModToml(taze).includes('px.electric'),
+    'the module would not resolve at load',
   );
 }
 

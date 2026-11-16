@@ -115,8 +115,9 @@ Node 26.x, Vite 8.3.x, React 19.3.x, Tailwind 4.3.x, TypeScript 7.0.x.
   `visibleRecordTabs(burst, bitAction, fireType, teleport, bodyFuse)` returns the
   tab set that applies to the weapon family: projectile/dynamite and air strike
   get Physics (or Strike & Bombs) · Missile Action · Explodes Into · Sprites &
-  Trail · Lua Script, while a mine, teleport tool, firearm, flame stream, arrow
-  or special tool gets only its own setup page plus Lua Script. There is no
+  Trail · Lua Script, while a mine, teleport tool, firearm, flame stream, arrow,
+  melee tool (`fireType: 'melee'`, whose page is the Melee Strike card) or
+  special tool gets only its own setup page plus Lua Script. There is no
   "Fine Tuning" tab: its rare fields live where they apply, blast bias,
   damage randomness, random flight wobble and collision outline under
   **Blast Shaping & Random Motion** in Physics & Blast, the pre-explosion
@@ -805,6 +806,53 @@ Reference implementation: `WormForgeNew/crates/weapons/src/record.rs`,
   render position, so a worm still sliding into its aim pose can be a sub-pixel
   out for a frame; and the layer is per weapon (one `hold_sheet` choice), which
   is fine because only the turn player can be aiming.
+- **Melee (`project.melee`, `fireType: 'melee'`, wfws.sdk 0.12.0).** The
+  aiming phase can be the attack: nothing is fired, the claim eats WA's fire
+  (`eat_fire`, written whenever the clip or the strike is on) and the swing's hit
+  frame tests a box against the living worms. The geometry lives in
+  `src/data/melee.ts` and is read by three places that must agree: the red box
+  `HoldPreview` draws over the aim preview, `sb.hold`'s simulation, and
+  `tools/gen_test_pack.ts`. **The scan vector is the engine's own placement**,
+  `(sin rot_w, -cos rot_w)` for `rot_w = rot + PI * weap_radial_rotation`,
+  multiplied by the sign of `weap_radius`: a negative radius (art whose grip is
+  above its pivot, which is the default project's `-8` and most hand-drawn art)
+  puts the weapon on the other side of the worm and the strike reaches the other
+  way. Missing that sign pointed the box backwards at first. `follow_swing` turns
+  the vector by the clip's `angle` at the hit frame, mirrored with the side like
+  the drawn angle, so a cut catches what the aim pose would miss. `radius` is the
+  reach, `width` the arc's half-width, and the near edge starts 3 px behind the
+  worm (`MELEE_SLACK`) so a worm at its feet is still hit.
+  **The strike is one tick of the swing clock**, `hit_frame` 50 Hz frames after
+  Space (`0` lands on the press): the swing loop already runs once per game frame,
+  so exactly one frame matches and every peer agrees. Targets come from
+  `wa.worms.all()` (a deterministic list); `spare_shooter` (default on) skips the
+  worm that swung and `once` (default on) hits each victim once per swing, with
+  the record reset on the Space edge rather than on a timer. **What a hit does is
+  the weapon's own callback** (`melee.hit` gets `(victim, vx, vy)`): `victim:hurt{
+  amount, vx, vy }` for `kind = "normal"`, or `zap.hurt_electric(victim, damage, {
+  frames, push_x, push_y, retain })` for `kind = "taze"`, which is why that kind
+  adds `px.electric` and is `pcall`ed. Push is either along the scan
+  (`push = "aim"`, scaled by `power`) or a fixed `{ x, y }`; `lift` is added to
+  either.
+  **`holdNeedsAimLayer` is true for melee** (the swing and the strike need the
+  registered entry and the swing clock), and the SDK gives up its own reason to
+  be dynamic for it (`M.hold`'s `hold_needs_lua` is true for `melee`): without
+  either, a centred hold would take the engine path and the strike would never be
+  registered. `melee` rides the `sb.hold` spec, so a `.wep`-backed or
+  `copy_from` weapon keeps its whole record and only the added keys change. The
+  card is the record page's **Melee Strike** tab (`MeleeCard.tsx`), and its
+  `Melee hitscan` line answers the question the family raises: `true` once the
+  held art and the swing are on, with the tick in milliseconds, and `false` with
+  the reason when the swing that is the attack is not enabled. The tab set for
+  the family is `recordTabs`' `fireType === 'melee'` branch: its own setup page
+  plus Lua Script. Still not modelled: `stopOnTerrain`, and a dedicated swing
+  WAV (the record's `fires` sound plays).
+- **Keyframe ticks commit on blur, not per keystroke** (`KeyTickInput` in
+  `HoldPreview`). The clip's keys are sorted by `t`, so writing the `1` of "16"
+  re-sorted the table (and remounted the row being typed in) between two keys and
+  the box jumped to another key. The tick box now keeps a draft and commits on
+  Enter/blur (Escape cancels), and the rows are keyed by position so a commit
+  cannot remount the row underneath the author.
 - **The aiming phase is two roles, and each tab is one role's full editor.**
   `HoldPreview`'s first section is a `role="tabpanel"` grid whose columns swap
   with the tab, the way every flight-builder role has the same complete control
@@ -1209,7 +1257,7 @@ The pack ships the editor's own `wf-lib/wfws_sdk/` (copied from `spec/`, like an
 export does), so its weapons run against the version they were generated for
 instead of an older installed copy of the library.
 
-It writes one bundle with 49 components, one profile ("WF Test Pack") and art
+It writes one bundle with 50 components, one profile ("WF Test Pack") and art
 derived from `spec/` sheets, one per role (the sprite builder, cluster bits, the
 homing window, the homing bit, the roaming animal and native trails). Each
 test carries its intent, expected result and failure symptom in
@@ -1218,7 +1266,8 @@ infinite ammo. Tests 21/22 cover the explosion burst in `blast` mode (a
 bazooka) and `effect` overlay mode (a mine); 34/35 cover the roam tilt and the
 roaming role's own sheet; 37/38 cover the terrain stamp in impact mode (custom
 blast, so the stamp survives the crater) and fixed angle / dither / true colours;
-39 covers the javelin-shaped pierce (`STAMP_HIT`, blast zeroed), 40 the
+50 the melee strike (bat, swing, `follow_swing`, hit frame 8, `push = "aim"`,
+`victim:hurt`), 39 the javelin-shaped pierce (`STAMP_HIT`, blast zeroed), 40 the
 `pingpong` frame reversal (with `anim = "none"`, so the cycle is the only
 motion), 41 the electric blast's taze on a replaced blast, 42 the same taze with
 WA's own blast left in place, and 43 the electrical pierce (a taze with no burst
@@ -1272,7 +1321,10 @@ with their `zap` require, arm line and `px.electric` dependency, and the arm
 kept out of the recovered custom `on_explode`; the Space clip with its echoes
 (`count`/`every`/`fade`/`blend`), and the second hand with its radius, scale,
 nudge and its own sheet.
-It also regenerates each weapon and checks the original feature calls survive.
+It also regenerates each weapon and checks the original feature calls survive,
+and the melee strike is read back (`radius`, `width`, `follow_swing`, `hit_frame`,
+`push`/`power`/`lift`, the damage and kind recovered from the callback text) and
+re-exported with its `hit` callback and the `px.electric` dependency for a taze.
 
 Compiler check (lives in the code-editor repo):
 
@@ -1592,6 +1644,15 @@ Done and validated:
   hand `draw_holds` always draws no longer shows through as a second one on a
   `weap_scale`d weapon, and the Firing tab's preview draws the firing sheet
   before its hand, the order `sb.hold` uses. WF 48 and WF 49 cover them.
+- **Melee strike (wfws.sdk 0.12.0).** `fireType: 'melee'` makes the aiming phase
+  the attack: `eat_fire`, no projectile, and a red scan box on the aim preview
+  that is the same formula `sb.hold` tests at the swing's hit frame. Geometry in
+  `src/data/melee.ts` (the sign of `weap_radius` decides which way the box
+  points), the hit is the weapon's own callback (`victim:hurt{ … }`, or
+  `zap.hurt_electric` for `taze`), `wa.worms.all()` for determinism, once-per-swing
+  and spare-the-shooter by default. The record page's **Melee Strike** tab is its
+  editor (`MeleeCard.tsx`, with the `Melee hitscan` readout), and WF 50 is the
+  test weapon.
 - **Hold offset through `sb.hold` (wfws.sdk 0.8.0), the first half of the aiming
   plan.** A held sheet whose art is not at its cell centre is nudged with
   `hold.offsetX/offsetY` (sheet pixels, scaled with the art, mirrored with the

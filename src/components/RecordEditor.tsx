@@ -31,6 +31,7 @@ import { bitBuilderMode } from '../data/spriteBuilder';
 import { FIRE_SUBTYPES, fireSubtypeLabel } from '../data/fireSubtypes';
 import { PackSpriteUpload } from './PackSpriteUpload';
 import { NumberInput, useNumberDraft } from './NumberInput';
+import { MeleeCard } from './MeleeCard';
 
 type CollisionTargetKey = Exclude<keyof CollisionMask, 'extra_bits'>;
 
@@ -2753,6 +2754,12 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
       )}
 
       {/* PANEL 8: Lua Script */}
+      {normalizedTab === 'melee' && (
+        <div className="p-4 sm:p-5">
+          <MeleeCard project={project} onChange={onChange} />
+        </div>
+      )}
+
       {normalizedTab === 'callbacks' && (
         <div className="p-4 sm:p-5 space-y-4">
           <SectionHeader

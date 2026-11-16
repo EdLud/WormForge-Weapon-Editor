@@ -60,10 +60,16 @@ const FIRE_TYPE_OPTIONS: { id: FireType; label: string; defaultDonor: string; de
     desc: 'Continuous short-range stream (shares the 0x3c–0x64 gun slab for inspection).',
   },
   {
+    id: 'melee',
+    label: 'Melee (Swing / Strike)',
+    defaultDonor: 'baseball_bat',
+    desc: 'The aiming phase is the attack: Space swings the held art and a scan box hits what it reaches. No projectile, no ammo.',
+  },
+  {
     id: 'special',
     label: 'Special / Utility Tool',
     defaultDonor: 'fire_punch',
-    desc: 'Melee strikes, drills, traversal tools, and turn utilities.',
+    desc: 'Drills, traversal tools, and turn utilities that use a native behaviour.',
   },
 ];
 

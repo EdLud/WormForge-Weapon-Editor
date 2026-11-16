@@ -462,6 +462,42 @@ table draws the same clip a few ticks behind itself:
   spec.clip)` normalises it); a bare `spec.echo` still forces the layer but draws
   nothing, which is the old key's behaviour.
 
+### The melee strike (`melee`)
+
+`melee = { radius, width, follow_swing, hit_frame, push = "aim" | { x, y }, power,
+lift, once, spare_shooter, hit = function(victim, vx, vy) ... end }` turns the
+swing into the attack: the weapon fires nothing, and on one tick of the clip a
+box in front of the worm is tested against the living worms.
+
+- **The box is the engine's own placement**, not a frame of reference of its own.
+  `rot_w = rot + PI * weap_radial_rotation`, so "out along the weapon" is
+  `(sin rot_w, -cos rot_w)`, multiplied by the sign of `weap_radius`: a negative
+  radius (art whose grip sits above its pivot, which is most hand-drawn art) puts
+  the weapon on the other side of the worm, and the strike reaches the other way.
+  `follow_swing` turns that vector by the clip's `angle` at the hit frame,
+  mirrored with the side, so a cut catches a worm the aim pose would miss.
+  `radius` is the reach outward and `width` the arc's half-width; `along` may
+  start 3 px behind the worm, so a worm at its feet is still hit.
+- **The tick is the clip's**, `hit_frame` frames of 50 Hz after the Space press
+  (`0` lands on the press). The swing loop already runs once per game frame, so
+  the frame that matches is the only one that strikes and every peer sees the
+  same tick.
+- **Targets come from `wa.worms.all()`**, a deterministic list, so the hit set and
+  order are identical on every peer. `spare_shooter` (default on) skips the worm
+  that swung, `once` (default on) records each victim for that swing, and the flag
+  resets on the next Space press rather than on a timer.
+- **What a hit does is the weapon's callback**, not the library's: the box test
+  passes `(victim, vx, vy)`, the throw the layer computed, and the callback calls
+  `victim:hurt{ amount = 24, vx = vx, vy = vy }` or, for an electrical strike,
+  `zap.hurt_electric(victim, 24, { push_x = vx, push_y = vy, retain = true })`.
+  Damage, kind, sound and any extra effect stay in the weapon, so the SDK needs no
+  new hit kinds. A callback that raises is `pcall`ed, so one broken weapon cannot
+  take the 50 Hz message down.
+- `push = "aim"` throws along the scan vector scaled by `power`; a `{ x, y }`
+  table is a fixed throw. `lift` is added to either (positive is up).
+- **It needs the swing**, and it forces the layer: `hold_needs_lua` is true for
+  `melee`, so `M.hold` registers the entry (and the swing clock) even for a hold
+  whose art is centred. Nothing else about the hold changes.
 
 ## Verify in game
 

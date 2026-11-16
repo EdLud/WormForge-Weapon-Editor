@@ -894,6 +894,9 @@ function M.hold_needs_lua(spec)
   -- The held art on WA's firing frames is ours too (`keep_firing`): the engine
   -- draws it there only while `h.firing` is set, which a burst repeats without.
   if spec.keep_firing ~= nil then return true end
+  -- A melee strike is simulated by the swing loop (`melee` in the spec), which
+  -- only exists once the entry is registered, so it takes the layer path too.
+  if spec.melee ~= nil then return true end
   -- A second hand is the layer's: `HoldSpec` has exactly one hand slot.
   if type(spec.extra_hand) == "table" and spec.extra_hand.draw ~= false then return true end
   return false
@@ -1024,6 +1027,49 @@ end
 -- One aiming frame of the engine's draw, as a quad: `draw_holds` in
 -- `worm_hold.rs`, aim branch only. The put-away and firing poses are not drawn
 -- here, because the engine keeps them (PX's aiming has no put-away of its own).
+-- The second hand (`extra_hand`): the same measurement as the engine's hand
+-- (`rot - PI*radial_rotation` for the position, `rot + PI*rotation` for the
+-- drawn angle), its own radius, scale and cell, and the first hand's sheet
+-- unless it names one. It carries the swing's nudge with the weapon, so a
+-- two-handed swing does not slide apart, and it is drawn on the firing frames
+-- too (`hold_draw_fire`), so a support hand does not vanish when the firing
+-- sheet replaces the gun.
+local function hold_draw_extra_hand(entry, w, rot, base, facing, pose, fire_pass, alpha)
+  local x = entry.extra_hand
+  if not x or not (x.sheet or entry.hand) then return end
+  -- The firing pass is its own pose, so the support hand has its own grip for
+  -- it (`fire_radius` / `fire_rotation` / `fire_scale` / `fire_offset`), and
+  -- unset keys mean "the aiming numbers". `fire_draw = false` keeps it off
+  -- those frames only.
+  local fx = fire_pass and x.fire or nil
+  if fire_pass and x.fire_draw == false then return end
+  local pi = math.pi
+  -- Per key, not per table: a `fire_radius` on its own must not zero the
+  -- aiming offset (`0` is truthy in Lua, so `fx and fx.ox` would).
+  local radius = (fx and fx.radius) or x.radius
+  local rot_turns = (fx and fx.rotation) or x.rotation
+  local grip_scale = (fx and fx.scale) or x.scale
+  local gx = (fx and fx.ox) or x.ox
+  local gy = (fx and fx.oy) or x.oy
+  -- The first hand's size rule (`base * scale`), so two hands at scale 1 are
+  -- the same size on the same weapon.
+  local xsize = base * (grip_scale or 1.0)
+  local rot_x = rot - pi * (x.radial_rotation or 1.0)
+  local xx = w.x + facing * wa.math.sin(rot_x) * (radius or 0)
+  local xy = w.y - wa.math.cos(rot_x) * (radius or 0)
+  local x_ang = (rot + pi * (rot_turns or 1.0)) * facing
+  local xox = (gx + (pose and pose.dx or 0)) * xsize
+  local xoy = (gy + (pose and pose.dy or 0)) * xsize
+  if xox ~= 0 or xoy ~= 0 then
+    if facing < 0 then xox = -xox end
+    local cr, sr = wa.math.cos(x_ang), wa.math.sin(x_ang)
+    xx = xx + xox * cr - xoy * sr
+    xy = xy + xox * sr + xoy * cr
+  end
+  local x_half = (x.size or HOLD_HAND_CELL) * xsize * 0.5
+  hold_quad(x.sheet or entry.hand, xx, xy, x_ang, x_half, x_half, facing, 0, w, alpha or 1)
+end
+
 -- `alpha_mul` and `blend` are the echo trail's: a ghost is this same quad at an
 -- earlier tick, fainter and (usually) additive. `weapon_only` leaves the hand
 -- out, because the hand is anchored to the worm: a smear of it reads as a bug,
@@ -1094,29 +1140,8 @@ local function hold_draw_aim(entry, w, ws, pose, firing_hold, alpha_mul, blend, 
     hold_quad(entry.hand, hx, hy, h_ang, h_half, h_half, facing, 0, w, alpha)
   end
 
-  -- The second hand: the same measurement as the engine's (`rot - PI*radial`,
-  -- rotation `rot + PI*hand_rotation`), its own radius and scale, and the
-  -- first hand's sheet unless it names one. It carries the swing's nudge with
-  -- the weapon, so a two-handed swing does not slide apart.
-  local x = not weapon_only and entry.extra_hand or nil
-  if x and (x.sheet or entry.hand) then
-    -- The same size rule as the first hand (`grow(counter) * scale`), so two
-    -- hands at scale 1 are the same size on the same weapon.
-    local xsize = base * (x.scale or 1.0)
-    local rot_x = rot - pi * (x.radial_rotation or 1.0)
-    local xx = w.x + facing * wa.math.sin(rot_x) * (x.radius or 0)
-    local xy = w.y - wa.math.cos(rot_x) * (x.radius or 0)
-    local x_ang = (rot + pi * (x.rotation or 1.0)) * facing
-    local xox = (x.ox + (pose and pose.dx or 0)) * xsize
-    local xoy = (x.oy + (pose and pose.dy or 0)) * xsize
-    if xox ~= 0 or xoy ~= 0 then
-      if facing < 0 then xox = -xox end
-      local cr, sr = wa.math.cos(x_ang), wa.math.sin(x_ang)
-      xx = xx + xox * cr - xoy * sr
-      xy = xy + xox * sr + xoy * cr
-    end
-    local x_half = (x.size or HOLD_HAND_CELL) * xsize * 0.5
-    hold_quad(x.sheet or entry.hand, xx, xy, x_ang, x_half, x_half, facing, 0, w, alpha)
+  if not weapon_only then
+    hold_draw_extra_hand(entry, w, rot, base, facing, pose, false, alpha)
   end
 end
 
@@ -1172,6 +1197,11 @@ local function hold_draw_fire(entry, w, ws)
     end
     hold_quad(fire.hand, hx, hy, h_ang, h_half, h_half, facing, 0, w, 1)
   end
+
+  -- The support hand stays on the gun while the firing sheet replaces it, at
+  -- full size and with its own grip numbers (a shot is not an aim, so no
+  -- draw-out and no clip carry).
+  hold_draw_extra_hand(entry, w, rot, 1.0, facing, nil, true)
 end
 
 -- The firing window, one step per 50 Hz frame. WA's two firing states are the
@@ -1233,6 +1263,68 @@ local function hold_worm_state(entry, w)
     per_worm[w.id] = ws
   end
   return per_worm, ws
+end
+
+-- The melee strike (`melee` in the spec). The box is the engine's own hold
+-- geometry, not a frame of reference of its own: the weapon sits at
+-- `rot_w = rot + PI*weap_radial_rotation` from the worm, so "along the weapon" is
+-- that same vector, and the clip's angle at the hit frame turns it about the
+-- worm (mirrored with the side, as the drawn angle is). The editor's red box
+-- and this test are one formula.
+local MELEE_SLACK = 3
+
+local function hold_melee_scan(entry, w, pose)
+  local pi = math.pi
+  local facing = w.facing < 0 and -1 or 1
+  local a = w.aim or 0.5
+  local rot_w = (1.0 - a) * pi + pi * entry.weap_radial_rotation
+  local swing = 0
+  if entry.melee.follow_swing and pose and pose.angle then
+    swing = pose.angle * pi / 180.0
+  end
+  local s = swing * facing
+  -- The weapon is drawn at `(sin rot_w, -cos rot_w) * weap_radius`, so a
+  -- negative radius (art whose grip sits above its pivot) puts it on the other
+  -- side of the worm and the strike reaches the other way.
+  local side = (entry.weap_radius or 0) < 0 and -1 or 1
+  local x = side * facing * wa.math.sin(rot_w)
+  local y = side * -wa.math.cos(rot_w)
+  local cr, sr = wa.math.cos(s), wa.math.sin(s)
+  return x * cr - y * sr, x * sr + y * cr
+end
+
+-- One strike, at the swing's hit frame. Worms only: `wa.worms.all()` is a
+-- deterministic list, so every peer hits the same worms in the same order, and
+-- the weapon's own `hit` callback decides what a hit does (damage, kind, sound).
+local function hold_melee_strike(entry, w, ws)
+  local m = entry.melee
+  local pose = nil
+  if entry.clip then pose = M.clip_pose(entry.clip, m.hit_frame) end
+  local vx, vy = hold_melee_scan(entry, w, pose)
+  local push_x = m.push_aim and (vx * m.power) or m.fvx
+  local push_y = (m.push_aim and (vy * m.power) or m.fvy) - m.lift
+  local done = ws.melee_hit
+  if not done then
+    done = {}
+    ws.melee_hit = done
+  end
+  local worms = wa.worms.all()
+  for i = 1, #worms do
+    local o = worms[i]
+    local take = (o.hp or 0) > 0
+    if m.spare_shooter and o.id == w.id then take = false end
+    if m.once and done[o.id] then take = false end
+    if take then
+      local dx, dy = o.x - w.x, o.y - w.y
+      local along = dx * vx + dy * vy
+      local across = -dx * vy + dy * vx
+      if along >= -MELEE_SLACK and along <= m.radius and math.abs(across) <= m.width then
+        done[o.id] = true
+        -- A broken callback must not take the whole 50 Hz message down with it.
+        if m.hit then pcall(m.hit, o, push_x, push_y) end
+      end
+    end
+  end
 end
 
 -- True while the engine would draw this worm's hold: alive, visible, body
@@ -1378,8 +1470,15 @@ local function swing_ensure()
           else
             if space and not ws.space and not ws.swing then
               ws.swing = now
+              ws.melee_hit = nil
             end
             ws.space = space
+            -- The strike lands on one tick of the swing, and this loop runs once
+            -- per 50 Hz frame, so the frame that matches is the only one that
+            -- hits. `hit_frame = 0` lands on the press itself.
+            if entry.melee and ws.swing and now - ws.swing == entry.melee.hit_frame then
+              hold_melee_strike(entry, w, ws)
+            end
             if ws.swing and now - ws.swing >= entry.clip.ticks then
               ws.swing = nil
               -- The claim eats WA's fire, so a swing that changes nothing has
@@ -1467,12 +1566,35 @@ function M.hold(ctx, spec)
       hoy = (type(fire_spec.hand_offset) == "table" and fire_spec.hand_offset.y) or 0,
     }
   end
+  -- The melee strike. It needs the clip: the hit frame is a tick of the swing.
+  local melee_spec = type(spec.melee) == "table" and spec.melee or nil
+  local melee = nil
+  if melee_spec and clip then
+    local push = melee_spec.push
+    melee = {
+      radius = math.max(1, melee_spec.radius or 32),
+      width = math.max(0, melee_spec.width or 16),
+      follow_swing = melee_spec.follow_swing ~= false,
+      hit_frame = math.max(0, math.floor(melee_spec.hit_frame or 0)),
+      -- `push = "aim"` throws along the weapon; a `{ x, y }` table is the
+      -- literal throw. `lift` is added to either (positive is up).
+      push_aim = push == nil or push == "aim",
+      power = melee_spec.power or 0,
+      fvx = type(push) == "table" and (push.x or 0) or 0,
+      fvy = type(push) == "table" and (push.y or 0) or 0,
+      lift = melee_spec.lift or 0,
+      once = melee_spec.once ~= false,
+      spare_shooter = melee_spec.spare_shooter ~= false,
+      hit = melee_spec.hit,
+    }
+  end
   local entry = {
     weapon = weapon,
     sheet = spec.sheet,
     silent = silent,
     muted = false,
     clip = clip,
+    melee = melee,
     hox = hand_off.x or 0,
     hoy = hand_off.y or 0,
     cell_w = spec.cell_w or cell,
@@ -1512,6 +1634,20 @@ function M.hold(ctx, spec)
           size = spec.extra_hand.size or HOLD_HAND_CELL,
           ox = (type(spec.extra_hand.offset) == "table" and spec.extra_hand.offset.x) or 0,
           oy = (type(spec.extra_hand.offset) == "table" and spec.extra_hand.offset.y) or 0,
+          fire_draw = spec.extra_hand.fire_draw,
+          -- The firing pass's own grip, nil when unset ("the aiming numbers").
+          fire = (spec.extra_hand.fire_radius ~= nil
+              or spec.extra_hand.fire_rotation ~= nil
+              or spec.extra_hand.fire_scale ~= nil
+              or type(spec.extra_hand.fire_offset) == "table")
+              and {
+                radius = spec.extra_hand.fire_radius,
+                rotation = spec.extra_hand.fire_rotation,
+                scale = spec.extra_hand.fire_scale,
+                ox = type(spec.extra_hand.fire_offset) == "table" and spec.extra_hand.fire_offset.x or nil,
+                oy = type(spec.extra_hand.fire_offset) == "table" and spec.extra_hand.fire_offset.y or nil,
+              }
+            or nil,
         }
       or nil,
   }

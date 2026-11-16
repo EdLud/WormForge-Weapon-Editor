@@ -1,4 +1,12 @@
-export type FireType = 'power' | 'hitscan' | 'drop' | 'cursor' | 'special' | 'arrow' | 'spray';
+export type FireType =
+  | 'power'
+  | 'hitscan'
+  | 'drop'
+  | 'cursor'
+  | 'special'
+  | 'arrow'
+  | 'spray'
+  | 'melee';
 
 export type MissileAction = 'none' | 'homing' | 'bounce' | 'roam' | 'dig';
 export type BurstPayload = 'nothing' | 'clusters' | 'fire';
@@ -255,6 +263,43 @@ export interface HoldConfig {
   extraHand?: ExtraHandConfig;
 }
 
+/** How the strike throws its victim. */
+export type MeleePushMode = 'aim' | 'fixed';
+
+/** The hit kind the strike hands to `worm:hurt`. */
+export type MeleeKind = 'normal' | 'taze';
+
+export interface MeleeConfig {
+  enabled: boolean;
+  /** Reach along the weapon, in px from the worm's body. */
+  radius: number;
+  /** Half-width across that reach, in px: the swing's arc. */
+  width: number;
+  /**
+   * Scan along the drawn swing angle at the hit frame instead of the aim pose.
+   * A cut through an arc then sweeps the box with the art, which is what makes
+   * an overhead swing reach an overhead worm.
+   */
+  followSwing: boolean;
+  /** 50 Hz ticks after the Space press at which the box lands. */
+  hitFrame: number;
+  damage: number;
+  kind: MeleeKind;
+  /** `aim` throws away from the worm along the weapon, `fixed` uses vx/vy. */
+  pushMode: MeleePushMode;
+  /** `aim` mode: the shove, in px per frame (WA's `hurt` speed). */
+  pushPower: number;
+  /** `fixed` mode: the literal `hurt` speed. */
+  pushVx: number;
+  pushVy: number;
+  /** Upward lift added to either mode, in px per frame (positive = up). */
+  lift: number;
+  /** Hit each worm once per swing, not once per frame the box is live. */
+  oncePerTarget: boolean;
+  /** Leave the firing worm out of its own strike. */
+  spareShooter: boolean;
+}
+
 export interface ExtraHandConfig {
   enabled: boolean;
   /** Uploaded art for the second hand; unset reuses the first hand's sheet. */
@@ -271,6 +316,19 @@ export interface ExtraHandConfig {
   /** The art nudged inside its own cell, in sheet pixels, scaled by `scale`. */
   offsetX: number;
   offsetY: number;
+  /**
+   * The firing role's own grip, the counterpart of `fireHandRadius` and
+   * friends: the firing pass is its own pose, so the support hand can sit
+   * somewhere else on the firing sheet. Unset means "the aiming numbers",
+   * which is the usual case (`fireEnabled` stays on).
+   */
+  fireRadius?: number;
+  fireRotation?: number;
+  fireScale?: number;
+  fireOffsetX?: number;
+  fireOffsetY?: number;
+  /** Keep the second hand on the firing frames. Unset means yes. */
+  fireDraw?: boolean;
 }
 
 export interface WeaponDefaults {
@@ -761,6 +819,13 @@ export interface WeaponProject {
    * project carries it disabled, so the panel has numbers to show.
    */
   aimClip?: AimClipConfig;
+  /**
+   * The melee strike: the box the swing scans, the tick it lands on and how the
+   * victim is thrown. Drawn and simulated from one geometry (the aim pose plus
+   * the clip's angle at that tick), so the red box in the preview is the box the
+   * game tests.
+   */
+  melee?: MeleeConfig;
   panel_icon: string; // stock name or custom path
   customIconFile?: File;
   customIconPreview?: string;
