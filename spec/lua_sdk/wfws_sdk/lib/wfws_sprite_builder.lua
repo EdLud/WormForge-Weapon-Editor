@@ -809,6 +809,10 @@ local HOLD_KEYS = {
 
 local hold_entries = {}
 local hold_state = {}              -- [entry][worm id] = { counter, phase, frame, muted }
+-- The swing is one at a time: WA is turn based, so exactly one worm can hold a
+-- weapon up and press Space. `swing_of[entry] = { worm, start, aim, facing,
+-- taken, hit }`, and no per-worm table for it.
+local swing_of = {}
 local hold_hooked = false
 
 -- `grow` from `worm_hold.rs`: the 20-frame draw-out, one invisible frame first.
@@ -1074,17 +1078,19 @@ end
 -- earlier tick, fainter and (usually) additive. `weapon_only` leaves the hand
 -- out, because the hand is anchored to the worm: a smear of it reads as a bug,
 -- not as motion.
-local function hold_draw_aim(entry, w, ws, pose, firing_hold, alpha_mul, blend, weapon_only)
+local function hold_draw_aim(entry, w, ws, pose, firing_hold, alpha_mul, blend, weapon_only,
+                             aim_ov, facing_ov, full_size)
   local pi = math.pi
-  local facing = w.facing < 0 and -1 or 1
+  local facing = (facing_ov or w.facing) < 0 and -1 or 1
   local static = entry.static_angles
-  local a = static and 0.5 or (w.aim or 0.5)
+  local a = static and 0.5 or (aim_ov or w.aim or 0.5)
   local rot = (1.0 - a) * pi
   local rot_w = rot + pi * entry.weap_radial_rotation
   local rot_h = rot - pi * entry.hand_radial_rotation
   -- Aim frames use `counter - 1`; the engine's first one is deliberately blank.
-  -- A firing frame shows the art at full size, as `draw_holds` does.
-  local base = firing_hold and 1.0 or hold_grow(ws.counter - 1)
+  -- A firing frame shows the art at full size, as `draw_holds` does, and so
+  -- does a swing: the clip is the whole animation, not an aim being drawn out.
+  local base = (firing_hold or full_size) and 1.0 or hold_grow(ws.counter - 1)
   local scale = pose and pose.scale or 1
   local size = base * entry.weap_scale * scale
   local frames = math.max(1, entry.frames)
@@ -1259,7 +1265,7 @@ local function hold_worm_state(entry, w)
   end
   local ws = per_worm[w.id]
   if not ws then
-    ws = { counter = 0, phase = 0.0, frame = -1, swing = nil, space = false }
+    ws = { counter = 0, phase = 0.0, frame = -1 }
     per_worm[w.id] = ws
   end
   return per_worm, ws
@@ -1273,22 +1279,24 @@ end
 -- and this test are one formula.
 local MELEE_SLACK = 3
 
-local function hold_melee_scan(entry, w, pose)
+local function hold_melee_scan(entry, w, pose, aim_ov, facing_ov)
   local pi = math.pi
-  local facing = w.facing < 0 and -1 or 1
-  local a = w.aim or 0.5
-  local rot_w = (1.0 - a) * pi + pi * entry.weap_radial_rotation
+  local facing = (facing_ov or w.facing) < 0 and -1 or 1
+  local a = aim_ov or w.aim or 0.5
+  -- The worm's own aim, and nothing else. `worm.aim` is WA's sweep (0 straight
+  -- down, 0.5 level, 1 straight up) and `facing` is the side, so the direction is
+  -- `(facing * sin(a*PI), cos(a*PI))`, world y down. The art's `weap_rotation`
+  -- and `weap_radius` are drawing controls: turning a sheet or moving its pivot
+  -- does not change where the worm points, and using either here is what put the
+  -- box behind the striker.
+  local phi = a * pi
   local swing = 0
   if entry.melee.follow_swing and pose and pose.angle then
     swing = pose.angle * pi / 180.0
   end
   local s = swing * facing
-  -- The weapon is drawn at `(sin rot_w, -cos rot_w) * weap_radius`, so a
-  -- negative radius (art whose grip sits above its pivot) puts it on the other
-  -- side of the worm and the strike reaches the other way.
-  local side = (entry.weap_radius or 0) < 0 and -1 or 1
-  local x = side * facing * wa.math.sin(rot_w)
-  local y = side * -wa.math.cos(rot_w)
+  local x = facing * wa.math.sin(phi)
+  local y = wa.math.cos(phi)
   local cr, sr = wa.math.cos(s), wa.math.sin(s)
   return x * cr - y * sr, x * sr + y * cr
 end
@@ -1296,34 +1304,49 @@ end
 -- One strike, at the swing's hit frame. Worms only: `wa.worms.all()` is a
 -- deterministic list, so every peer hits the same worms in the same order, and
 -- the weapon's own `hit` callback decides what a hit does (damage, kind, sound).
-local function hold_melee_strike(entry, w, ws)
+local function hold_melee_strike(entry, w, st)
   local m = entry.melee
   local pose = nil
   if entry.clip then pose = M.clip_pose(entry.clip, m.hit_frame) end
-  local vx, vy = hold_melee_scan(entry, w, pose)
+  -- The aim the swing was thrown with, not the one WA has drifted to since: a
+  -- swing is one committed motion, and a taken worm can still turn its aim.
+  local vx, vy = hold_melee_scan(entry, w, pose, st.aim, st.facing)
   local push_x = m.push_aim and (vx * m.power) or m.fvx
   local push_y = (m.push_aim and (vy * m.power) or m.fvy) - m.lift
-  local done = ws.melee_hit
-  if not done then
-    done = {}
-    ws.melee_hit = done
-  end
+  local done = st.hit or {}
   local worms = wa.worms.all()
+  local hits = 0
   for i = 1, #worms do
     local o = worms[i]
-    local take = (o.hp or 0) > 0
-    if m.spare_shooter and o.id == w.id then take = false end
-    if m.once and done[o.id] then take = false end
-    if take then
-      local dx, dy = o.x - w.x, o.y - w.y
-      local along = dx * vx + dy * vy
-      local across = -dx * vy + dy * vx
-      if along >= -MELEE_SLACK and along <= m.radius and math.abs(across) <= m.width then
-        done[o.id] = true
-        -- A broken callback must not take the whole 50 Hz message down with it.
-        if m.hit then pcall(m.hit, o, push_x, push_y) end
-      end
+    local skip = nil
+    if (o.hp or 0) <= 0 then skip = "dead"
+    elseif m.spare_shooter and o.id == w.id then skip = "self"
+    elseif m.once and done[o.id] then skip = "already hit" end
+    local dx, dy = o.x - w.x, o.y - w.y
+    local along = dx * vx + dy * vy
+    local across = -dx * vy + dy * vx
+    local inside = along >= -MELEE_SLACK and along <= m.radius and math.abs(across) <= m.width
+    -- Under `log` every worm is reported with its own distance, so an empty box
+    -- says whether it was behind the striker (bad `facing`), out of reach, or out
+    -- of the arc, instead of only that nothing was hit.
+    if m.log then
+      wa.log(string.format("[melee] worm %d%s: d %.1f,%.1f along %.1f across %.1f %s%s",
+        o.id, o.id == w.id and " (self)" or "", dx, dy, along, across,
+        inside and "inside" or "outside", skip and (" [" .. skip .. "]") or ""))
     end
+    if inside and not skip then
+      done[o.id] = true
+      hits = hits + 1
+      -- A broken callback must not take the whole 50 Hz message down with it.
+      if m.hit then pcall(m.hit, o, push_x, push_y) end
+    end
+  end
+  st.hit = done
+  st.hits = (st.hits or 0) + hits
+  if m.log then
+    wa.log(string.format("[melee] hit frame %d: %d worm(s) of %d, scan %.2f,%.2f, reach %d wide %d, aim %.2f facing %s, push %.1f,%.1f",
+      m.hit_frame, hits, #worms, vx, vy, m.radius, m.width,
+      st.aim or -1, tostring(st.facing), push_x, push_y))
   end
 end
 
@@ -1352,10 +1375,14 @@ local function hold_ensure_hook()
         -- A worm keeps its state while the weapon is its own: aiming, in the
         -- firing window, or in between. The aim states are not the test, or the
         -- firing window would lose its start on the first firing frame.
+        local swing = swing_of[entry]
         for j = 1, #worms do
           local w = worms[j]
           local ws = per_worm[w.id]
-          if ws and not (w.hp and w.hp > 0 and w.visible and w.body_visible
+          -- The swing's own worm keeps its state even if WA has moved the
+          -- selection away from us mid-clip: the swing is what draws it.
+          local mine = swing and swing.start and swing.worm_id == w.id
+          if ws and not mine and not (w.hp and w.hp > 0 and w.visible and w.body_visible
             and w.weapon == entry.weapon) then
             per_worm[w.id] = nil
           end
@@ -1366,14 +1393,23 @@ local function hold_ensure_hook()
         local aiming = hold_aiming(entry, w)
         local owns = w.hp and w.hp > 0 and w.visible and w.body_visible
           and w.weapon == entry.weapon
+        local st = swing_of[entry]
+        -- A swing in progress is its own reason to draw: the pack took the
+        -- worm, so WA's state is no longer the clock that ends the animation.
+        -- `wa.worms.all()` hands out a new handle per call and the engine defines
+        -- no `__eq`, so a stored handle never compares equal to the one in this
+        -- frame's list. The stable id (team * 16 + index) is the comparison.
+        local swinging = st and st.start and st.worm_id == w.id and true or false
         local ws = nil
-        if owns and (aiming or entry.fire or entry.keep_firing) then
+        -- A running swing is its own reason to draw (the clip owns the worm),
+        -- whether or not WA still shows this weapon selected.
+        if swinging or (owns and (aiming or entry.fire or entry.keep_firing)) then
           local _, state = hold_worm_state(entry, w)
           ws = state
         end
         if ws then
           local firing = hold_fire_step(entry, w, ws, now)
-          if aiming then
+          if aiming or swinging then
             -- Advance once per 50 Hz frame, never once per rendered frame: the
             -- render rate is not the game's and differs between machines.
             if ws.frame ~= now then
@@ -1388,9 +1424,15 @@ local function hold_ensure_hook()
             if not (firing and entry.fire and entry.fire.hide_main) then
               local pose = nil
               local tick = nil
-              if entry.clip and ws.swing then
-                tick = now - ws.swing
+              local aim_ov = nil
+              local face_ov = nil
+              if swinging then
+                tick = now - st.start
                 pose = M.clip_pose(entry.clip, tick)
+                -- The aim the swing was thrown with, so a taken worm that turns
+                -- its aim mid-clip does not drag the art round with it.
+                aim_ov = st.aim
+                face_ov = st.facing
               end
               -- Ghost trail: the same clip at earlier ticks, farthest first so
               -- the live art lands on its own smear. The pose is a pure
@@ -1403,12 +1445,13 @@ local function hold_ensure_hook()
                     local ghost = M.clip_pose(entry.clip, gt)
                     if ghost then
                       hold_draw_aim(entry, w, ws, ghost, false,
-                        echo.fade ^ k, echo.blend, true)
+                        echo.fade ^ k, echo.blend, true, aim_ov, face_ov)
                     end
                   end
                 end
               end
-              hold_draw_aim(entry, w, ws, pose)
+              hold_draw_aim(entry, w, ws, pose, nil, nil, nil, nil, aim_ov, face_ov,
+                swinging)
               mute = true
             end
           else
@@ -1446,6 +1489,7 @@ end
 -- `wa.on.draw` must never decide a swing, because its rate is the renderer's.
 local swing_hooked = false
 local swing_tick = -1
+local swing_space = false
 
 local function swing_ensure()
   if swing_hooked then return end
@@ -1455,41 +1499,107 @@ local function swing_ensure()
     local now = wa.world.frame() or 0
     if now == swing_tick then return end
     swing_tick = now
-    local keys = wa.world.keys and wa.world.keys() or nil
-    local space = keys and keys.space or false
+    -- WA is turn based: one worm has the turn, and the keys are its player's.
+    -- There is no second swing to reconcile with.
+    local w = nil
     local worms = wa.worms.all()
+    for i = 1, #worms do
+      if worms[i].turn and worms[i].hp and worms[i].hp > 0 then
+        w = worms[i]
+        break
+      end
+    end
+    local keys = wa.world.keys and wa.world.keys() or nil
+    local space = keys and keys.space and true or false
+    -- The edge itself, independent of which entry (if any) can use it.
+    local pressed = space and not swing_space
+    swing_space = space
+    local started = false
     for i = 1, #hold_entries do
       local entry = hold_entries[i]
       if entry.clip then
-        for j = 1, #worms do
-          local w = worms[j]
-          local _, ws = hold_worm_state(entry, w)
-          if not hold_aiming(entry, w) then
-            ws.space = false
-            ws.swing = nil
-          else
-            if space and not ws.space and not ws.swing then
-              ws.swing = now
-              ws.melee_hit = nil
+        local st = swing_of[entry]
+        if not st then
+          st = {}
+          swing_of[entry] = st
+        end
+        local holds = w and w.weapon == entry.weapon
+        local sw = st.worm
+        -- Once the swing owns its worm, only that worm dying ends it early: WA
+        -- has no say in the clip, and a selection that drifts mid-clip must not
+        -- cut the animation short.
+        local live = sw and (sw.hp or 0) > 0
+        if st.start and not live then
+          if st.taken and sw then pcall(sw.release, sw, 0, 0) end
+          st.taken, st.worm, st.worm_id, st.start = nil, nil, nil, nil
+        end
+        if st.start then
+          -- The clip is its own clock: WA's worm states cannot end it, so a
+          -- swing of any length plays in full.
+          local tick = now - st.start
+          -- `>=` with a latch, not `==`: a frame whose message never arrives
+          -- must not cost the swing its hit, and it can still land only once.
+          if entry.melee and not st.struck and tick >= entry.melee.hit_frame then
+            st.struck = true
+            hold_melee_strike(entry, sw, st)
+          end
+          if tick >= entry.clip.ticks then
+            st.start = nil
+            if st.taken then
+              st.taken = nil
+              -- WA flies and lands a released worm, as it does after any shot.
+              pcall(sw.release, sw, 0, 0)
             end
-            ws.space = space
-            -- The strike lands on one tick of the swing, and this loop runs once
-            -- per 50 Hz frame, so the frame that matches is the only one that
-            -- hits. `hit_frame = 0` lands on the press itself.
-            if entry.melee and ws.swing and now - ws.swing == entry.melee.hit_frame then
-              hold_melee_strike(entry, w, ws)
+            st.worm, st.worm_id = nil, nil
+            if entry.melee and entry.melee.log then
+              wa.log(("[melee] swing done: %d ticks, %d hit(s)")
+                :format(entry.clip.ticks, st.hits or 0))
             end
-            if ws.swing and now - ws.swing >= entry.clip.ticks then
-              ws.swing = nil
-              -- The claim eats WA's fire, so a swing that changes nothing has
-              -- to hand the turn back or the worm would sit there for ever.
-              if entry.clip.finish == "end_turn" and wa.world.set_turn_clock then
-                wa.world.set_turn_clock(0)
-              end
+            if entry.clip.finish == "end_turn" and wa.world.set_turn_clock then
+              wa.world.set_turn_clock(0)
             end
           end
+        elseif holds and space and not st.space then
+          -- One press, one swing: the edge is the turn player's synchronised
+          -- keyboard, so every peer starts on the same frame. No aiming state
+          -- test: the claim eats WA's fire, and a melee record resolves its own
+          -- hit in a frame, so the state is never there to be tested.
+          local took = w.take and w:take{ turn = "freeze" } or false
+          st.worm = w
+          st.worm_id = w.id
+          st.start = now
+          st.aim = w.aim
+          st.facing = w.facing
+          st.taken = took or nil
+          st.hit = {}
+          st.hits = 0
+          st.struck = nil
+          started = true
+          if entry.melee and entry.melee.log then
+            -- `aim` is the sweep WA draws, `aim_target` is FireAngle in degrees
+            -- (0 level, +90 up, -90 down, relative to facing): the number the
+            -- shot itself uses, printed here so a press can be checked without
+            -- guessing at the art.
+            wa.log(("[melee] swing at tick %d: %s the worm at %.0f,%.0f (weapon %s), " ..
+              "aim %.3f (FireAngle %.1f deg) facing %d, hit frame %d")
+              :format(now, took and "took" or "could not take", w.x or 0, w.y or 0,
+                tostring(w.weapon), w.aim or -1, w.aim_target or 0, w.facing or 1,
+                entry.melee.hit_frame or 0))
+          end
+          -- `hit_frame = 0` lands on the press itself.
+          if entry.melee and entry.melee.hit_frame == 0 then
+            st.struck = true
+            hold_melee_strike(entry, w, st)
+          end
         end
+        st.space = space
       end
+    end
+    -- A Space press that no layer could use is the one case a swing cannot log
+    -- for itself, and it is the case that looks like "Space does nothing".
+    if pressed and not started and w then
+      wa.log(("[wfws] Space pressed at tick %d, but no hold layer has an entry for weapon %s (the worm %s the turn)")
+        :format(now, tostring(w.weapon), w.turn and "has" or "does not have"))
     end
   end, { msgs = { wa.msg.FRAME_FINISH } })
 end
@@ -1585,6 +1695,7 @@ function M.hold(ctx, spec)
       lift = melee_spec.lift or 0,
       once = melee_spec.once ~= false,
       spare_shooter = melee_spec.spare_shooter ~= false,
+      log = melee_spec.log and true or false,
       hit = melee_spec.hit,
     }
   end

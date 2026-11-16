@@ -1202,6 +1202,9 @@ export function generateLuaCode(project: WeaponProject): string {
         if ((melee.lift ?? 0) !== 0) holdRows.push(`  lift = ${formatNumber(melee.lift)},`);
         if (melee.oncePerTarget === false) holdRows.push('  once = false,');
         if (melee.spareShooter === false) holdRows.push('  spare_shooter = false,');
+        // The only way to tell a swing that never started from one that tested
+        // an empty box: the tick, the scan vector and every worm it took.
+        if (melee.log) holdRows.push('  log = true,');
         // What a hit does. `sb.hold` tests the box and hands over the victim and
         // the throw; this callback is the weapon's own.
         if (melee.kind === 'taze') {

@@ -424,6 +424,29 @@ arithmetic the editor's preview runs.
   the renderer's. The start tick is stored per weapon and worm, and `clip_pose`
   is evaluated from `wa.world.frame() - start`, so every peer plays the same
   frames.
+- **One swing at a time, because the game is turn based.** One worm has the turn
+  and its player's keyboard is the only input, so the sampler asks for that worm
+  (`worm.turn`) and keeps one swing per weapon, not a map per worm. There is no
+  second swing to reconcile with, and code that pretends otherwise hides bugs.
+- **The swing takes the worm** (`worm:take{ turn = "freeze" }`). The clip is a
+  custom animation, so nothing the engine does may end it: WA's own worm states
+  are not the clock. A taken worm stays where it is, WA's fire is eaten, and the
+  turn timer stops for the clip, so a swing of any length plays in full and a
+  worm cannot walk away mid-cut. The aim and facing at the press are latched for
+  the whole clip (a swing is one committed motion). When it ends the worm is
+  given back with `worm:release(0, 0)`; `finish = "end_turn"` then ends the turn.
+- **The art is drawn while the swing runs, not while the worm aims.** The draw
+  pass keeps rendering the clip's quads for every tick even if WA has moved the
+  worm out of its aim pose (which is what stopped a firing animation after a
+  single frame), at full size (there is no 20-frame draw-out to replay), with the
+  engine's own sheet muted underneath.
+- **A worm handle is not comparable.** `wa.worms.all()` builds a new
+  `WormHandle` userdata on every call and the engine defines no `__eq`, so
+  `st.worm == w` is false in the next frame even for the same worm. The swing
+  keeps the handle for the calls it has to make (`take`, `release`, the strike)
+  and compares `worm.id` (team * 16 + index, stable across peers). Comparing
+  handles is why a swing once ran, hit and released with no art at all: the draw
+  pass thought no swing was in progress.
 - **Every channel is relative to the engine's aim pose.** `angle` is degrees
   added to the drawn angle *before* the side mirror (so the art cuts the same
   way both ways round), `dx`/`dy` are sheet pixels in the hold `offset`'s own
@@ -469,13 +492,15 @@ lift, once, spare_shooter, hit = function(victim, vx, vy) ... end }` turns the
 swing into the attack: the weapon fires nothing, and on one tick of the clip a
 box in front of the worm is tested against the living worms.
 
-- **The box is the engine's own placement**, not a frame of reference of its own.
-  `rot_w = rot + PI * weap_radial_rotation`, so "out along the weapon" is
-  `(sin rot_w, -cos rot_w)`, multiplied by the sign of `weap_radius`: a negative
-  radius (art whose grip sits above its pivot, which is most hand-drawn art) puts
-  the weapon on the other side of the worm, and the strike reaches the other way.
-  `follow_swing` turns that vector by the clip's `angle` at the hit frame,
-  mirrored with the side, so a cut catches a worm the aim pose would miss.
+- **The box is the worm's aim, and nothing else.** `worm.aim` is WA's sweep
+  (`0` straight down, `0.5` level, `1` straight up) and `worm.facing` is the side,
+  so the direction is `(facing * sin(aim * PI), cos(aim * PI))`, world y down.
+  No art enters it: `weap_radius` moves the picture and `weap_rotation` turns the
+  sheet, and neither changes where the worm points (the two wrong answers before
+  this one used the radius, then the sheet's own drawn angle, so the box landed
+  behind the striker). `follow_swing` turns the vector by the clip's `angle` at
+  the hit frame, mirrored with the side, so a cut catches a worm the aim pose
+  would miss.
   `radius` is the reach outward and `width` the arc's half-width; `along` may
   start 3 px behind the worm, so a worm at its feet is still hit.
 - **The tick is the clip's**, `hit_frame` frames of 50 Hz after the Space press
@@ -486,6 +511,14 @@ box in front of the worm is tested against the living worms.
   order are identical on every peer. `spare_shooter` (default on) skips the worm
   that swung, `once` (default on) records each victim for that swing, and the flag
   resets on the next Space press rather than on a timer.
+- **`log = true`** prints the strike to WormForge's log: the swing's start (tick,
+  position, weapon, aim, facing), **one line per worm with its own
+  `along`/`across`** and why it was skipped, a summary with the hit tick, the scan
+  vector and the reach, and the swing's end. An empty box therefore names its own
+  cause (`outside` behind the striker, out of reach, out of the arc), a missing
+  `swing at tick …` line means the press never reached the sampler, and
+  `[wfws] Space pressed … no hold layer has an entry` means the weapon's layer is
+  not installed at all.
 - **What a hit does is the weapon's callback**, not the library's: the box test
   passes `(victim, vx, vy)`, the throw the layer computed, and the callback calls
   `victim:hurt{ amount = 24, vx = vx, vy = vy }` or, for an electrical strike,
@@ -498,6 +531,13 @@ box in front of the worm is tested against the living worms.
 - **It needs the swing**, and it forces the layer: `hold_needs_lua` is true for
   `melee`, so `M.hold` registers the entry (and the swing clock) even for a hold
   whose art is centred. Nothing else about the hold changes.
+- **The record's own fire type does not matter.** The claim eats WA's fire and
+  the swing takes the worm, so a melee weapon is never played by WA's own
+  handler. The editor still bases it on the Sheep Launcher rather than WA's
+  Baseball Bat: a special melee subtype resolves its whole hit inside one native
+  frame, so the worm never stays anywhere long enough to animate, which is what
+  made the bat unusable as a base. A power record also keeps WA's aim phase and
+  its firing pipeline, so the worm is aiming normally when Space arrives.
 
 ## Verify in game
 

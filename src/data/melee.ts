@@ -26,6 +26,7 @@ export const DEFAULT_MELEE: MeleeConfig = {
   lift: 1,
   oncePerTarget: true,
   spareShooter: true,
+  log: false,
 };
 
 /** How far inside the near edge the box reaches, so a worm at the feet is hit. */
@@ -37,29 +38,30 @@ export function meleeRot(aim: number): number {
 }
 
 /**
- * The unit vector "out along the weapon" for one aim, and how far the swing has
- * turned it. `(sin(rot_w), -cos(rot_w)) * weap_radius` is the engine's own offset
- * from the worm to the held art, so a **negative** radius (the grip is above the
- * pivot: most hand-drawn art) puts the weapon on the other side of the worm and
- * "forward" is the opposite direction. The swing's angle rotates that vector,
- * mirrored with the side exactly as the drawn angle is (`(base + swing) *
- * facing`), so a cut moves the box the same way on both sides.
+ * The unit vector the strike reaches along: the worm's own aim, turned by the
+ * swing. Nothing about the art is in it.
+ *
+ * `worm.aim` is WA's 180 degree sweep, `0` straight down, `0.5` level, `1`
+ * straight up, and `facing` says which side, so the aim direction is
+ * `(facing * sin(aim*PI), cos(aim*PI))` (world y is down). The held art's
+ * `weap_rotation` and `weap_radius` are drawing controls only: rotating a sheet
+ * or moving its pivot does not change where the worm points, and folding either
+ * into the box is what pointed it backwards before.
+ *
+ * The swing's angle is applied before the side mirror, so a cut turns the box the
+ * same way on both sides (`swing * facing`, exactly as the drawn angle is).
  */
 export function meleeScan(
   aim: number,
   facing: 1 | -1,
   swingDeg: number,
-  radialRotation = 1,
-  weapRadius = 1,
 ): { vx: number; vy: number; angle: number } {
-  const rotW = meleeRot(aim) + Math.PI * radialRotation;
-  const s = (((swingDeg * Math.PI) / 180) * facing);
+  const phi = Math.min(1, Math.max(0, aim)) * Math.PI;
+  const x = facing * Math.sin(phi);
+  const y = Math.cos(phi);
+  const s = ((swingDeg * Math.PI) / 180) * facing;
   const cos = Math.cos(s);
   const sin = Math.sin(s);
-  // Which way the weapon is actually drawn: the sign of its own radius.
-  const side = weapRadius < 0 ? -1 : 1;
-  const x = side * facing * Math.sin(rotW);
-  const y = side * -Math.cos(rotW);
   const vx = x * cos - y * sin;
   const vy = x * sin + y * cos;
   return { vx, vy, angle: Math.atan2(vy, vx) };

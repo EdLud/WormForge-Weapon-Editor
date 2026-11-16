@@ -2842,23 +2842,34 @@ consumer of the same clock rather than a simulation of its own:
 - which already ticks once per 50 Hz frame and already knows the tick since the
 Space press - tests a box on the frame `hit_frame` names.
 
-**The box is the engine's placement, not a new frame of reference.** The hold is
-drawn at `rot_w = rot + PI * weap_radial_rotation` from the worm, so the unit
-vector "out along the weapon" is `(sin rot_w, -cos rot_w)`, and `follow_swing`
-turns it by the clip's angle at the hit frame, mirrored with the side exactly as
-the drawn angle is. Getting this wrong is invisible in a straight-ahead test and
-obvious in a game, which is why the editor draws the same formula in red on the
-aim preview and one function (`src/data/melee.ts`) feeds the panel, the Lua and
-the test pack.
+**The box is the worm's aim, full stop.** `worm.aim` is WA's sweep (0 straight
+down, 0.5 level, 1 straight up) and `worm.facing` is the side, so the direction
+is `(facing * sin(aim*PI), cos(aim*PI))`, world y down, and the clip's angle turns
+it when `follow_swing`. Nothing about the art belongs in it: `weap_radius` moves
+the picture, `weap_rotation` turns the sheet, and a weapon whose art is nudged
+one pixel or rotated twenty degrees still points where the worm aims. `log = true`
+prints `aim` and FireAngle (`worm.aim_target`, degrees) at the press, so the one
+input the box reads is visible in the log.
 
-The sign of `weap_radius` cost a round of screenshots. The engine's offset is
-`weap_radius` * `(sin rot_w, -cos rot_w)`, so a **negative** radius - which is
-the editor's own default (`-8`) and what most hand-drawn art wants, its grip
-above the pivot - puts the weapon on the opposite side of the worm. The first box
-pointed backwards. Both the TypeScript and the Lua multiply by the sign now, and
-the preview draws it from the worm's map pivot in the offscreen's right-facing
-convention with one horizontal flip for the side, which is the engine's
-`facing`.
+Two earlier answers read the art instead, and both were wrong:
+
+**Where the art points, not where it sits.** `worm_hold.rs`
+draws the hold at `PI * (weap_rotation - aim)`, and hold art points up in its own
+cell (`PX hold art points up natively`), so the barrel is `(sin, -cos)` of that
+angle, mirrored with the side; `follow_swing` turns it by the clip's angle at the
+hit frame exactly as the drawn angle is.
+
+Two wrong answers cost two in-game passes, and both came from the art's *offset*.
+The first box used the engine's placement `(sin rot_w, -cos rot_w) * weap_radius`
+and was 180 degrees out for a negative radius (the editor's own default, `-8`, its
+grip above the pivot), so it multiplied by the sign of the radius. That fixed the
+default and broke every positive radius: `weap_radius` moves the picture, it says
+nothing about which way the weapon points, and WF 50 (radius `4`) needed the
+striker's back turned to the target to land a hit. The radius is gone from the
+formula now. The preview draws the same vector in red from the worm's map pivot
+in the offscreen's right-facing convention with one horizontal flip for the side,
+which is the engine's `facing`, and `tools/lua/harness_melee.py` checks all three
+aim directions (front, down, up) so a fourth answer cannot slip in.
 
 **Determinism, and one hit per swing.** `wa.worms.all()` is a deterministic list,
 so the victim set and order are identical on every peer; `once` (default on)
@@ -2883,3 +2894,138 @@ own `fires` sound plays, which covers the family in practice.
 keystrokes, and the box the author was in jumped to a different key. `KeyTickInput`
 keeps a draft and commits on Enter/blur (Escape cancels), and the rows are keyed
 by position so a commit cannot remount the row underneath them.
+
+## Why no swing ever played, and why the strike never landed
+
+The first melee build ran the swing inside the hold's own draw and simulation
+passes, which are gated on `w.weapon == the weapon` **and** an aim state (0x67 to
+0x69). Two consequences, both fatal and both invisible from the panel:
+
+- WA's Baseball Bat is `fireType = 4, subtype = 2`, and a special melee subtype
+  resolves the hit inside one native frame. The worm never sits in an aim state
+  long enough for the sampler to see the Space edge, so the clip never started:
+  no animation, and no strike either because the strike is a tick of that clip.
+- Even when a clip did start, the next frame's state test cleared `ws.swing` the
+  moment WA moved the worm out of its aim pose. That is the "it stops the
+  animation if a different state is detected" report: any frame count longer
+  than WA's own two firing frames played for a frame and was cancelled, and a
+  `hit_frame` past that frame never landed.
+
+Both are the same mistake: WA's worm state was being used as the animation's
+clock. A swing is a **custom animation**, so the pack has to own the worm for it.
+The sampler now reads the synchronised Space edge for the turn's own worm on
+`FRAME_FINISH`, calls `worm:take{ turn = "freeze" }` and runs the clip from
+`wa.world.frame() - start` until `ticks`, whatever WA's state machine is doing.
+The take also eats WA's fire (nothing is launched, `eat_fire` is belt and braces)
+and stops the turn timer, so a long swing cannot run the turn out. The aim and
+facing at the press are latched for the whole clip, the art draws at full size
+(the 20-frame aim draw-out belongs to aiming, not to a cut), and at the end the
+worm is handed back with `worm:release(0, 0)` before `finish = "end_turn"` ends
+the turn.
+
+Two smaller bugs surfaced in the same pass:
+
+- The press edge was read for **any** worm with the weapon selected, and the keys
+  are the turn player's: a second worm of the team that still had the weapon from
+  a past turn swung with someone else's press. The sampler now requires `w.turn`.
+- `ws.space` was only latched while a swing was running, so after the first cut
+  the latch stayed `true` for ever and no second swing could ever start. It is
+  latched every frame now, which is what "one press, one swing" means.
+
+The base record changed with it. The bat's subtype is the reason the worm never
+animates, so the editor's melee option defaults to the **Sheep Launcher**
+(`stock.sheep_launcher`), a power record: WA gives the worm a real aim phase and
+a firing pipeline, the claim eats the fire, and the pack's clip is the only
+animation that plays.
+
+## Handles never compare equal, so the swing drew nothing
+
+`wa.worms.all()` hands out a **new** `WormHandle` userdata per call and the
+engine defines no `__eq`, so the handle stored when the swing started never
+compared equal to the one in the next frame's list. The draw pass asked
+`st.worm == w`, the answer was always false, and the clip fell back to WA's aim
+pose: the worm froze (the take worked, the strike landed) and not one frame of
+the animation appeared. The comparison is the stable `worm.id` (team * 16 +
+index) now, next to the `o.id == w.id` the strike already used.
+
+A second in-game pass played the clip and still dealt no damage. The strike's
+arithmetic was no longer the open question, its inputs were (`worm.x`/`y` in
+pixels, `worm.aim` 0..1, `worm.facing`, the victim's `hp`), so three things
+changed. The hit landed on `tick == hit_frame`, which loses the strike outright if
+one frame's message is missed: it is `tick >= hit_frame` with a latch now, still
+one hit per swing. The clip ended when `w.weapon` stopped being ours, so a
+selection WA moves during a taken swing cut the animation to two frames: only the
+swing's worm dying ends it now, and the quads draw on the swing alone. And
+`log = true` reports every worm's `along`/`across` with the reason it was skipped,
+so an empty box names its own cause instead of only saying nothing was hit.
+
+That bug is why `tools/lua/harness_melee.py` exists: it loads the real module
+against a fake `wa` (with a fresh handle per `wa.worms.all()` call), presses
+Space and walks the clip, so the swing's start, draw, hit and release are checked
+without starting Worms Armageddon.
+
+## One picture, one sheet: the export's atlas
+
+Every role declares its own sheet path: `hold.png`, `missile.png`,
+`bit_flight.png`, `state_homing.png`, `state_homing_bit.png`, `state_roam.png`,
+`sheep_flight1/2.png`, plus the pack art and the stamp. When an author uploads
+nothing, all of them resolve to the same fallback art, so an untouched export
+carried six copies of one 64x64 PNG. WA binds every declared sheet into the
+match's atlas, so that was six atlas slots and six ids for one picture: no visual
+difference, real GPU cost, and an id per role that looked like six different
+sheets in the log.
+
+`src/utils/sheetDedupe.ts` groups the sheets the exporter is about to write,
+keeps one file per group and rewrites the generated Lua and `mod.toml` to the kept
+path. Two sheets share a file only when the bytes are identical **and** `mod.toml`
+slices them into the same frame count: the declaration carries `frames`, and the
+engine cuts a strip by it, so the same picture cut into 4 cells and 1 cell are two
+different sheets. Two details mattered:
+
+- the alias is keyed by the **bundle-relative** path (`sprites/<mod>/hold.png`),
+  which is what the Lua and `mod.toml` name. Keying it by the ZIP path
+  (`<mod>/sprites/...`) matched nothing and wrote one file while declaring
+  another, which is a bundle that fails at load.
+- the rewrite replaces whole **quoted** tokens, longest path first, because
+  `state_homing.png` is a prefix of `state_homing_bit.png`.
+
+The three layout files are written after the aliasing, so the paths they name are
+the files the ZIP carries.
+
+The first version grouped by the frame count alone, and a mod that used one
+picture for three roles with different `sb.flight` speeds broke: `mod.toml` ended
+up with **two** `[sprites."sprites/<mod>/hold.png"]` tables (`fps = 15` and
+`fps = 11`), which is invalid TOML, so the engine lost the declaration and
+`wa.on.draw` failed with "error converting Lua nil to table". Two lessons:
+
+- the grouping key is the **whole declaration** for a strip (frames, fps, play),
+  because one path carries one speed; two roles that want the same picture at
+  different speeds are two sheets. `sb.flight`/`sb.hold` params are Lua and do not
+  count, which is the case that *can* share.
+- a one-frame sheet has nothing to animate, so its `fps`/`play` are inert and it
+  shares with any other one-frame copy. That is the fallback-art case, and it is
+  where the atlas win lives.
+
+`collapseSpriteSections` now de-dupes by **header**, not by body, so a repeated
+table can never reach the engine whatever produced it, and the claim `sprites`
+list is compacted so an aliased role does not list the kept path twice.
+`tools/check_sheet_dedupe.ts` covers both failures.
+
+## Turn based, so one swing at a time
+
+WA is turn based and WormForge runs it as deterministic lockstep, which decides
+what a pack has to be careful about and, more usefully, what it does not. One worm
+acts, its player's keys are the only input, and those keys are the same on every
+peer. The swing sampler started out with a per-worm table and an "is anyone else
+swinging" question that has no answer worth writing: the turn's worm is the
+swing, so it keeps one state per weapon (`swing_of[entry]`) and asks for the worm
+with `worm.turn`. Anything that could not happen (two worms firing at once, peers
+disagreeing, an input out of order) is not handled, and the things a turn really
+does (it ends, the worm dies, the weapon is dropped) are.
+
+The rest follows from the same premise: every decision comes from synchronised
+state (the frame count, the keys, the world), never from the render rate or a
+random, and a duration is a number of 50 Hz ticks from a stored start frame. That
+is why the clip is data (`clip_pose(t)`) and why a custom animation takes the worm
+instead of watching WA's state machine. `AGENTS.md` opens with it now, so a fresh
+reader starts from the right model.

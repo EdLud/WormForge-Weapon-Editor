@@ -1402,12 +1402,12 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
         project.aimClip && project.aimClip.keys.length > 0
           ? evalClip(project.aimClip, Math.max(0, Math.round(meleeCfg.hitFrame)))
           : null;
+      // The worm's own aim, not the art's: `weapRotation` turns the sheet, it
+      // does not turn where the worm points.
       const scan = meleeScan(
         aimT,
         1,
         meleeCfg.followSwing === false ? 0 : hitPose?.angle ?? 0,
-        1,
-        weapRadius,
       );
       const reach = Math.max(1, meleeCfg.radius);
       const halfWidth = Math.max(0, meleeCfg.width);

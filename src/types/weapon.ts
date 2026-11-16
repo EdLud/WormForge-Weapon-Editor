@@ -298,6 +298,12 @@ export interface MeleeConfig {
   oncePerTarget: boolean;
   /** Leave the firing worm out of its own strike. */
   spareShooter: boolean;
+  /**
+   * Print the swing and the strike to the log (`wa.log`): the hit tick, the scan
+   * vector, and every worm the box took. It is the only way to tell a swing that
+   * never started from one that started and tested nothing.
+   */
+  log: boolean;
 }
 
 export interface ExtraHandConfig {

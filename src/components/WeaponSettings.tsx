@@ -62,7 +62,12 @@ const FIRE_TYPE_OPTIONS: { id: FireType; label: string; defaultDonor: string; de
   {
     id: 'melee',
     label: 'Melee (Swing / Strike)',
-    defaultDonor: 'baseball_bat',
+    // Not WA's bat: its special subtype resolves the whole hit inside one
+    // native frame, so the worm never stays in a state long enough to animate
+    // anything. The Sheep Launcher is a plain power record, so the worm gets a
+    // real aim phase and a firing pipeline; the claim eats the fire, and the
+    // swing takes the worm from there.
+    defaultDonor: 'sheep_launcher',
     desc: 'The aiming phase is the attack: Space swings the held art and a scan box hits what it reaches. No projectile, no ammo.',
   },
   {

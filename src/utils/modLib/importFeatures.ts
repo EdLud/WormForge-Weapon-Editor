@@ -818,6 +818,7 @@ export async function readBundleFeatures(args: {
         lift: num(meleeTable.lift) ?? 0,
         oncePerTarget: meleeTable.once !== false,
         spareShooter: meleeTable.spare_shooter !== false,
+        log: meleeTable.log === true,
       };
       notes.push('melee strike');
     }

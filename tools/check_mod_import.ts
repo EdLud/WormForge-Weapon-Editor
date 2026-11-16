@@ -1077,12 +1077,13 @@ return {
   const p = project('WF 50 Melee Strike')!;
   const m = p.melee;
   near('WF 50: the strike imports enabled', m?.enabled, true);
-  near('WF 50: the reach', m?.radius, 30);
-  near('WF 50: the arc width', m?.width, 14);
+  near('WF 50: the reach', m?.radius, 40);
+  near('WF 50: the arc width', m?.width, 18);
   near('WF 50: it follows the swing', m?.followSwing, true);
   near('WF 50: the hit frame', m?.hitFrame, 8);
   near('WF 50: the damage', m?.damage, 24);
   near('WF 50: the throw', `${m?.pushMode},${m?.pushPower},${m?.lift}`, 'aim,3.5,2');
+  near('WF 50: the strike log', m?.log, true);
   const full = fullProject(p, 'WF 50 Melee Strike');
   const lua = generateLuaCode(full);
   check(
@@ -1092,7 +1093,8 @@ return {
       lua.includes('  follow_swing = true,') &&
       lua.includes('  push = "aim",') &&
       lua.includes('  power = 3.5,') &&
-      lua.includes('  lift = 2,'),
+      lua.includes('  lift = 2,') &&
+      lua.includes('  log = true,'),
     'the swing has no box to land',
   );
   check(
@@ -1104,6 +1106,11 @@ return {
     'WF 50: a strike owns the trigger',
     /eat_fire = true,/.test(lua) && lua.includes('local hold = sb.hold(ctx, {'),
     'WA would fire the donor record as well as swinging',
+  );
+  check(
+    'WF 50: the base is the Sheep Launcher',
+    lua.includes('copy_from = "stock.sheep_launcher"'),
+    "WA's bat resolves its own hit in one frame, so the worm never animates",
   );
   check(
     'WF 50: a re-export keeps the strike',

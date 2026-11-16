@@ -41,9 +41,10 @@ export const MeleeCard: React.FC<MeleeCardProps> = ({ project, onChange }) => {
             Melee Strike
           </h3>
           <p className="mt-1 max-w-2xl text-xs text-stone-500 dark:text-stone-400">
-            The aiming phase is the attack. Space plays the held art&apos;s swing (eat_fire, so
-            nothing leaves the worm) and the scan box below lands on the hit frame. The red box in
-            the Hold page&apos;s preview is this box, drawn at the aim you have set there.
+            The aiming phase is the attack. Space takes the worm for a beat, plays the held
+            art&apos;s swing and lands the scan box below on the hit frame, so nothing leaves the
+            worm and the clip is its own clock. The red box in the Hold page&apos;s preview is this
+            box, drawn at the aim you have set there.
           </p>
         </div>
         <label
@@ -400,11 +401,32 @@ export const MeleeCard: React.FC<MeleeCardProps> = ({ project, onChange }) => {
             </label>
           </div>
 
+          <label
+            htmlFor="melee-log"
+            title="Print the swing and the strike to WormForge's log: the hit tick, the scan vector and every worm the box took. It is the only way to tell a swing that never started from one that started and found nothing."
+            className="flex cursor-pointer items-start gap-2 rounded-lg border border-stone-200 bg-white p-3 dark:border-stone-700 dark:bg-stone-800"
+          >
+            <input
+              id="melee-log"
+              type="checkbox"
+              checked={melee.log}
+              onChange={(event) => update({ log: event.target.checked })}
+              className="mt-0.5 h-4 w-4 cursor-pointer rounded text-forge-600 focus:ring-forge-500"
+            />
+            <span className="text-xs text-stone-700 dark:text-stone-300">
+              <span className="font-semibold">Log the strike</span>
+              <span className="block text-[11px] text-stone-500 dark:text-stone-400">
+                Print the hit tick, the scan direction and every worm it took ({' '}
+                <span className="font-mono">log = true</span>).
+              </span>
+            </span>
+          </label>
+
           <p className="rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-[11px] leading-snug text-stone-600 dark:border-stone-700 dark:bg-stone-950/30 dark:text-stone-400">
             Tip: the Hold page&apos;s aim slider picks which posture the box is drawn at, and the
             swing card there sets the angle the box follows. The strike needs no ammo and no
-            projectile: <span className="font-mono">eat_fire = true</span> is written for the swing,
-            and the turn ends when the clip does.
+            projectile: the swing takes the worm (<span className="font-mono">worm:take</span>), so
+            the clip is its own clock, WA&apos;s fire is eaten and the turn ends when the clip does.
           </p>
         </>
       )}

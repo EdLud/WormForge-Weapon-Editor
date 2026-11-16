@@ -1723,9 +1723,11 @@ const TESTS: TestCase[] = [
     project: makeOp({
       id: 'wftest.47_swing_idle',
       name: 'WF 47 Swing Idle',
-      slot: 'baseball_bat',
+      // A thrown record: WA's bat resolves its own hit in one native frame, so
+      // its worm never stays in a state long enough to animate a custom clip.
+      slot: 'sheep',
       fireType: 'special',
-      body: { sprite: 'baseball_bat', damage: 0 },
+      body: { sprite: 'sheep', damage: 0 },
       hold: {
         enabled: true,
         handType: 'mid',
@@ -1763,9 +1765,11 @@ const TESTS: TestCase[] = [
     project: makeOp({
       id: 'wftest.48_echo_trail',
       name: 'WF 48 Echo Trail',
-      slot: 'baseball_bat',
+      // A thrown record: WA's bat resolves its own hit in one native frame, so
+      // its worm never stays in a state long enough to animate a custom clip.
+      slot: 'sheep',
       fireType: 'special',
-      body: { sprite: 'baseball_bat', damage: 0 },
+      body: { sprite: 'sheep', damage: 0 },
       hold: {
         enabled: true,
         handType: 'mid',
@@ -1804,9 +1808,11 @@ const TESTS: TestCase[] = [
     project: makeOp({
       id: 'wftest.49_second_hand',
       name: 'WF 49 Second Hand',
-      slot: 'baseball_bat',
+      // A thrown record: WA's bat resolves its own hit in one native frame, so
+      // its worm never stays in a state long enough to animate a custom clip.
+      slot: 'sheep',
       fireType: 'special',
-      body: { sprite: 'baseball_bat', damage: 0 },
+      body: { sprite: 'sheep', damage: 0 },
       hold: {
         enabled: true,
         handType: 'mid',
@@ -1845,9 +1851,12 @@ const TESTS: TestCase[] = [
     project: makeOp({
       id: 'wftest.50_melee_strike',
       name: 'WF 50 Melee Strike',
-      slot: 'baseball_bat',
+      // The Sheep Launcher, not WA's bat: a special melee subtype resolves its
+      // own hit in one native frame and never animates, while a power record
+      // gives the worm a real aim phase for the swing to take over.
+      slot: 'sheep_launcher',
       fireType: 'melee',
-      body: { sprite: 'baseball_bat', damage: 0 },
+      body: { damage: 0 },
       hold: {
         enabled: true,
         handType: 'mid',
@@ -1875,8 +1884,10 @@ const TESTS: TestCase[] = [
       },
       melee: {
         enabled: true,
-        radius: 30,
-        width: 14,
+        // Two worm widths of reach and a wide arc: the box is drawn on the aim
+        // preview, and this is what "inside the red box" means in game.
+        radius: 40,
+        width: 18,
         followSwing: true,
         hitFrame: 8,
         damage: 24,
@@ -1886,14 +1897,15 @@ const TESTS: TestCase[] = [
         lift: 2,
         oncePerTarget: true,
         spareShooter: true,
+        log: true,
       },
     }),
     intent:
-      'The melee strike: Space swings the bat, and on the hit frame the scan box the panel draws in red is tested against the living worms in front of the striker.',
+      'The melee strike: Space swings the held art, and on the hit frame the scan box the panel draws in red is tested against the living worms in front of the striker. The swing takes the worm (`worm:take{ turn = "freeze" }`), so the clip is the clock rather than WA`s worm states.',
     expect:
-      'A worm standing in the box (in front, within the reach and the arc) takes 24 damage and is thrown away from the striker with a little lift; the swinger is never hit, and each worm only takes it once per swing. Nothing is fired and no ammo is used, and the turn ends when the clip does.',
+      'Pressing Space freezes the worm and plays all 16 ticks of the swing (no aim pose needed, no firing state involved), a worm standing in the box (in front, within the reach and the arc) takes 24 damage on tick 8 and is thrown away from the striker with a little lift, the swinger is never hit, and each worm only takes it once per swing. Nothing is fired and no ammo is used; the worm is given back and the turn ends when the clip does.',
     watch:
-      'No damage at all (the `melee` table not registered because `sb.hold` took the engine path, or the hit frame past the end of the clip), damage on every frame the box overlaps (the once-per-worm table not resetting per swing), the swinger hurting itself (spare_shooter), a worm behind the striker taking it (the scan vector mirrored wrongly, so the box points backwards on one side), or a hit that lands a frame or two late (the tick read from the render clock instead of the 50 Hz one).',
+      'No damage at all (the `melee` table not registered because `sb.hold` took the engine path, the hit frame past the end of the clip, or the swing never starting: the log would then show no `swing at tick` line), nothing drawn for the whole clip while the strike lands (the draw pass comparing worm handles instead of `worm.id`), the animation playing for one frame and stopping (the clip still gated on an aim state instead of the swing), damage on every frame the box overlaps (the once-per-worm table not resetting per swing), the swinger hurting itself (spare_shooter), a worm behind the striker taking it (the scan vector mirrored wrongly, so the box points backwards on one side), the sheep launching instead of swinging (the take firing or `eat_fire` missing), or the worm left frozen with no turn end (the release and `set_turn_clock(0)` at the end of the clip). Set `log = true` (it is on here) and read the `[melee]` lines.',
   },
 ];
 
