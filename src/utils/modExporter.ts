@@ -39,6 +39,21 @@ import {
   createSilentSheet,
 } from './defaultArt';
 
+/**
+ * A bundle-relative path with every `.`/`..`/empty segment dropped and `/` as the
+ * separator. A path that reaches the ZIP is data (an import, `customSprites`), so
+ * `../../x.png` must not become an entry pointing outside the mod folder; the
+ * engine refuses `..` at load too (`inside_pack`), so normalising here can only
+ * agree with it. Returns null when nothing usable is left.
+ */
+export function safeBundlePath(path: string): string | null {
+  const segments = String(path || '')
+    .replace(/\\/g, '/')
+    .split('/')
+    .filter((segment) => segment && segment !== '.' && segment !== '..');
+  return segments.length > 0 ? segments.join('/') : null;
+}
+
 export async function exportModZip(project: WeaponProject): Promise<Blob> {
   const zip = new JSZip();
   const modFolder = sanitizeModFolder(project.id);
@@ -195,9 +210,11 @@ export async function exportModZip(project: WeaponProject): Promise<Blob> {
 
   // Any other custom sprite assets
   for (const cs of Object.values(project.customSprites)) {
-    if (cs.file) {
-      addSheet(cs.path, cs.file);
-    }
+    // `customSprites` is free-form data, so its path is the one place a `..`
+    // could reach a ZIP entry. Normalise it, and skip an entry that had nothing
+    // usable left rather than writing a file nothing can name.
+    const safe = safeBundlePath(cs.path);
+    if (cs.file && safe) addSheet(safe, cs.file);
   }
 
   // One file per picture. `dedupeSheets` compares the bytes and the declared
@@ -216,7 +233,8 @@ export async function exportModZip(project: WeaponProject): Promise<Blob> {
     modToml = collapseSpriteSections(applySheetAliases(modToml, alias));
   }
   for (const file of files) {
-    zip.file(`${modFolder}/${file.path}`, file.bytes);
+    const safe = safeBundlePath(file.path);
+    if (safe) zip.file(`${modFolder}/${safe}`, file.bytes);
   }
 
   // The layout from the mod tutorial: mod.toml and profiles/ have fixed names,

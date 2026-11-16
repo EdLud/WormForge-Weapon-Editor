@@ -70,7 +70,7 @@ check(
   bundles.some((bundle) => bundle.id === 'wfws.sdk'),
   bundles.map((bundle) => bundle.id).join(', '),
 );
-check('test pack has 50 weapons', weapons.length === 50, String(weapons.length));
+check('test pack has 52 weapons', weapons.length === 52, String(weapons.length));
 
 const byName = new Map(weapons.map((weapon) => [weapon.name, weapon]));
 const projects = new Map<string, WeaponProject>();
@@ -84,6 +84,10 @@ for (const weapon of weapons) {
 }
 
 const project = (name: string): WeaponProject | undefined => projects.get(name);
+const luaOf = (name: string): string => {
+  const weapon = byName.get(name);
+  return files.find((file) => file.path === weapon?.modulePath)?.text ?? '';
+};
 const near = (label: string, actual: unknown, expected: unknown) =>
   check(label, actual === expected, `got ${JSON.stringify(actual)}, want ${JSON.stringify(expected)}`);
 const hasFile = (label: string, asset: { file?: File; sheetFile?: File } | undefined) =>
@@ -235,11 +239,24 @@ for (const weapon of weapons) {
 
   const all = project('WF 18 Burst Ribbon All')!;
   near('WF 18: target', all.ribbonTrail.target, 'all');
+
+  // The builder identity decides bit vs round; the guard is what is read back.
+  const bits = project('WF 51 Trail Bits Only')!;
+  near('WF 51: target', bits.ribbonTrail.target, 'bit');
+  check(
+    'WF 51: the bit test reads the builder role',
+    /sb\.role and sb\.role\(m\.id\)/.test(luaOf('WF 51 Trail Bits Only')),
+  );
 }
 
 // ---- explosion burst (WF 21, WF 22) -------------------------------------
 {
+  const mainOnly = project('WF 52 Burst Main Only')!;
+  near('WF 52: target', mainOnly.explosionEffect.target, 'main');
+  near('WF 52: mode', mainOnly.explosionEffect.mode, 'effect');
+
   const blast = project('WF 21 Explosion Blast')!;
+  near('WF 21: target', blast.explosionEffect.target, 'all');
   near('WF 21: mode', blast.explosionEffect.mode, 'blast');
   near('WF 21: damage', blast.explosionEffect.damage, 45);
   near('WF 21: push', blast.explosionEffect.push, 90);
@@ -913,7 +930,17 @@ return {
   near('WF 47: the keys come back', clip?.keys.length, 4);
   near('WF 47: the strike key angle', clip?.keys[2]?.angle, 60);
   near('WF 47: the strike key easing', clip?.keys[2]?.ease, 'out_cubic');
+  // `fade = false` on the last key: opacity steps at the key instead of easing
+  // into it, which is what keeps a return home from fading out on the way.
+  near('WF 47: the return keeps its alpha', clip?.keys[3]?.alpha, 0.6);
+  near('WF 47: the return does not fade', clip?.keys[3]?.fade, false);
+  near('WF 47: an untagged key fades', clip?.keys[2]?.fade, undefined);
   const lua = generateLuaCode(fullProject(p, 'WF 47 Swing Idle'));
+  check(
+    'WF 47: the return key is written with fade = false',
+    lua.includes('alpha = 0.6, fade = false, ease = "out_quad"'),
+    'a key that should step its opacity was written without `fade = false`',
+  );
   check(
     'WF 47: the clip is emitted as keys',
     lua.includes('swing = {') &&

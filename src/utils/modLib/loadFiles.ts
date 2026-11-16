@@ -61,16 +61,47 @@ export async function readFileTexts(list: FileList | File[] | null): Promise<Mod
   return out;
 }
 
+/**
+ * What one dropped `.zip` may cost the tab. An installed `Mods/` tree is a few
+ * megabytes of Lua and a lot of art; a zip bomb is a few kilobytes expanding to
+ * gigabytes, and text entries are decompressed eagerly before the reader can say
+ * no. The cap is generous for a real pack and the refusal names the limit
+ * instead of leaving the tab to die.
+ */
+export const ZIP_LIMITS = { entries: 4096, textBytes: 48 * 1024 * 1024 };
+
+const tooBig = (name: string, what: string) =>
+  new Error(`${name} ${what}, more than an import reads.`);
+
 export async function readZipTexts(file: File): Promise<ModFile[]> {
   const zip = await JSZip.loadAsync(await file.arrayBuffer());
+  const entries = Object.entries(zip.files).filter(([, entry]) => !entry.dir);
+  if (entries.length > ZIP_LIMITS.entries) {
+    throw tooBig(file.name, `holds ${entries.length} files (limit ${ZIP_LIMITS.entries})`);
+  }
   const out: ModFile[] = [];
-  for (const [name, entry] of Object.entries(zip.files)) {
-    if (entry.dir) continue;
+  let read = 0;
+  const account = (bytes: number) => {
+    read += bytes;
+    if (read > ZIP_LIMITS.textBytes) {
+      throw tooBig(
+        file.name,
+        `expands past ${Math.round(ZIP_LIMITS.textBytes / (1024 * 1024))} MiB of Lua and records`,
+      );
+    }
+  };
+  for (const [name, entry] of entries) {
     const path = name.split('\\').join('/');
-    if (TEXT_FILE.test(name)) out.push({ path, text: await entry.async('string') });
-    else if (BINARY_FILE.test(name))
-      out.push({ path, text: '', bytes: await entry.async('uint8array') });
-    else if (ASSET_FILE.test(name)) {
+    if (TEXT_FILE.test(name)) {
+      const text = await entry.async('string');
+      account(text.length);
+      out.push({ path, text });
+    } else if (BINARY_FILE.test(name)) {
+      const bytes = await entry.async('uint8array');
+      account(bytes.length);
+      out.push({ path, text: '', bytes });
+    } else if (ASSET_FILE.test(name)) {
+      // Art stays lazy: an import only needs the sheets its own weapon names.
       out.push({ path, text: '', readBytes: () => entry.async('uint8array') });
     }
   }

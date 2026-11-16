@@ -83,9 +83,48 @@ function luaTableRows(value: unknown, indent: string): string[] {
 }
 
 /**
+ * A value as one Lua expression. Arrays and tables are written inline, so a
+ * record table the reader produced (a list of numbers, a list of tables) is
+ * carried through instead of being flattened to `nil`.
+ */
+function luaInline(value: unknown): string {
+  if (Array.isArray(value)) {
+    const items = value.map((item) => luaInline(item));
+    return `{ ${items.join(', ')} }`;
+  }
+  if (value && typeof value === 'object') {
+    const rows: string[] = [];
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      if (entry === null || entry === undefined) continue;
+      const name = /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) ? key : `[${luaQuote(key)}]`;
+      rows.push(`${name} = ${luaInline(entry)}`);
+    }
+    return `{ ${rows.join(', ')} }`;
+  }
+  return luaValue(value);
+}
+
+/**
+ * One Lua access path: `rec.missile.sprite`, or `rec["odd-key"].x` when a
+ * segment is not an identifier. Building the path as text and joining with `.`
+ * produced `rec.["odd-key"]`, which is a syntax error in the whole module, so
+ * each segment decides its own form here.
+ */
+function luaPath(root: string, segments: string[]): string {
+  let out = root;
+  for (const segment of segments) {
+    out += /^[A-Za-z_][A-Za-z0-9_]*$/.test(segment)
+      ? `.${segment}`
+      : `[${luaQuote(segment)}]`;
+  }
+  return out;
+}
+
+/**
  * `{ missile: { sprite: 51 } }` -> `rec.missile.sprite = 51`, with a guard for
  * every parent table so a group the generated record did not create still
- * exists. Arrays and scalars are written inline.
+ * exists. Arrays and tables are written inline; a key that is not an identifier
+ * is bracketed at every level it appears in.
  */
 function recordAssignments(extra: Record<string, unknown>): string[] {
   const lines: string[] = [];
@@ -93,24 +132,26 @@ function recordAssignments(extra: Record<string, unknown>): string[] {
 
   const ensure = (path: string[]) => {
     for (let i = 1; i <= path.length; i += 1) {
-      const prefix = path.slice(0, i).join('.');
-      if (ensured.has(prefix)) continue;
-      ensured.add(prefix);
-      lines.push(`    rec.${prefix} = rec.${prefix} or {}`);
+      const target = luaPath('rec', path.slice(0, i));
+      if (ensured.has(target)) continue;
+      ensured.add(target);
+      lines.push(`    ${target} = ${target} or {}`);
     }
   };
 
   const walk = (value: Record<string, unknown>, path: string[]) => {
     for (const [key, entry] of Object.entries(value)) {
       if (entry === null || entry === undefined) continue;
-      const name = /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) ? key : `[${luaQuote(key)}]`;
-      const next = [...path, name];
+      const next = [...path, key];
+      // A nested table is walked so each leaf is its own assignment (and the
+      // guards are written once); everything else, arrays included, is one
+      // expression.
       if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
         walk(entry as Record<string, unknown>, next);
         continue;
       }
       ensure(path);
-      lines.push(`    rec.${next.join('.')} = ${luaValue(entry)}`);
+      lines.push(`    ${luaPath('rec', next)} = ${luaInline(entry)}`);
     }
   };
 
@@ -525,6 +566,76 @@ export interface ParsedCustomLua {
   hasOnExplode: boolean;
 }
 
+/** The same text with Lua comments and string bodies replaced by spaces.
+ *
+ * `parseCustomLua` finds the end of an `on_explode` body by counting
+ * `function`/`if`/`for`/`while` against `end`, so a word inside a comment
+ * ("-- the end of it") or a string ("end of file") used to close the body
+ * early and leave the rest of the snippet behind as broken Lua. Masking keeps
+ * every index where it was (one character out, one character back), so the
+ * scan runs on the masked copy and the original is what gets sliced.
+ */
+function maskLuaCode(code: string): string {
+  const out: string[] = [];
+  let i = 0;
+  const blank = (n: number) => {
+    for (let k = 0; k < n; k += 1) out.push(code[i + k] === '\n' ? '\n' : ' ');
+  };
+  while (i < code.length) {
+    const ch = code[i];
+    if (ch === '-' && code[i + 1] === '-') {
+      const long = /^--\[(=*)\[/.exec(code.slice(i, i + 12));
+      if (long) {
+        const close = `]${long[1]}]`;
+        const end = code.indexOf(close, i + long[0].length);
+        const stop = end === -1 ? code.length : end + close.length;
+        blank(stop - i);
+        i = stop;
+        continue;
+      }
+      const nl = code.indexOf('\n', i);
+      const stop = nl === -1 ? code.length : nl;
+      blank(stop - i);
+      i = stop;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      let j = i + 1;
+      while (j < code.length) {
+        const c = code[j];
+        if (c === '\\') {
+          j += 2;
+          continue;
+        }
+        if (c === ch) {
+          j += 1;
+          break;
+        }
+        if (c === '\n') break;
+        j += 1;
+      }
+      const stop = Math.min(j, code.length);
+      blank(stop - i);
+      i = stop;
+      continue;
+    }
+    if (ch === '[') {
+      const long = /^\[(=*)\[/.exec(code.slice(i, i + 12));
+      if (long) {
+        const close = `]${long[1]}]`;
+        const end = code.indexOf(close, i + long[0].length);
+        const stop = end === -1 ? code.length : end + close.length;
+        blank(stop - i);
+        i = stop;
+        continue;
+      }
+    }
+    out.push(ch);
+    i += 1;
+  }
+  return out.join('');
+}
+
 export function parseCustomLua(snippet: string): ParsedCustomLua {
   if (!snippet || !snippet.trim() || snippet.length > 200_000) {
     return { paramName: 'ev', onExplodeBody: '', remainingSnippet: snippet || '', hasOnExplode: false };
@@ -535,8 +646,10 @@ export function parseCustomLua(snippet: string): ParsedCustomLua {
     return { paramName: 'ev', onExplodeBody: '', remainingSnippet: snippet, hasOnExplode: false };
   }
 
-  // Locate on_explode =
-  const declMatch = snippet.match(/(?:^|\n)[ \t]*on_explode\s*=/);
+  // Locate on_explode =. The masked copy has the same length, so an index is
+  // the same in both, and a commented-out `-- on_explode =` no longer wins.
+  const masked = maskLuaCode(snippet);
+  const declMatch = masked.match(/(?:^|\n)[ \t]*on_explode\s*=/);
   if (!declMatch || declMatch.index === undefined) {
     return { paramName: 'ev', onExplodeBody: '', remainingSnippet: snippet, hasOnExplode: false };
   }
@@ -555,8 +668,11 @@ export function parseCustomLua(snippet: string): ParsedCustomLua {
   const paramName = fnMatch[1] || 'ev';
   const fnBodyStart = afterEquals + fnMatch[0].length;
 
-  // Scan forward for matching `end` using linear token search with max 5000 iterations
-  const searchSlice = snippet.slice(fnBodyStart);
+  // Scan forward for matching `end` using linear token search with max 5000
+  // iterations, over the masked text: a keyword in a comment or a string is not
+  // a block, and counting one used to truncate the body (an `end` in a comment)
+  // or swallow the rest of the snippet (an `if` or `for` in a string).
+  const searchSlice = masked.slice(fnBodyStart);
   const tokenRegex = /\b(function|if|for|while|end)\b/g;
   let depth = 1;
   let fnBodyEnd = -1;
@@ -688,8 +804,11 @@ export function wepBundlePath(project: WeaponProject): string | null {
 }
 
 export function generateLuaCode(project: WeaponProject): string {
-  const modFolder = sanitizeModFolder(project.id);
-  const donor = project.based_on.startsWith('stock.') ? project.based_on : `stock.${project.based_on}`;
+  // An incomplete project (a hand-built object, a half-restored draft) must not
+  // die with `undefined is not an object` in the middle of an export.
+  const modFolder = sanitizeModFolder(project.id || 'custom.weapon');
+  const basedOn = project.based_on || project.slot || 'grenade';
+  const donor = basedOn.startsWith('stock.') ? basedOn : `stock.${basedOn}`;
   const lines: string[] = [];
 
   // Uploaded pack art. Trails and cluster sheets are loaded by the engine for
@@ -1162,6 +1281,9 @@ export function generateLuaCode(project: WeaponProject): string {
           if (key.alpha !== undefined && key.alpha !== 1) {
             parts.push(`alpha = ${formatNumber(key.alpha)}`);
           }
+          // `fade = false`: the opacity steps at this key instead of easing into
+          // it, so a snap-back pose does not fade out on its way home.
+          if (key.fade === false) parts.push('fade = false');
           parts.push(`ease = ${luaQuote(key.ease)}`);
           holdRows.push(`    { ${parts.join(', ')} },`);
         }
@@ -1234,9 +1356,12 @@ export function generateLuaCode(project: WeaponProject): string {
         holdRows.push('  radial_rotation = 1,');
         holdRows.push(`  scale = ${formatNumber(extra.scale)},`);
         // The quad layer measures the cell itself; the engine ignores this key.
-        holdRows.push(
-          `  size = ${Math.max(1, Math.round(extra.sheetWidth || h.sheetWidth || 60))},`,
-        );
+        // The cell is a HAND cell, never the weapon sheet's: the aim hand the
+        // engine draws is 60 px (`hand_size = 60`), and the second hand reuses
+        // that sheet unless it uploaded its own art. Falling back to the hold
+        // sheet's width drew the support hand at the size of the gun.
+        const handCell = own ? Math.max(1, Math.round(extra.sheetWidth || 60)) : 60;
+        holdRows.push(`  size = ${handCell},`);
         if ((extra.offsetX ?? 0) !== 0 || (extra.offsetY ?? 0) !== 0) {
           holdRows.push(
             `  offset = { x = ${formatNumber(extra.offsetX)}, y = ${formatNumber(extra.offsetY)} },`,
@@ -1582,10 +1707,25 @@ export function generateLuaCode(project: WeaponProject): string {
     fullGroup || !baseline || !same(project.roamConfig?.[key], baseline.roamConfig?.[key]);
   const digChanged = <K extends keyof DigActionConfig>(key: K) =>
     fullGroup || !baseline || !same(project.digConfig?.[key], baseline.digConfig?.[key]);
+  // A `Kind::Sprite` record field takes a stock name or an id. The engine
+  // rejects any other string outright ("is not a stock sprite") and the whole
+  // install fails, so a path that reached an override (an import, a hand-edited
+  // draft, a field nobody validated) must never be written. The two trail fields
+  // are the exception: the engine lifts them out as claim sheets before it
+  // builds the patch (`trail_image_spec`), so a path there is the intended form.
+  const pathSpriteKeys = new Set(['missile.trail.sprite', 'clusters.bit.trail.sprite']);
+  const isSpriteField = (key: string) => /(?:^|\.)(?:sprite|sprite_\d+)$/.test(key);
+  const looksLikePackPath = (value: unknown) =>
+    typeof value === 'string' && /\.(?:png|gif|bmp)$/i.test(value);
+  const droppedSpritePaths: string[] = [];
   const override = (key: string): any => {
     const value = project.recordOverrides[key];
     if (value === undefined) return undefined;
     if (baseline && same(value, baseOverrides[key])) return undefined;
+    if (isSpriteField(key) && !pathSpriteKeys.has(key) && looksLikePackPath(value)) {
+      if (!droppedSpritePaths.includes(key)) droppedSpritePaths.push(key);
+      return undefined;
+    }
     return value;
   };
   const overrideTouched = (...keys: string[]) => keys.some((key) => override(key) !== undefined);
@@ -1626,9 +1766,24 @@ export function generateLuaCode(project: WeaponProject): string {
   const burst = project.burst || (body.cluster ? 'clusters' : 'nothing');
   const burstChanged = !baseline || burst !== baseline.burst;
   const clustletTouched = (Object.keys(body.clustlet) as (keyof ClustletConfig)[]).some(clustletChanged);
-  const fireTouched = !baseline || !same(project.fireConfig, baseline.fireConfig);
-  const roamTouched = !baseline || !same(project.roamConfig, baseline.roamConfig);
-  const digTouched = !baseline || !same(project.digConfig, baseline.digConfig);
+  // Whole-group tests compare key by key: `same` is a JSON text compare, so two
+  // tables with the same values in a different key order looked "touched" and
+  // the generator wrote a group nobody had edited. Only ever over-emission, but
+  // "an untouched import emits nothing" should not depend on key order.
+  const sameGroup = (a: unknown, b: unknown) => {
+    if (a === b) return true;
+    if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return same(a, b);
+    const keys = new Set([...Object.keys(a as object), ...Object.keys(b as object)]);
+    for (const key of keys) {
+      if (!same((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key])) {
+        return false;
+      }
+    }
+    return true;
+  };
+  const fireTouched = !baseline || !sameGroup(project.fireConfig, baseline.fireConfig);
+  const roamTouched = !baseline || !sameGroup(project.roamConfig, baseline.roamConfig);
+  const digTouched = !baseline || !sameGroup(project.digConfig, baseline.digConfig);
   // Behaviour states write their sentinel sprite ids into the record so the
   // builder always has a nonzero `m.sprite` to match. One lookup per group.
   const stateByKey = new Map(behaviorStates.map((state) => [state.def.key, state]));
@@ -3096,6 +3251,30 @@ export function generateLuaCode(project: WeaponProject): string {
     ].filter(Boolean).join(' + ');
     lines.push(`      -- Explosion hook: merged ${parts}.`);
     lines.push('      on_explode = { on = function(ev)');
+    // A project saved before this field existed means "every explosion", which
+    // is what the hook did then.
+    const fxTarget = explosionEffect?.target ?? 'all';
+    if (usesExplosionEffect && fxTarget !== 'all') {
+      // Which explosion is this? A cluster bit is a missile of the same weapon,
+      // so "the round" and "its frags" are told apart by the flight builder's
+      // identity (`sb.role`), which it decided on the missile's first frame and
+      // keeps past the despawn. One claim hook covers the burst, the custom WAV
+      // and any custom `on_explode` in the snippet, so the choice is made once
+      // here, before all of them.
+      if (builderOn) {
+        lines.push('        local explode_role = sb.role and ev.missile and sb.role(ev.missile) or nil');
+        lines.push(
+          fxTarget === 'main'
+            ? '        if explode_role == "bit" then return end'
+            : '        if explode_role ~= "bit" then return end',
+        );
+      } else {
+        lines.push(
+          `        -- the burst is set to the ${fxTarget === 'main' ? 'round only' : 'cluster bits only'},`,
+          '        -- which needs the flight builder to tell them apart: with it off this runs for every round.',
+        );
+      }
+    }
     if (usesExplosionSound) {
       // `ev.worm` is the firing worm; WA needs an entity for a positional
       // custom voice, and `wa.sound.play` takes its handle.
@@ -3269,6 +3448,16 @@ export function generateLuaCode(project: WeaponProject): string {
     lines.push('      end },');
   }
 
+  // Say out loud what the sprite-field guard dropped: a silently missing value
+  // reads as "the editor forgot my edit", which is worse than a warning.
+  if (droppedSpritePaths.length > 0) {
+    lines.push(
+      `    -- Dropped: ${droppedSpritePaths.join(', ')} held a bundle path. A record`,
+      '    -- sprite field takes a stock name or an id; pack art goes in the claim',
+      '    -- (`sprite`, `cluster.sprite`) or a trail field, which the engine lifts.',
+    );
+  }
+
   if (extraAssignments.length > 0) {
     lines.push('    }');
     lines.push('    -- Values the source bundle declared, over the base record.');
@@ -3308,17 +3497,31 @@ export function generateLuaCode(project: WeaponProject): string {
     lines.push('      end');
     lines.push('      return first');
     lines.push('    end');
-    if (t.target === 'main') {
-      // Cluster bits are born where their parent died, while its ribbon is
-      // still shedding points, so a first-seen round with a ribbon already
-      // live for this weapon is a bit and is left alone. The live ids are an
-      // array: `pairs` order is not lockstep-safe (wfcheck's lockstep-pairs).
+    if (t.target !== 'all') {
+      // Which part of the missile is this? The flight builder decides it once,
+      // on first sight (`sb.role`), and that is the exact answer when it is
+      // installed. Without it the only available test is the PX one: cluster
+      // bits are born where their parent died, while its ribbon is still
+      // shedding points, so a first-seen round with a ribbon already live for
+      // this weapon is a bit. The live ids are an array: `pairs` order is not
+      // lockstep-safe (wfcheck's lockstep-pairs).
       lines.push('    local trailed = {}');
       lines.push('    local function trail_live()');
       lines.push('      for i = 1, #trailed do');
       lines.push('        if trail.has(trailed[i]) then return true end');
       lines.push('      end');
       lines.push('      return false');
+      lines.push('    end');
+      lines.push('    local function trail_is_bit(m)');
+      // `sb` is a local the builder's own `require` declares, so it only exists
+      // when the builder is on for this weapon. Nothing to read off it
+      // otherwise, and wfcheck is right that naming it would be an undefined
+      // global: the PX heuristic is the whole answer then.
+      if (builderOn) {
+        lines.push('      local role = sb.role and sb.role(m.id)');
+        lines.push('      if role ~= nil then return role ~= "main" end');
+      }
+      lines.push('      return trail_live()');
       lines.push('    end');
     }
     lines.push('    local seen = {}');
@@ -3327,12 +3530,14 @@ export function generateLuaCode(project: WeaponProject): string {
     lines.push('      if seen[m.id] then return end');
     lines.push('      seen[m.id] = true');
     if (t.target === 'main') {
-      lines.push('      if trail_live() then return end');
+      lines.push('      if trail_is_bit(m) then return end');
+    } else if (t.target === 'bit') {
+      lines.push('      if not trail_is_bit(m) then return end');
     }
-    if (t.target === 'main') {
-      lines.push('      if trail.add(m.id, trail_worm(), TRAIL) then trailed[#trailed + 1] = m.id end');
-    } else {
+    if (t.target === 'all') {
       lines.push('      trail.add(m.id, trail_worm(), TRAIL)');
+    } else {
+      lines.push('      if trail.add(m.id, trail_worm(), TRAIL) then trailed[#trailed + 1] = m.id end');
     }
     lines.push('    end)');
     lines.push('');

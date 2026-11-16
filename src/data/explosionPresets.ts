@@ -85,6 +85,7 @@ export const EXPLOSION_PRESETS: Record<
 export const DEFAULT_EXPLOSION_EFFECT: ExplosionEffectConfig = {
   enabled: false,
   mode: 'effect',
+  target: 'all',
   damage: 45,
   push: 90,
   hole: 45,

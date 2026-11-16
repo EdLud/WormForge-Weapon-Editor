@@ -260,28 +260,32 @@ export function RibbonTrailCard({ project, onChange }: CardProps) {
             <TooltipLabel
               label="Attach To"
               code="wa.on.missile_frame"
-              desc="Main Projectile skips cluster bits (which spawn while the parent ribbon is fading). Every Round attaches trails to all cluster bits too."
+              desc="Which missiles of the weapon get the ribbon. The flight builder decides which is the round and which are its cluster bits (sb.role); without it, Main skips a first-seen round that is born into a live ribbon, which is how a cluster bit is recognised."
             />
-            <div className="grid grid-cols-2 gap-1 rounded-xl border border-stone-200 bg-stone-100 p-1 dark:border-stone-800 dark:bg-stone-950/60">
+            <div className="grid grid-cols-3 gap-1 rounded-xl border border-stone-200 bg-stone-100 p-1 dark:border-stone-800 dark:bg-stone-950/60">
               {(
                 [
-                  { id: 'main', label: 'Main Projectile' },
-                  { id: 'all', label: 'Every Round & Cluster Bits' },
+                  { id: 'main', label: 'Main Round' },
+                  { id: 'bits', label: 'Cluster Bits' },
+                  { id: 'all', label: 'Every Part' },
                 ] as const
-              ).map((option) => (
-                <button
-                  key={option.id}
-                  type="button"
-                  onClick={() => update({ target: option.id })}
-                  className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                    ribbon.target === option.id
-                      ? 'bg-sky-600 text-white shadow-xs'
-                      : 'text-stone-600 hover:text-stone-900 dark:text-stone-400 dark:hover:text-white'
-                  }`}
-                >
-                  {option.label}
-                </button>
-              ))}
+              ).map((option) => {
+                const value = option.id === 'bits' ? 'bit' : option.id;
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => update({ target: value })}
+                    className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                      (ribbon.target ?? 'main') === value
+                        ? 'bg-sky-600 text-white shadow-xs'
+                        : 'text-stone-600 hover:text-stone-900 dark:text-stone-400 dark:hover:text-white'
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
             </div>
           </div>
         </div>
@@ -402,6 +406,37 @@ export function ExplosionEffectCard({ project, onChange }: CardProps) {
                       ? option.id === 'blast'
                         ? 'bg-forge-600 text-white shadow-xs'
                         : 'bg-sky-600 text-white shadow-xs'
+                      : 'text-stone-600 hover:text-stone-900 dark:text-stone-400 dark:hover:text-white'
+                  }`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Which explosion the hook runs for. */}
+          <div>
+            <TooltipLabel
+              label="Applies To"
+              code="sb.role (wfws.sdk)"
+              desc="Which explosions run this hook. The flight builder tells the round from its cluster bits. One claim on_explode carries the burst, the custom explosion WAV, any custom on_explode Lua in the snippet and the Terrain Stamp, so all of them follow this choice. Needs the flight builder: with it off nothing can tell the parts apart and the hook runs for every round."
+            />
+            <div className="grid grid-cols-3 gap-1 rounded-xl border border-stone-200 bg-stone-100 p-1 dark:border-stone-800 dark:bg-stone-950/60">
+              {(
+                [
+                  { id: 'all', label: 'Every Part' },
+                  { id: 'main', label: 'Main Round' },
+                  { id: 'bit', label: 'Cluster Bits' },
+                ] as const
+              ).map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => update({ target: option.id })}
+                  className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                    (fx.target ?? 'all') === option.id
+                      ? 'bg-amber-600 text-white shadow-xs'
                       : 'text-stone-600 hover:text-stone-900 dark:text-stone-400 dark:hover:text-white'
                   }`}
                 >

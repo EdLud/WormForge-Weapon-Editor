@@ -716,6 +716,9 @@ export async function readBundleFeatures(args: {
           scale: num(key.scale) ?? 1,
           frame: num(key.frame),
           alpha: num(key.alpha) ?? 1,
+          // `fade = false` makes the opacity step at this key instead of easing;
+          // an unset key fades, which is the type's default.
+          fade: key.fade === false ? false : undefined,
           ease: (CLIP_EASES.some((entry) => entry.id === ease) ? ease : 'inout_quad') as ClipEase,
         });
       }
@@ -970,8 +973,17 @@ export async function readBundleFeatures(args: {
       coreWidth: num(trailTable.core_w) ?? 8,
       glowWidth: num(trailTable.glow_w) ?? 13,
       color: hexColor(rgb.r, rgb.g, rgb.b),
-      // `target = "main"` is the only variant that emits the live-id guard.
-      target: moduleText.includes('trail_live') ? 'main' : 'all',
+      // The target is read off the guard the generator emits: `trail_is_bit`
+      // says "not the round" or "not a bit", and `trail_live` on its own is the
+      // builder-off heuristic for `main`.
+      target: moduleText.includes('if not trail_is_bit(m) then return end')
+        ? 'bit'
+        : moduleText.includes('if (trail_is_bit(m)) then return end') ||
+            moduleText.includes('if trail_is_bit(m) then return end')
+          ? 'main'
+          : moduleText.includes('trail_live')
+            ? 'main'
+            : 'all',
     } satisfies RibbonTrailConfig;
     notes.push('ribbon trail');
   }
@@ -1013,6 +1025,13 @@ export async function readBundleFeatures(args: {
       ...effect,
       enabled: true,
       mode: isBlast ? 'blast' : 'effect',
+      // The guard the generator puts at the top of the hook: it returns for the
+      // part the author did not pick.
+      target: moduleText.includes('if explode_role == "bit" then return end')
+        ? 'main'
+        : moduleText.includes('if explode_role ~= "bit" then return end')
+          ? 'bit'
+          : 'all',
     };
     notes.push(isBlast ? 'explosion burst (blast)' : 'explosion burst (overlay)');
   }

@@ -393,15 +393,26 @@ The editor ships `spec/lua_sdk/wfws_sdk/` (id `wfws.sdk`), exporting
   `trail.install()`, `trail.BEAM`/`trail.GLOW` in `sprites`, and a
   `wa.on.missile_frame` hook that adds the trail on a round's first `pre` frame
   (WA fires the record itself, so there is no launch id). Colour, widths, `max`,
-  `every` and `vanish` are free. Target `main` skips cluster bits; `all` trails
-  the whole burst. Live trail ids go in an array, never `pairs` (wfcheck
+  `every` and `vanish` are free. **`target` is `main` / `bit` / `all`**: the
+  round, its cluster bits, or every missile of the weapon. With the flight
+  builder on, the answer is `sb.role(m.id)` (the builder's own classifier,
+  cached past the despawn), so a bit is a bit and not a guess; without it the
+  PX heuristic answers: a first-seen round that is born into a live ribbon for
+  this weapon is a bit (`trail_is_bit`), which is why the generated Lua never
+  names `sb` unless the builder is on for that weapon (wfcheck is right that it
+  would be an undefined global). Live trail ids go in an array, never `pairs` (wfcheck
   `lockstep-pairs`). Only missile families get the card: a strike's munitions have
   no `m.weapon`.
 - **Explosion burst (`project.explosionEffect`)**: `px_effects`' ring plus
   squashed lens from a claim `on_explode` (the engine emits it before WA's blast).
   `effect` mode keeps the native blast; `blast` mode zeroes
   `missile.explosion.power`/`push_pct` (or `mine.explosion.*`) and lets
-  `custom_explosion.explode` supply damage, push, crater and sound. `fx.install{
+  `custom_explosion.explode` supply damage, push, crater and sound. **`target`
+  is `all` / `main` / `bit`**, a guard at the top of the merged hook, so the
+  burst, the custom explosion WAV, any custom `on_explode` Lua **and the terrain
+  stamp** all follow it (it is one claim callback, and the card says so). It reads `sb.role(ev.missile)`, the builder's
+  identity; with the builder off the hook runs for every explosion and says so
+  in a comment, because nothing can tell the parts apart. `fx.install{
   trail = …, depth = { burst = wa.depth.FRONT } }` before the claim: on the SDK's
   `EFFECTS` band an `effect` burst draws under WA's blast and only surfaced after
   the boom. `thickness` is a PX **half**-width (the SDK doubles it); an explicit
@@ -479,7 +490,9 @@ needs any of them is drawn by `wfws.sdk`'s quad layer instead of the engine.
   (`hand_offset`, a clip's `dx`/`dy`) does move off the engine's copy, which is
   the layer's one visible limit.
 - **`extra_hand`** (`hold.extraHand`) is the layer's, since `HoldSpec` has one
-  hand slot: the engine's own maths, its own art or the first hand's sheet, the
+  hand slot: the engine's own maths, a **60 px hand cell** (never the hold
+  sheet's width, which drew the support hand at the size of the gun) and its own
+  art or the first hand's sheet, the
   swing's `dx`/`dy` carried with the weapon, no hand on the echo ghosts or the
   firing pass, and its own firing grip (`fire_radius`/`fire_rotation`/
   `fire_scale`/`fire_offset`/`fire_draw`) which falls back per key to the aiming
@@ -495,7 +508,10 @@ needs any of them is drawn by `wfws.sdk`'s quad layer instead of the engine.
 - **One swing at a time** (`swing_of[entry]`): WA is turn based, so the sampler
   asks for the worm with `worm.turn` and keeps one swing per weapon, not a map per
   worm and not a "another worm is swinging" case (`§0`).
-- **`swing` (the Space clip)**: `swing = { ticks, finish, keys }`, data not Lua:
+- **`swing` (the Space clip)**: `swing = { ticks, finish, keys }` where a key is
+  `t, angle, dx, dy, scale, frame, alpha, fade, ease` and `fade = false` steps
+  the opacity at that key instead of easing into it (a return home must not fade
+  on the way). Data not Lua:
   `M.clip_pose` is a pure function of the tick. The edge is
   `wa.world.keys().space` in a `FRAME_FINISH` worm message, never `wa.on.draw`.
   **The swing takes the worm** (`worm:take{ turn = "freeze" }`) and runs the clip
@@ -559,6 +575,11 @@ needs any of them is drawn by `wfws.sdk`'s quad layer instead of the engine.
 
 ### Record ids and art slots
 
+- **`sb.role(id)` is the one answer to "which part of the missile is this"**
+  (`wfws.sdk` 0.14.0): the classifier's `main` / `bit` / role name, kept past the
+  despawn like `sb.heading`, so an `on_explode` can ask which part burst. The
+  ribbon trail's `target` and the burst's `target` read it instead of guessing
+  from `m.sprite` again.
 - **A record id can carry `0x10000`** (WA packs a 16.16 phase). `decodeRecordId()`
   strips it, `wepParser` applies it to every sprite and sound read, and the export
   writes the plain id back; a flagged number written straight into a record draws

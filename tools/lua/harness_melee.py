@@ -340,6 +340,44 @@ for n in range(32, 48):
 check("a miss still runs the whole clip", ("take", True) in EVENTS and ("release", 0, 0) in EVENTS)
 check("a miss deals no damage", not [e for e in EVENTS if e[0] == "hurt"])
 
+# The "Space did nothing" line is only for our own weapon. A press while the
+# turn's worm holds somebody else's stock weapon belongs to that weapon (a jump,
+# a backflip, a rifle) and must stay out of the log: one WFWS weapon installed
+# would otherwise fill the game log of every player in the match.
+EVENTS.clear()
+LOG.clear()
+WORM["weapon"] = "stock.rifle"
+step(200)
+step(201, space=True)
+for n in range(202, 206):
+    step(n, space=True)
+check(
+    "a press on a stock weapon logs nothing",
+    not [line for line in LOG if line.startswith("[wfws] Space pressed")],
+    "; ".join(LOG) or "no lines",
+)
+
+# Holding one of our weapons that has no clip is exactly the case the line is
+# for: the layer exists, and it has no swing to start.
+noclip = lua.table()
+noclip.id = "test.bat.noclip"
+spec_noclip = build_spec("test.bat.noclip")
+spec_noclip["swing"] = None
+sb.hold(noclip, spec_noclip)
+EVENTS.clear()
+LOG.clear()
+WORM["weapon"] = "test.bat.noclip"
+step(300)
+step(301, space=True)
+for n in range(302, 306):
+    step(n, space=True)
+check(
+    "a press on our weapon with no clip says so",
+    any(line.startswith("[wfws] Space pressed") for line in LOG),
+    "; ".join(LOG) or "no lines",
+)
+WORM["weapon"] = "test.bat"
+
 print()
 for line in LOG:
     print("  log:", line)

@@ -45,6 +45,18 @@
 --     },
 --   })
 --
+--   sb.role(missile_id) -> "main" | "bit" | <role name> | nil
+--     The identity the classifier below decided, kept past the despawn (an
+--     `on_explode` runs around the frame the missile leaves). This is the one
+--     answer to "which part of the missile is this", so an effect that belongs
+--     to the round or only to its frags reads it here instead of guessing from
+--     `m.sprite` a second time. nil means this builder never classified that
+--     missile (another weapon, or one it left to WA).
+--
+--   sb.heading(missile_id) -> degrees clockwise from up | nil
+--     The last drawn world rotation, for a stamp that bakes its picture with
+--     the angle the round lay at (see `remember_drawn`).
+--
 -- STATE SIGNAL (legacy, `sig`): an old assumption that WA writes the
 -- behaviour's own sprite id into m.sprite. It does not -- `m.sprite` is the
 -- flight sprite and nothing else -- so new work should time the state (homing
@@ -117,6 +129,35 @@ end
 function M.heading(id)
   if id == nil then return nil end
   return drawn_by[id]
+end
+
+-- The identity this builder decided for each missile, by `m.id`, kept past the
+-- despawn for the same reason `drawn_by` is: a claim `on_explode` runs around
+-- the frame the missile leaves, and an effect that only belongs to the round or
+-- only to its frags has to know which part burst. Bounded the same way.
+local role_by = {}
+local role_count = 0
+local ROLE_MAX = 256
+
+local function remember_role(id, ident)
+  if role_by[id] == nil then
+    role_count = role_count + 1
+    if role_count > ROLE_MAX then
+      role_by, role_count = {}, 1
+    end
+  end
+  role_by[id] = ident
+end
+
+-- "main", "bit", or a `roles` entry's name, for a missile this builder saw
+-- (nil for one it never classified: another weapon, or a stock round it left to
+-- WA). This is the one answer to "which part of the missile is this": the
+-- classifier below decides it once, on first sight, before the builder zeroes
+-- `m.sprite`, and every consumer of it (the trail's attach, an explosion hook)
+-- reads it here instead of guessing again.
+function M.role(id)
+  if id == nil then return nil end
+  return role_by[id]
 end
 
 local function current_worm()
@@ -525,6 +566,7 @@ function M.flight(ctx, opts)
     if ent == nil then
       ent = classify(m)
       kind[id] = ent
+      remember_role(id, ent.ident)
       age[id] = 0
       -- `log = true` for one line per missile's first three frames: what the
       -- identity test actually saw. Turn it off once a convention is settled.
@@ -983,7 +1025,10 @@ function M.clip_pose(clip, t)
     scale = clip_lerp(a_scale, b_scale, f),
     -- A frame is an index, not a number to blend: it steps at the segment end.
     frame = (raw >= 1) and b.frame or a.frame,
-    alpha = clip_lerp(a_alpha, b_alpha, f),
+    -- `fade = false` on the key makes opacity step the same way: hold the
+    -- previous value for the segment, then land on this key's. A snap-back (the
+    -- art returning to the worm after a cut) must not fade on the way.
+    alpha = b.fade == false and a_alpha or clip_lerp(a_alpha, b_alpha, f),
   }
 end
 
@@ -1271,12 +1316,12 @@ local function hold_worm_state(entry, w)
   return per_worm, ws
 end
 
--- The melee strike (`melee` in the spec). The box is the engine's own hold
--- geometry, not a frame of reference of its own: the weapon sits at
--- `rot_w = rot + PI*weap_radial_rotation` from the worm, so "along the weapon" is
--- that same vector, and the clip's angle at the hit frame turns it about the
--- worm (mirrored with the side, as the drawn angle is). The editor's red box
--- and this test are one formula.
+-- The melee strike (`melee` in the spec). The box is the worm's own aim and
+-- direction, nothing about the art: `hold_melee_scan` below reads `worm.aim`
+-- and `worm.facing` and turns the swing's angle into it, so turning the sheet
+-- or moving its pivot cannot move the strike. (Two earlier versions read the
+-- art instead, once through its offset and once through its drawn angle, and
+-- both pointed the box at the striker's back.)
 local MELEE_SLACK = 3
 
 local function hold_melee_scan(entry, w, pose, aim_ov, facing_ov)
@@ -1444,8 +1489,13 @@ local function hold_ensure_hook()
                   if gt >= 0 then
                     local ghost = M.clip_pose(entry.clip, gt)
                     if ghost then
+                      -- `full_size`: a ghost is the same clip evaluated at an
+                      -- earlier tick, not an aim being drawn out, so it is the
+                      -- live art's size and not the 20-frame grow-in. Without
+                      -- it a swing thrown right after the weapon is selected
+                      -- left ghosts smaller than the art they trail.
                       hold_draw_aim(entry, w, ws, ghost, false,
-                        echo.fade ^ k, echo.blend, true, aim_ov, face_ov)
+                        echo.fade ^ k, echo.blend, true, aim_ov, face_ov, true)
                     end
                   end
                 end
@@ -1515,8 +1565,15 @@ local function swing_ensure()
     local pressed = space and not swing_space
     swing_space = space
     local started = false
+    -- Did the turn's worm hold one of this bundle's weapons at the press? Only
+    -- then is a press that started nothing worth reporting: every other Space
+    -- press in the match belongs to somebody else's weapon (a jump, a backflip,
+    -- a stock gun) and logging those would fill the game log of anyone who
+    -- installs one WFWS weapon.
+    local ours = false
     for i = 1, #hold_entries do
       local entry = hold_entries[i]
+      if w and w.weapon == entry.weapon then ours = true end
       if entry.clip then
         local st = swing_of[entry]
         if not st then
@@ -1595,11 +1652,14 @@ local function swing_ensure()
         st.space = space
       end
     end
-    -- A Space press that no layer could use is the one case a swing cannot log
-    -- for itself, and it is the case that looks like "Space does nothing".
-    if pressed and not started and w then
-      wa.log(("[wfws] Space pressed at tick %d, but no hold layer has an entry for weapon %s (the worm %s the turn)")
-        :format(now, tostring(w.weapon), w.turn and "has" or "does not have"))
+    -- A Space press on our own weapon that swung nothing is the one case a
+    -- swing cannot log for itself, and it is the case that looks like "Space
+    -- does nothing" (a layer with no `swing`/`clip`, or an older installed copy
+    -- of this library that has no clip support).
+    if pressed and not started and ours then
+      wa.log(("[wfws] Space pressed at tick %d while holding %s, but no swing started: " ..
+        "that weapon's layer has no `swing`/`clip` (or an older wfws.sdk is installed)")
+        :format(now, tostring(w.weapon)))
     end
   end, { msgs = { wa.msg.FRAME_FINISH } })
 end
@@ -1620,6 +1680,13 @@ function M.hold(ctx, spec)
   if rust.static == nil and type(spec.static_angles) == "table" then
     rust.static = spec.static_angles
   end
+  -- `keep_firing` (the editor's spelling) and `keep_while_firing` (the engine's
+  -- HoldSpec key) are one idea. Only the engine's name is in HOLD_KEYS, so a
+  -- bundle that wrote the short one used to keep the art while firing in the
+  -- layer and lose it the moment the layer was bypassed (`draw_mode = "rust"`).
+  -- Normalise here so both paths agree.
+  local keep_firing = spec.keep_firing == true or spec.keep_while_firing == true
+  if keep_firing then rust.keep_while_firing = true end
   local silent = nil
   if type(spec.silent_sheet) == "string" then
     local sheets = {}
@@ -1729,7 +1796,7 @@ function M.hold(ctx, spec)
     fire = fire,
     -- `keep_while_firing` is the engine's key for the same idea; once the layer
     -- draws, honouring it here is what makes the two agree.
-    keep_firing = (spec.keep_firing == true or spec.keep_while_firing == true) or nil,
+    keep_firing = keep_firing or nil,
     -- A second hand on the weapon (a support hand on a rifle's foregrip, a
     -- second grip on a two-handed blade). The engine has one hand slot, so the
     -- layer draws it: same rules as the first hand, its own numbers, and its

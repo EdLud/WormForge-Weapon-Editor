@@ -502,7 +502,10 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
     }
     const timer = setTimeout(() => {
       setPutAwayCounter((prev) => (prev !== null ? prev - 1 : null));
-    }, 45); // 20 frames * 45ms ≈ 900ms put-away duration
+      // One put-away frame is one 50 Hz tick, like the engine's counter
+      // (`worm_hold.rs` starts it at 20 and `put_pose` divides by 20), so the
+      // demo runs at the speed the game does.
+    }, 20);
     return () => clearTimeout(timer);
   }, [putAwayCounter]);
 
@@ -580,13 +583,20 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
   };
 
   // The keyboard is the game's own trigger, so the preview listens to the same
-  // key. Typing in a field keeps its Space.
+  // key. Typing keeps its Space, and so does anything a Space press activates:
+  // a focused button, link, summary or role=button uses it as its activation
+  // key, and taking it would break keyboard use of every control on the page.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.code !== 'Space' && event.key !== ' ') return;
       const target = event.target as HTMLElement | null;
       const tag = target?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target?.isContentEditable) {
+        return;
+      }
+      // Space belongs to a control that would consume it: buttons, links,
+      // summaries, anything focusable that is not the page itself.
+      if (target?.closest('button, a[href], summary, [role="button"], [role="link"], [tabindex]')) {
         return;
       }
       if (!playerClip.enabled) return;
@@ -2588,7 +2598,10 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
                 draws it with the engine's own hand maths. */}
             <div className="space-y-1.5 rounded-lg border border-stone-200 bg-white p-3 dark:border-stone-700 dark:bg-stone-800">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-semibold text-stone-700 dark:text-stone-300">
+                <span
+                  className="text-xs font-semibold text-stone-700 dark:text-stone-300"
+                  title="A support hand on the grip. The engine has one hand slot, so the aim layer draws this one with the same maths; with no art of its own it reuses the hand above. Drawing it turns on custom held art."
+                >
                   Second Hand
                 </span>
                 <label
@@ -2605,11 +2618,6 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
                   Draw
                 </label>
               </div>
-              <p className="text-[10px] leading-snug text-stone-500 dark:text-stone-400">
-                A support hand on the grip. The engine has one hand slot, so the aim layer draws
-                this one with the same maths; with no art of its own it reuses the hand above.
-                Drawing it turns on custom held art.
-              </p>
               {extraHand?.enabled && (
                 <>
                   <HoldDial
@@ -3584,16 +3592,12 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
           <div className="mt-4 space-y-3 rounded-xl border border-stone-200 bg-stone-50/50 p-3.5 dark:border-stone-800 dark:bg-stone-800/30">
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div className="min-w-0">
-              <span className="text-xs font-bold uppercase tracking-wider text-stone-900 dark:text-stone-100">
+              <span
+                className="text-xs font-bold uppercase tracking-wider text-stone-900 dark:text-stone-100"
+                title="What the held weapon does when the player presses Space. Each key is a pose on top of the engine's aim: an angle, a nudge in sheet pixels, a size, an optional strip frame and opacity, reached with its own easing. It needs the quad layer, so it also turns the aim poses over to sb.hold."
+              >
                 Space Swing (`swing`)
               </span>
-              <p className="mt-0.5 max-w-2xl text-[11px] text-stone-500 dark:text-stone-400">
-                What the held weapon does when the player presses Space. Each key is a pose on
-                top of the engine&apos;s aim: an angle, a nudge in sheet pixels, a size, an
-                optional strip frame and opacity, reached with its own easing. It needs the
-                quad layer, so it also turns the aim poses over to{' '}
-                <span className="font-mono">sb.hold</span>.
-              </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <label
@@ -3677,6 +3681,12 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
                       <th className="px-1 text-left font-semibold">Scale</th>
                       <th className="px-1 text-left font-semibold">Frame</th>
                       <th className="px-1 text-left font-semibold">Alpha</th>
+                      <th
+                        className="px-1 text-left font-semibold"
+                        title="Whether the opacity eases into this key. Off holds the previous key's alpha and steps at the key, so a pose that returns the weapon to the worm does not fade out on its way."
+                      >
+                        Fade
+                      </th>
                       <th className="px-1 text-left font-semibold">Ease</th>
                       <th />
                     </tr>
@@ -3780,6 +3790,17 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
                                   patchKey({ alpha: Math.min(1, Math.max(0, value)) });
                                 }}
                                 className={cell}
+                              />
+                            </td>
+                            <td className="px-1">
+                              <input
+                                id={`clip-key-fade-${index}`}
+                                type="checkbox"
+                                aria-label={`Key ${index + 1} fades its opacity`}
+                                title="Fade into this key. Off keeps the previous alpha for the whole segment and steps at the key."
+                                checked={key.fade !== false}
+                                onChange={(event) => patchKey({ fade: event.target.checked })}
+                                className="h-3.5 w-3.5 cursor-pointer rounded text-forge-600 focus:ring-forge-500"
                               />
                             </td>
                             <td className="px-1">
@@ -4964,9 +4985,6 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
 
                   {activeFlightRole === 'primary' && (
                     <div className="space-y-2.5 text-xs">
-                      <p className="text-[11px] text-stone-600 dark:text-stone-300">
-                        <strong>Primary Weapon Round:</strong> Initial projectile sheet. Secondary roles (homing, cluster bits, digging) inherit or override from this round.
-                      </p>
                       {digMainEnabled && (
                         <div className="p-2.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 flex items-center justify-between gap-2">
                           <span className="text-[11px] text-stone-600 dark:text-stone-300">

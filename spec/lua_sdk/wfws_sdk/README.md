@@ -74,6 +74,14 @@ forgotten) returns `nil` and the caller falls back to the velocity heading. The
 angle is the world rotation, without the weapon-wide `angle` offset: that offset
 corrects art that does not point up, and a stamp's own art does.
 
+`sb.role(missile_id)` is the other half: `"main"`, `"bit"` or a `roles` entry's
+name, the identity the classifier decided on that missile's first frame. It is
+kept past the despawn, because a claim `on_explode` runs around the frame the
+missile leaves and an effect that belongs to the round or only to its frags has
+to know which part burst. `nil` means this builder never classified it (another
+weapon, or one it left to WA), which is the only case a caller has to fall back
+on. Both answers are per missile id, so they are lockstep stable.
+
 ```lua
 sb.flight(ctx, {
   weapon = ctx.id,
@@ -412,7 +420,7 @@ a hold needs no second library and the art follows the aim geometry exactly.
 
 ### The Space swing (`swing`)
 
-`swing = { ticks, finish, keys = { { t, angle, dx, dy, scale, frame, alpha, ease }, ... } }`
+`swing = { ticks, finish, keys = { { t, angle, dx, dy, scale, frame, alpha, fade, ease }, ... } }`
 plays a keyframed clip on the held art when the turn player presses Space. It is
 data, not Lua: `M.clip_pose` is a pure function of the ticks since the press, so
 the simulation decides *when* and the draw decides *how it looks*, from the same
@@ -453,7 +461,10 @@ arithmetic the editor's preview runs.
   frame, `scale` multiplies the art, `frame` overrides the strip frame and
   `alpha` fades the quad (`wa.draw.quad` takes 0xAARRGGBB and `quad_tint`
   premultiplies it, so fading needs no blend mode). The hand carries `dx`/`dy`
-  so it stays with the weapon.
+  so it stays with the weapon. `fade = false` on a key makes the opacity step
+  like a frame does: it holds the previous key's alpha for the segment and lands
+  on this key's value, so a pose that returns the weapon to the worm does not
+  fade out on the way home.
 - **Easing is the editor's own set:** `linear`, `in_quad`, `out_quad`,
   `inout_quad`, `in_cubic`, `out_cubic`, `inout_cubic`, `out_back`,
   `out_elastic` and `hold`. A frame is an index, not a number to blend, so it

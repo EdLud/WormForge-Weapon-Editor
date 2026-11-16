@@ -437,8 +437,12 @@ export interface RibbonTrailConfig {
   glowWidth: number;
   /** Hex colour, e.g. `#ff8800` (`r`, `g`, `b`). */
   color: string;
-  /** Attach to the primary round only, or to its cluster bits as well. */
-  target: 'main' | 'all';
+  /**
+   * Which missiles of the weapon get the ribbon: the fired round, its cluster
+   * bits, or both. `bit` is the round's complement, which is what a weapon that
+   * wants a ribbon only on its frags asks for.
+   */
+  target: 'main' | 'bit' | 'all';
 }
 
 /**
@@ -539,6 +543,13 @@ export interface FireSequenceConfig {
 export interface ExplosionEffectConfig {
   enabled: boolean;
   mode: ExplosionMode;
+  /**
+   * Which explosions this hook runs for: every missile of the weapon, the
+   * fired round only, or its cluster bits only. The hook is one claim
+   * `on_explode`, so the burst, the custom explosion WAV and any custom
+   * `on_explode` Lua in the snippet ride the same choice.
+   */
+  target: 'all' | 'main' | 'bit';
   /** Custom-explosion fields, used by `blast` mode only. */
   damage: number;
   push: number;

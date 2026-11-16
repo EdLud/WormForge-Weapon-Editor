@@ -33,7 +33,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deflateSync, inflateSync } from 'node:zlib';
-import { WeaponProject, PackArtSlot, ClustletConfig } from '../src/types/weapon';
+import { WeaponProject, PackArtSlot, ClustletConfig, RibbonTrailConfig } from '../src/types/weapon';
 import {
   generateLuaCode,
   bitFlightSheetPath,
@@ -494,7 +494,7 @@ const DEFAULTS = {
     coreWidth: 8,
     glowWidth: 13,
     color: '#ffffff',
-    target: 'main' as 'main' | 'all',
+    target: 'main' as RibbonTrailConfig['target'],
   },
 };
 
@@ -1750,16 +1750,19 @@ const TESTS: TestCase[] = [
           { t: 0, angle: 0, dx: 0, dy: 0, scale: 1, ease: 'out_quad' },
           { t: 4, angle: -25, dx: -2, dy: 2, scale: 1, ease: 'in_quad' },
           { t: 8, angle: 60, dx: 3, dy: -3, scale: 1.1, ease: 'out_cubic' },
-          { t: 16, angle: 0, dx: 0, dy: 0, scale: 1, ease: 'out_quad' },
+          // The return home does not fade: `fade = false` holds the alpha for the
+          // segment and steps at the key, so a weapon coming back to the worm
+          // never goes see-through on the way.
+          { t: 16, angle: 0, dx: 0, dy: 0, scale: 1, alpha: 0.6, fade: false, ease: 'out_quad' },
         ],
       },
     }),
     intent:
-      'The aiming clip: Space plays a keyframed swing on the held art instead of firing, and the turn ends when the clip runs out.',
+      'The aiming clip: Space plays a keyframed swing on the held art instead of firing, and the turn ends when the clip runs out. The last key sets alpha 0.6 with `fade = false`, so the art stays fully opaque through the return and only drops to 0.6 as it lands.',
     expect:
       'The bat is held while aiming; pressing Space winds it back, swings it through, and returns it to the aim pose, with no shot, no projectile and no ammo change. The turn then ends by itself.',
     watch:
-      'The weapon firing instead of swinging (`eat_fire` missing), the art not moving at all (the quad layer not taken over, or `swing` not emitted), the art moving but snapping back the instant Space is released (the clip read from the render clock instead of the 50 Hz one), or the turn never ending (a swing with no finish).',
+      'The weapon firing instead of swinging (`eat_fire` missing), the art not moving at all (the quad layer not taken over, or `swing` not emitted), the art moving but snapping back the instant Space is released (the clip read from the render clock instead of the 50 Hz one), the return fading out and back in (a key written without `fade = false`), or the turn never ending (a swing with no finish).',
   },
   {
     project: makeOp({
@@ -1906,6 +1909,61 @@ const TESTS: TestCase[] = [
       'Pressing Space freezes the worm and plays all 16 ticks of the swing (no aim pose needed, no firing state involved), a worm standing in the box (in front, within the reach and the arc) takes 24 damage on tick 8 and is thrown away from the striker with a little lift, the swinger is never hit, and each worm only takes it once per swing. Nothing is fired and no ammo is used; the worm is given back and the turn ends when the clip does.',
     watch:
       'No damage at all (the `melee` table not registered because `sb.hold` took the engine path, the hit frame past the end of the clip, or the swing never starting: the log would then show no `swing at tick` line), nothing drawn for the whole clip while the strike lands (the draw pass comparing worm handles instead of `worm.id`), the animation playing for one frame and stopping (the clip still gated on an aim state instead of the swing), damage on every frame the box overlaps (the once-per-worm table not resetting per swing), the swinger hurting itself (spare_shooter), a worm behind the striker taking it (the scan vector mirrored wrongly, so the box points backwards on one side), the sheep launching instead of swinging (the take firing or `eat_fire` missing), or the worm left frozen with no turn end (the release and `set_turn_clock(0)` at the end of the clip). Set `log = true` (it is on here) and read the `[melee]` lines.',
+  },
+  {
+    project: makeOp({
+      id: 'wftest.51_trail_bits_only',
+      name: 'WF 51 Trail Bits Only',
+      slot: 'ming_vase',
+      burst: 'clusters',
+      body: { sprite: 'grenade' },
+      clustlet: { count: 5, sprite_count: 1, animation: 2 },
+      // The primary builder has to be on: it is what classifies each missile
+      // (`sb.role`), and the trail's bit test reads that answer.
+      missileSprite: { enabled: true, mode: 'custom', anim: 'track', hideStock: true },
+      packArt: { cluster_sprite: art('cluster_sprite', roleSheet(GRENADE_BMP, GRENADE_PNG, 16), 16) },
+      trailer: {
+        enabled: true,
+        max: 10,
+        every: 1,
+        vanish: 2,
+        coreWidth: 4,
+        glowWidth: 8,
+        color: '#66ccff',
+        target: 'bit',
+      },
+    }),
+    intent:
+      'Ribbon trail with target "bit": the round flies bare and only its cluster bits trail. The builder is on for this weapon, so the identity is the one it decided on each missile`s first frame (`sb.role`), not the PX live-ribbon guess.',
+    expect: 'No ribbon on the bomb; five blue ribbons once it bursts.',
+    watch:
+      'A ribbon on the bomb (the guard inverted or dropped), no ribbons at all (the bit test reading a nil role as "not a bit", which happens when the builder is off), or five ribbons plus the parent`s (the hook attaching before the identity is cached).',
+  },
+  {
+    project: makeOp({
+      id: 'wftest.52_burst_main_only',
+      name: 'WF 52 Burst Main Only',
+      slot: 'ming_vase',
+      burst: 'clusters',
+      body: { sprite: 'grenade' },
+      clustlet: { count: 5, sprite_count: 1, animation: 2 },
+      // Same reason as WF 51: the round/bit split is the builder's identity.
+      missileSprite: { enabled: true, mode: 'custom', anim: 'track', hideStock: true },
+      packArt: { cluster_sprite: art('cluster_sprite', roleSheet(GRENADE_BMP, GRENADE_PNG, 16), 16) },
+      explosion: {
+        enabled: true,
+        mode: 'effect',
+        target: 'main',
+        preset: 'pyro',
+        radius: 40,
+        color: '#ffaa33',
+      },
+    }),
+    intent:
+      'Explosion burst with target "main": only the round`s own blast draws the ring, and the five bit blasts stay plain even though they are missiles of the same weapon. The guard sits at the top of the merged claim `on_explode`, so the custom WAV and custom Lua in the same hook follow it too.',
+    expect: 'One orange ring where the bomb bursts; five silent bit blasts, no rings.',
+    watch:
+      'Six rings (the guard not emitted, or `sb.role` returning nil for the bits), no ring at all (the guard reading the round as a bit: `sb.role` must answer "main"), or the bits` own blast silenced (the burst in `blast` mode, where the record is zeroed for every missile).',
   },
 ];
 

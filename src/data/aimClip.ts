@@ -40,6 +40,14 @@ export interface AimClipKey {
   frame?: number;
   /** 0..1 opacity, default 1. */
   alpha?: number;
+  /**
+   * Whether the opacity eases into this key, default true. `false` holds the
+   * previous key's alpha for the whole segment and steps to this key's value at
+   * the key itself, which is what a snap-back needs: the art must not fade out
+   * on its way to the next pose (a weapon returning to the worm after a swing),
+   * it just arrives.
+   */
+  fade?: boolean;
   ease: ClipEase;
 }
 
@@ -170,7 +178,9 @@ export function evalClip(clip: AimClipConfig, t: number): ClipPose | null {
     scale: lerp(a.scale ?? 1, b.scale ?? 1, f),
     // A frame is an index, not a number to blend: it steps at the segment end.
     frame: raw >= 1 ? b.frame : a.frame,
-    alpha: lerp(a.alpha ?? 1, b.alpha ?? 1, f),
+    // `fade = false` is the same rule for the opacity: hold the previous value
+    // for the segment, then step. A snap-back pose stays opaque until it lands.
+    alpha: b.fade === false ? (a.alpha ?? 1) : lerp(a.alpha ?? 1, b.alpha ?? 1, f),
   };
 }
 

@@ -1,5 +1,62 @@
 # WormForge Weapon Studio, Engineering Notes (API 4.0)
 
+### The identity was computed and thrown away
+
+The builder has classified every missile since the bit role landed: on the one
+frame where the answer exists (`m.sprite` before it is zeroed, `m.is_bit`, or a
+`roles` match), it decides `main` or `bit` and caches it per `m.id`. Every other
+consumer then guessed again, differently: the ribbon trail used PX's live-ribbon
+heuristic ("a first-seen round with a ribbon already running is a bit"), the
+editor's own UI offered only "main or every part", and an explosion burst had no
+choice at all.
+
+`sb.role(id)` publishes the answer, and keeps it past the despawn the way
+`sb.heading` does, because a claim `on_explode` runs around the frame the missile
+leaves. With it:
+
+- `ribbonTrail.target` is `main` / `bit` / `all`, and the generated hook asks
+  `sb.role` first, falling back to the PX heuristic only when the builder is not
+  installed for that weapon. The generated Lua names `sb` only when the builder
+  declared it: wfcheck correctly calls an undeclared `sb` an undefined global, so
+  the same code that reads the identity has to know whether it exists.
+- `explosionEffect.target` is `all` / `main` / `bit`, a guard at the top of the
+  merged claim `on_explode`. One claim hook carries the burst, the custom WAV,
+  any custom `on_explode` and the terrain stamp (which is appended last so a
+  custom early `return` skips it), so the choice is made once, before all of
+  them, and the card says so. With the builder off nothing can tell the parts apart, so the
+  hook runs for every explosion and the Lua carries a comment saying why.
+
+Two boundaries worth remembering. The identity is **per missile id and per
+weapon**: `sb.role` answers `nil` for a missile this builder never classified
+(another weapon, or one it left to WA), and the trail's fallback is what runs
+then. And the memory is bounded at 256 ids, like `drawn_by`, so a very long
+session can forget a very old round; a `nil` role falls back rather than
+dropping the effect, which is the right way round for both consumers.
+
+### The second hand was the size of the gun
+
+`extra_hand.size` is the quad layer's cell, and it fell back to the *hold
+sheet's* width when the hand had no art of its own:
+
+    size = extra.sheetWidth or h.sheetWidth or 60
+
+The second hand then draws at that many pixels (`x_half = size * scale * base /
+2`), so a weapon with a 128 px hold sheet drew a 128 px support hand while the
+preview, which draws the reused PX hand sheet at its natural 60, showed the right
+size. The cell is a **hand** cell: 60 px, the engine's own `hand_size`, unless the
+hand uploaded its own art, in which case its own sheet size is what the preview
+draws too.
+
+### A key can step its opacity
+
+`alpha` interpolated between keys, so a clip whose last pose returns the weapon
+to the worm faded out on the way there and back in at the end. `fade = false` on
+a key is the frame rule applied to opacity: hold the previous key's alpha for the
+segment, land on this key's value at the key. Both halves read it (`evalClip` and
+`clip_pose`), the generator writes it only where it is set, the importer reads it
+back, and the key table has its own Fade column. WF 47's return key is
+`alpha = 0.6, fade = false`, so the cut is visible and the return is not.
+
 ## Overview & Architecture
 This application is a modern, full-featured TypeScript & React replacement for the legacy/stale WormForge weapon creator.
 
