@@ -272,6 +272,12 @@ Reference implementation: `WormForgeNew/crates/weapons/src/record.rs`,
 without it, only emit values that differ from the stock donor. An untouched
 import must emit no record tables.
 
+- **A template has to be one of WA's own weapons.** The engine refuses the whole
+  bundle for `stock.<unknown>` (`stock.famas: a template is one of WA's own
+  weapons`), so every weapon in it dies, not just that one. `generateLuaCode`
+  writes no `copy_from` and a comment saying why when the slot is not in
+  `stockDonors.json`, and `gen_test_pack.ts` refuses to write a pack whose slots
+  are not all real before it writes a byte.
 - **The baseline must be the donor the claim copies.** `copy_from` supplies the
   donor's whole record, so diffing against a different donor skips every value
   the two share: `WepBaseline.slot` pins a baseline to its donor,
@@ -426,6 +432,17 @@ The editor ships `spec/lua_sdk/wfws_sdk/` (id `wfws.sdk`), exporting
   hit: `zap.set_message_electric(20, 0, -4, true)` before `blast.explode{ kind =
   "taze" }`, or `zap.set_message_electric_missile(20, ev.worm, 2)` in `effect`
   mode. The pierce and the melee strike arm their own hits the same way.
+- **Custom WAVs (`project.customSounds`)**: PCM files declared in the claim's
+  `sounds` list and played by path, so no stock sample slot is used. Four roles:
+  `launch` (`on_fire`, once per trigger, the file counterpart of the record's own
+  `missile.launch_sound`), `explosion` (merged into `on_explode`), `interval`
+  (ticked from `wa.on.missile_frame`) and `shot` (the sequential-fire burst's
+  `on_shot`). A launch WAV rides whichever `on_fire` the weapon has: sequential
+  fire already owns that key, so the play goes at the top of its handler (one
+  report per trigger, not per shot). A melee claim eats the trigger (`eat_fire`)
+  and an author's own `on_fire` owns the key, so in both cases the play is not
+  emitted (the card says which) and a melee weapon sounds its strikes instead
+  (`melee.hitSound` / `missSound`).
 - **Terrain stamp (`project.terrainStamp`)**: `wa.land.stamp` burns a picture into
   the land where the round bursts. It is a built-in verb, so no dependency. The
   card bakes the upload into **32 cells, frame 0 up, clockwise**
@@ -489,6 +506,29 @@ needs any of them is drawn by `wfws.sdk`'s quad layer instead of the engine.
   `config.hand`. A `weap_scale`-sized hand showed as a second hand. A nudged hand
   (`hand_offset`, a clip's `dx`/`dy`) does move off the engine's copy, which is
   the layer's one visible limit.
+- **`aim_clamp`** (`hold.aimClamp`, degrees either side of level, default 60) stops
+  the aim short of the ends of WA's 180 degree sweep, where the held art leaves
+  its cell and a cut aimed vertically reads as noise. WA's own bat pipes its aim
+  for the same reason. `worm.aim` and `worm.aim_target` are read-only, but
+  **`worm:input{ aim = degrees }` writes the same target WA's `control_aim`
+  writes** (+0x24C, PX's FireAngle), and `wa.on.body_move` is the per-frame
+  simulation hook for worms, so `hold_install_aim_clamp` clamps WA's own aim:
+  the crosshair, the fired vector and the drawn pose all stop at the limit. The
+  write runs before WA's body step, so WA adds at most one of its own aim steps
+  (180/128 of a degree, the figure `docs/agent/lua-worms.md` gives) after it: the
+  target can sit that one step past the limit, never further. It is one native
+  write, only while the aim is out of range, and one Lua call per worm per frame
+  for the hook. The layer does the rest: `hold_clamp_aim` draws the pose at
+  exactly the limit, a Space press latches the clamped aim so the swing and a
+  melee strike go along it, and a `fireSequence`'s `seq_dir` launches the burst
+  along it (`AIM_LO`/`AIM_HI` plus `aim_clamped`), which also covers the first
+  frame after selection, before the native write lands. The clamp is what forces
+  the quads (`holdNeedsAimLayer`, `M.hold_needs_lua`), so an engine without
+  `body_move` still gets the drawn clamp and one log line. The engine's hand is
+  parked at `hand_radius = 0.01` while a clamp is on, because the layer draws the
+  clamped hand and the engine would draw its own at WA's aim, which showed as two
+  hands past the limit. The preview clamps the same way (`aimDrawn`) and leaves
+  the worm's posture strip on the real aim, exactly as in game.
 - **`extra_hand`** (`hold.extraHand`) is the layer's, since `HoldSpec` has one
   hand slot: the engine's own maths, a **60 px hand cell** (never the hold
   sheet's width, which drew the support hand at the size of the gun) and its own
@@ -536,9 +576,13 @@ needs any of them is drawn by `wfws.sdk`'s quad layer instead of the engine.
   striker's back (once through the radius sign, once through the sheet's own
   angle). `radius` is the reach, `width` the half-arc, and the near edge starts
   3 px behind the worm. `spare_shooter` and
-  `once` default on, reset per Space press. What a hit does is the weapon's own
-  `hit` callback (`victim:hurt{ amount, vx, vy }`, or `zap.hurt_electric` for
-  `taze`, `pcall`ed). The hit lands on the first tick at or past `hit_frame`
+  `once` default on, reset per Space press. The throw is the same aim vector:
+  `push = "aim"` (the default) hands `hit` `(vx, vy)` = the scan vector times
+  `push power`, with `lift` subtracted from y (world y is down, so a positive
+  lift throws up); `push = { x, y }` is the author's literal throw and still gets
+  `lift`. No `weap_radius`, no `weap_rotation`, nothing from the art. What a hit
+  does is the weapon's own `hit` callback (`victim:hurt{ amount, vx, vy }`, or
+  `zap.hurt_electric` for `taze`, `pcall`ed). The hit lands on the first tick at or past `hit_frame`
   with a `st.struck` latch (`>=`, not `==`), so a frame whose message never
   arrives cannot cost the swing its hit and it still lands once. Once the swing
   has taken its worm only that worm dying ends it early: a selection WA drifts
@@ -576,7 +620,7 @@ needs any of them is drawn by `wfws.sdk`'s quad layer instead of the engine.
 ### Record ids and art slots
 
 - **`sb.role(id)` is the one answer to "which part of the missile is this"**
-  (`wfws.sdk` 0.14.0): the classifier's `main` / `bit` / role name, kept past the
+  (`wfws.sdk` 0.16.0): the classifier's `main` / `bit` / role name, kept past the
   despawn like `sb.heading`, so an `on_explode` can ask which part burst. The
   ribbon trail's `target` and the burst's `target` read it instead of guessing
   from `m.sprite` again.
@@ -900,7 +944,7 @@ edits the suffix only, so no id can collide with a mod the reader shows.
   `fps`/`play` are not needed. `mod.toml` and the ZIP are written from the same
   `terrainStampPath()` test, so a declared path always exists.
 - Uploaded WAVs (`project.customSounds`) are written as
-  `sounds/<mod>/explosion.wav`, `interval.wav` and `shot.wav` whenever the role
+  `sounds/<mod>/launch.wav`, `explosion.wav`, `interval.wav` and `shot.wav` whenever the role
   is enabled and has a file. The claim's `sounds` list, the `on_explode` play
   call and `fire_seq`'s `on_shot` path are the same contract: a declared path
   must exist at load.
@@ -958,10 +1002,10 @@ The pack ships the editor's own `wf-lib/wfws_sdk/` (copied from `spec/`, like an
 export does), so its weapons run against the version they were generated for
 instead of an older installed copy of the library.
 
-It writes one bundle with 50 components, one profile ("WF Test Pack") and art
+It writes one bundle with 54 components, one profile ("WF Test Pack") and art
 derived from `spec/` sheets, one per role (the sprite builder, cluster bits, the
 homing window, the homing bit, the roaming animal, native trails, the aim layer,
-the swing, the melee strike). **Each entry's intent, expected result and failure
+the swing, the melee strike, the aim clamp on a swing and on a firearm). **Each entry's intent, expected result and failure
 symptom live in `test_pack/README.md`**: read it instead of guessing what a number
 is for, and keep it in step when a test changes. The profile places every weapon
 on a distinct stock slot with infinite ammo.
@@ -1177,16 +1221,17 @@ swing clip, ghost trail, second hand), melee strikes, the WFWS flight builder
 (primary, bits, timed homing, dig, roam), ribbon trail, explosion burst (native or
 replaced blast, electrical), terrain stamp with impact damage, sequential fire,
 custom WAVs, pack art, the bundle reader (`.wep` + Lua tables + this editor's own
-features) and the exporter. `wfws.sdk` is 0.13.0 and ships inside every export.
+features) and the exporter. `wfws.sdk` is 0.16.0 and ships inside every export.
 
-Validated by the full check set in §11: `lint`, `build`, `gen_test_pack` (50
-weapons), `check_mod_import` (50/50), `audit_records` (0 findings),
+Validated by the full check set in §11: `lint`, `build`, `gen_test_pack` (54
+weapons), `check_mod_import` (54/54), `audit_records` (0 findings),
 `check_copyfrom`, `wfcheck` on the pack and on a UI-exported ZIP.
 
 Waiting on a person for:
 
 - in-game passes over the later test weapons (WF 29 fuse, WF 31/32/36 firing art,
-  WF 37-45 stamp and pierce, WF 46/47/48/49 aim layer and clip, WF 50 melee), each
+  WF 37-45 stamp and pierce, WF 46/47/48/49 aim layer and clip, WF 50 melee,
+  WF 53/54 aim clamp), each
   entry's expected result and failure symptom are in `test_pack/README.md`;
 - a review of the redesign branch on a phone, then a merge or a rebase;
 - the GitHub remote and Pages (§12).

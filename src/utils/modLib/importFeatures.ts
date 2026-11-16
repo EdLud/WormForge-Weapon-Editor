@@ -33,6 +33,7 @@ import type {
   WeaponProject,
 } from '../../types/weapon';
 import { DEFAULT_MELEE } from '../../data/melee';
+import type { MeleeHit } from '../../types/weapon';
 import {
   CLIP_EASES,
   DEFAULT_AIM_ECHO,
@@ -744,6 +745,21 @@ export async function readBundleFeatures(args: {
         if (echo.enabled) notes.push('ghost trail');
       }
     }
+    // The aim clamp: degrees either side of level. Two numbers, so the reader
+    // takes them straight back out of the same table the generator wrote.
+    const clampTable = isTable(holdTable.aim_clamp) ? holdTable.aim_clamp : undefined;
+    if (clampTable) {
+      project.hold = {
+        ...project.hold,
+        aimClamp: {
+          enabled: true,
+          up: Math.min(90, Math.max(0, num(clampTable.up) ?? 60)),
+          down: Math.min(90, Math.max(0, num(clampTable.down) ?? 60)),
+        },
+      };
+      notes.push('aim clamp');
+    }
+
     // The second hand: the aim layer's own `extra_hand` table (the engine's
     // `HoldSpec` has one hand slot, so it is only ever emitted for the layer).
     const extraHandTable = isTable(holdTable.extra_hand) ? holdTable.extra_hand : undefined;
@@ -802,10 +818,39 @@ export async function readBundleFeatures(args: {
       const meleeText = sbHold?.text ?? '';
       const hitAt = meleeText.indexOf('hit = function');
       const hitLine = hitAt >= 0 ? meleeText.slice(hitAt) : '';
+      // The generated callback reads the strike (`hit and hit.damage or 24`), so
+      // the literal after `or` is the weapon's single-hit damage; a hand-written
+      // callback still has the plain form.
       const amount =
-        /victim:hurt\{\s*amount\s*=\s*(-?\d+(?:\.\d+)?)/.exec(hitLine) ??
-        /hurt_electric\(victim,\s*(-?\d+(?:\.\d+)?)/.exec(hitLine);
+        /hit and hit\.damage or (-?\d+(?:\.\d+)?)/.exec(hitLine) ??
+        /(?:amount\s*=\s*|hurt_electric\(victim,\s*)(-?\d+(?:\.\d+)?)/.exec(hitLine);
       const push = meleeTable.push;
+      // A combo writes `hits = { { frame, damage, power, lift }, ... }`; one hit
+      // writes `hit_frame` / `damage` / `power` and no list. Both come back as
+      // the same table, so the panel always has rows to edit.
+      const hitRows = isTable(meleeTable.hits) ? (meleeTable.hits as LuaTable) : undefined;
+      const hits: MeleeHit[] = [];
+      if (hitRows) {
+        // A Lua array reads as `1..n` string keys; gaps end the walk.
+        for (let i = 1; hitRows[String(i)] !== undefined; i += 1) {
+          const row = hitRows[String(i)];
+          if (!isTable(row)) continue;
+          const vx = num(row.vx);
+          const vy = num(row.vy);
+          // Each strike's own damage lives in the `hit` callback as
+          // `hit and hit.damage or <fallback>`, so the table is the answer and
+          // the callback's literal is only the fallback for a three-argument
+          // caller.
+          hits.push({
+            frame: Math.max(0, Math.round(num(row.frame) ?? 0)),
+            damage: Math.max(0, Math.round(num(row.damage) ?? 0)),
+            power: num(row.power) ?? 0,
+            lift: num(row.lift) ?? 0,
+            ...(vx === undefined ? {} : { vx }),
+            ...(vy === undefined ? {} : { vy }),
+          });
+        }
+      }
       project.melee = {
         enabled: true,
         radius: num(meleeTable.radius) ?? DEFAULT_MELEE.radius,
@@ -819,11 +864,16 @@ export async function readBundleFeatures(args: {
         pushVx: isTable(push) ? num(push.x) ?? 0 : 0,
         pushVy: isTable(push) ? num(push.y) ?? 0 : 0,
         lift: num(meleeTable.lift) ?? 0,
+        // A bundle written before the strike had sounds carries neither key, so
+        // it comes back with the editor's default whiff (96) and a silent hit.
+        hitSound: num(meleeTable.hit_sound) ?? DEFAULT_MELEE.hitSound,
+        missSound: num(meleeTable.miss_sound) ?? DEFAULT_MELEE.missSound,
         oncePerTarget: meleeTable.once !== false,
         spareShooter: meleeTable.spare_shooter !== false,
         log: meleeTable.log === true,
+        ...(hits.length > 1 ? { hits } : {}),
       };
-      notes.push('melee strike');
+      notes.push(hits.length > 1 ? `melee strike (${hits.length} hits)` : 'melee strike');
     }
     notes.push(flashSource ? 'hold art + firing sprite' : 'hold art');
     if (project.aimClip) notes.push('space swing');
@@ -1110,21 +1160,33 @@ export async function readBundleFeatures(args: {
       ...soundBase,
       ...(project.customSounds ?? {}),
     } as CustomSoundsConfig;
+    // The generated roles name their own file (`launch.wav`, `explosion.wav`), so
+    // the name answers it. A hand-written bundle may call the file anything, and
+    // the launch and explosion plays are the same shape (`wa.sound.play(ev.worm,
+    // "<path>", n)`); which hook the play sits in is what tells them apart, so
+    // take the nearest enclosing one.
+    const playHookOf = (path: string): 'launch' | 'explosion' | null => {
+      const quoted = [`wa.sound.play(ev.worm, "${path}"`, `wa.sound.play(ev.worm, '${path}'`];
+      const at = quoted.map((needle) => moduleText.indexOf(needle)).filter((i) => i >= 0);
+      if (at.length === 0) return null;
+      const playAt = Math.min(...at);
+      const fireAt = moduleText.lastIndexOf('on_fire', playAt);
+      const explodeAt = moduleText.lastIndexOf('on_explode', playAt);
+      return fireAt > explodeAt ? 'launch' : 'explosion';
+    };
     for (const path of soundPaths) {
       const base = path.split('/').pop()?.toLowerCase() ?? '';
       const role =
-        base.includes('explosion')
-          ? 'explosion'
-          : base.includes('shot')
-            ? 'shot'
-            : base.includes('interval')
-              ? 'interval'
-              : moduleText.includes(`wa.sound.play(ev.worm, "${path}"`) ||
-                  moduleText.includes(`wa.sound.play(ev.worm, '${path}'`)
-                ? 'explosion'
-                : moduleText.includes(`path = "${path}"`)
-                  ? 'interval'
-                  : undefined;
+        base.includes('launch')
+          ? 'launch'
+          : base.includes('explosion')
+            ? 'explosion'
+            : base.includes('shot')
+              ? 'shot'
+              : base.includes('interval')
+                ? 'interval'
+                : (playHookOf(path) ??
+                  (moduleText.includes(`path = "${path}"`) ? 'interval' : undefined));
       if (!role) continue;
       const asset = await readAsset(files, bundleDir, path);
       const sound = asset
@@ -1135,7 +1197,16 @@ export async function readBundleFeatures(args: {
             size: asset.bytes.length,
           }
         : undefined;
-      if (role === 'explosion') {
+      if (role === 'launch') {
+        // The launch WAV is the `on_fire` play, which is the only one that names
+        // the firing event rather than the round.
+        sounds.launchEnabled = true;
+        sounds.launch = sound;
+        const priority = new RegExp(
+          `wa\\.sound\\.play\\(ev\\.worm,\\s*["']${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']\\s*,\\s*(\\d+)\\)`,
+        ).exec(moduleText);
+        if (priority) sounds.launchPriority = Number(priority[1]);
+      } else if (role === 'explosion') {
         sounds.explosionEnabled = true;
         sounds.explosion = sound;
         const priority = /wa\.sound\.play\(ev\.worm,\s*["'][^"']+["']\s*,\s*(\d+)\)/.exec(

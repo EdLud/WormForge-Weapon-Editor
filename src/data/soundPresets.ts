@@ -5,12 +5,18 @@ import type { CustomSoundsConfig } from '../types/weapon';
  * sound is declared in the claim's `sounds` list and played by path:
  * `wa.sound.play(target, "sounds/<mod>/<role>.wav", priority)`.
  *
+ * - The launch sound runs in the claim's `on_fire`, i.e. where WA fires the
+ *   weapon, and is the file counterpart of the record's `missile.launch_sound`
+ *   (a native id). A claim that eats the trigger (a melee swing) never reaches
+ *   `on_fire`; those weapons sound their strikes instead.
  * - The explosion sound runs in the claim's `on_explode`, before WA's blast.
  * - The interval sound is ticked from `wa.on.missile_frame`; Lua has no handle
  *   to a flying missile's emitter, so the firing worm is the emitter (whose
  *   turn it is, else any living worm) and the voice is positioned there.
  */
 export const DEFAULT_CUSTOM_SOUNDS: CustomSoundsConfig = {
+  launchEnabled: false,
+  launchPriority: 8,
   explosionEnabled: false,
   explosionPriority: 10,
   shotEnabled: false,

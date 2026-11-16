@@ -70,7 +70,7 @@ check(
   bundles.some((bundle) => bundle.id === 'wfws.sdk'),
   bundles.map((bundle) => bundle.id).join(', '),
 );
-check('test pack has 52 weapons', weapons.length === 52, String(weapons.length));
+check('test pack has 55 weapons', weapons.length === 55, String(weapons.length));
 
 const byName = new Map(weapons.map((weapon) => [weapon.name, weapon]));
 const projects = new Map<string, WeaponProject>();
@@ -1105,6 +1105,70 @@ return {
   const m = p.melee;
   near('WF 50: the strike imports enabled', m?.enabled, true);
   near('WF 50: the reach', m?.radius, 40);
+
+  // The combo: three strikes, each with its own frame, damage and throw.
+  const combo = project('WF 55 Melee Combo')!;
+  const comboHits = combo.melee?.hits ?? [];
+  check('WF 55: three strikes import', comboHits.length === 3, String(comboHits.length));
+  check(
+    'WF 55: their frames come back',
+    comboHits.map((hit) => hit.frame).join(',') === '8,16,22',
+    comboHits.map((hit) => hit.frame).join(','),
+  );
+  check(
+    'WF 55: their damage comes back',
+    comboHits.map((hit) => hit.damage).join(',') === '10,12,16',
+    comboHits.map((hit) => hit.damage).join(','),
+  );
+  check(
+    'WF 55: their throws come back',
+    comboHits.map((hit) => `${hit.power}/${hit.lift}`).join(',') === '2/0,4/1,6/3',
+    comboHits.map((hit) => `${hit.power}/${hit.lift}`).join(','),
+  );
+  check(
+    'WF 55: the strike sounds come back',
+    `${combo.melee?.hitSound}/${combo.melee?.missSound}` === '96/96',
+    `${combo.melee?.hitSound}/${combo.melee?.missSound}`,
+  );
+  const comboLua = generateLuaCode(fullProject(combo, 'WF 55 Melee Combo'));
+  check(
+    'WF 55: the combo is emitted again',
+    /hits = \{\s*\{ frame = 8, damage = 10, power = 2 \}/.test(comboLua),
+    'the `hits` table is missing from the regenerated Lua',
+  );
+  check(
+    'WF 55: both sounds are emitted',
+    comboLua.includes('hit_sound = 96,') && comboLua.includes('miss_sound = 96,'),
+    'the strike sounds are missing from the melee table',
+  );
+  check(
+    'WF 55: the callback reads the strike',
+    /hit = function\(victim, vx, vy, hit\) victim:hurt\{ amount = hit and hit\.damage/.test(
+      comboLua,
+    ),
+    'the hit callback does not take the strike',
+  );
+
+  // The aim clamp: degrees either side of level, read back out of `aim_clamp`.
+  const clamp = project('WF 53 Aim Clamp')!;
+  near('WF 53: the clamp imports enabled', clamp.hold.aimClamp?.enabled, true);
+  near('WF 53: the clamp up', clamp.hold.aimClamp?.up, 45);
+  near('WF 53: the clamp down', clamp.hold.aimClamp?.down, 45);
+  // The same clamp on a firearm reaches `seq_dir`, which is the launch vector.
+  const firearm = project('WF 54 Fire Angle Clamp')!;
+  near('WF 54: the clamp imports', firearm.hold.aimClamp?.up, 30);
+  const firearmLua = generateLuaCode(fullProject(firearm, 'WF 54 Fire Angle Clamp'));
+  check(
+    'WF 54: the clamp limits the burst direction',
+    /local AIM_LO, AIM_HI = 0\.3333, 0\.6667/.test(firearmLua) &&
+      /local ang = \(1 - aim_clamped\(w\.aim\)\) \* math\.pi/.test(firearmLua),
+    'seq_dir does not use the clamped aim',
+  );
+  check(
+    'WF 53: the clamp is emitted into the hold spec',
+    /aim_clamp = \{ up = 45, down = 45 \}/.test(generateLuaCode(fullProject(clamp, 'WF 53 Aim Clamp'))),
+    'the aim clamp is missing from the generated hold table',
+  );
   near('WF 50: the arc width', m?.width, 18);
   near('WF 50: it follows the swing', m?.followSwing, true);
   near('WF 50: the hit frame', m?.hitFrame, 8);
@@ -1126,7 +1190,11 @@ return {
   );
   check(
     "WF 50: the hit is the weapon's own callback",
-    lua.includes('hit = function(victim, vx, vy) victim:hurt{ amount = 24, vx = vx, vy = vy } end,'),
+    // The strike is the callback's fourth argument now, so a combo can give each
+    // hit its own damage; the literal keeps a three-argument caller working.
+    lua.includes(
+      'hit = function(victim, vx, vy, hit) victim:hurt{ amount = hit and hit.damage or 24, vx = vx, vy = vy } end,',
+    ),
     'the damage (and its kind) has to stay in the weapon, not in the library',
   );
   check(
@@ -1152,7 +1220,7 @@ return {
     'WF 50: an electrical strike tazes through px.electric',
     /^local zap$/m.test(tazeLua) &&
       tazeLua.includes('zap = require("wf-lib/electric/damage")') &&
-      tazeLua.includes('zap.hurt_electric(victim, 24,'),
+      tazeLua.includes('zap.hurt_electric(victim, hit and hit.damage or 24,'),
     "WA's taze kind alone is a Prod: the worm would not spark",
   );
   check(

@@ -8,6 +8,7 @@ import {
   supportsExplosionEffect,
   supportsExplosionSound,
   supportsIntervalSound,
+  supportsLaunchSound,
   supportsRibbonTrail,
 } from './EffectsCards';
 import { FireSequenceCard } from './FireSequenceCard';
@@ -56,13 +57,21 @@ export const EffectsWorkspace: React.FC<Props> = ({ project, onChange }) => {
         tone: 'amber',
       });
     }
-    if (supportsExplosionSound(project) || supportsIntervalSound(project)) {
+    if (
+      supportsLaunchSound(project) ||
+      supportsExplosionSound(project) ||
+      supportsIntervalSound(project)
+    ) {
       list.push({
         id: 'sounds',
         label: 'Custom Sounds',
-        hint: 'Import PCM WAV audio for detonations and in-flight loops',
+        hint: 'Import PCM WAV audio for the launch, detonations and in-flight loops',
         icon: Volume2,
-        active: !!(project.customSounds?.explosionEnabled || project.customSounds?.intervalEnabled),
+        active: !!(
+          project.customSounds?.launchEnabled ||
+          project.customSounds?.explosionEnabled ||
+          project.customSounds?.intervalEnabled
+        ),
         tone: 'sky',
       });
     }

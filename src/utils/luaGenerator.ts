@@ -10,11 +10,12 @@ import {
   WeaponProject,
 } from '../types/weapon';
 import { getStockPanelPosition } from '../data/stockWeapons';
-import { stockDonorBaseline } from '../data/stockDonors';
+import { stockDonor, stockDonorBaseline } from '../data/stockDonors';
 import { resolveStockSprite, stockSpriteId } from '../data/stockSprites';
 import { supportsFireSequence } from '../data/fireSequence';
 import { STAMP_FRAMES, stampFrameForAngle, supportsTerrainStamp } from '../data/terrainStamp';
 import { COLLISION_FLAGS } from '../data/recordSchema';
+import { meleeStrikes } from '../data/melee';
 import { recordField } from './recordField';
 import { defaultArtFor } from './defaultArt';
 import {
@@ -276,6 +277,16 @@ export function silentHoldSheetPath(project: WeaponProject): string {
  * reason today; the same test gates the generator's `sb.hold` call, the silent
  * sheet the exporter writes and the UI's Atlas Mode line.
  */
+/** The active aim clamp, or null. One place decides what "clamped" means. */
+export function aimClampOf(
+  project: WeaponProject,
+): { up: number; down: number } | null {
+  const clamp = project.hold?.aimClamp;
+  if (!clamp?.enabled || !project.hold?.enabled) return null;
+  const clampDeg = (value: number) => Math.min(90, Math.max(0, Number(value) || 0));
+  return { up: clampDeg(clamp.up), down: clampDeg(clamp.down) };
+}
+
 export function holdNeedsAimLayer(project: WeaponProject): boolean {
   const h = project.hold;
   if (!h?.enabled) return false;
@@ -295,6 +306,9 @@ export function holdNeedsAimLayer(project: WeaponProject): boolean {
   if (project.aimClip?.enabled) return true;
   // A melee strike lands on the swing's hit frame, so it is the layer's too.
   if (project.melee?.enabled) return true;
+  // An aim clamp is the layer's too: the engine draws its own aim, so stopping
+  // the pose short of the ends of WA's sweep is something only the quads can do.
+  if (aimClampOf(project)) return true;
   // `HoldSpec` has one hand slot, so a second hand is the layer's.
   return !!h.extraHand?.enabled;
 }
@@ -773,18 +787,26 @@ export function reindentCode(code: string, targetIndent: string): string[] {
  */
 export function customSoundPath(
   project: WeaponProject,
-  role: 'explosion' | 'interval' | 'shot',
+  role: 'launch' | 'explosion' | 'interval' | 'shot',
 ): string | null {
   const sounds = project.customSounds;
   if (!sounds) return null;
   const enabled =
-    role === 'explosion'
-      ? sounds.explosionEnabled
-      : role === 'shot'
-        ? sounds.shotEnabled
-        : sounds.intervalEnabled;
+    role === 'launch'
+      ? sounds.launchEnabled
+      : role === 'explosion'
+        ? sounds.explosionEnabled
+        : role === 'shot'
+          ? sounds.shotEnabled
+          : sounds.intervalEnabled;
   const asset =
-    role === 'explosion' ? sounds.explosion : role === 'shot' ? sounds.shot : sounds.interval;
+    role === 'launch'
+      ? sounds.launch
+      : role === 'explosion'
+        ? sounds.explosion
+        : role === 'shot'
+          ? sounds.shot
+          : sounds.interval;
   if (!enabled || !asset?.file) return null;
   return `sounds/${sanitizeModFolder(project.id)}/${role}.wav`;
 }
@@ -808,7 +830,13 @@ export function generateLuaCode(project: WeaponProject): string {
   // die with `undefined is not an object` in the middle of an export.
   const modFolder = sanitizeModFolder(project.id || 'custom.weapon');
   const basedOn = project.based_on || project.slot || 'grenade';
-  const donor = basedOn.startsWith('stock.') ? basedOn : `stock.${basedOn}`;
+  const donorName = basedOn.replace(/^stock\./, '');
+  // A template has to be one of WA's own weapons. The engine refuses the whole
+  // bundle for a name it does not know (`stock.famas: a template is one of WA's
+  // own weapons`), so an unknown slot writes no `copy_from` and the weapon takes
+  // its own slot's record instead of taking every other weapon down with it.
+  const donorKnown = !!stockDonor(donorName);
+  const donor = `stock.${donorName}`;
   const lines: string[] = [];
 
   // Uploaded pack art. Trails and cluster sheets are loaded by the engine for
@@ -974,6 +1002,18 @@ export function generateLuaCode(project: WeaponProject): string {
   const usesSwing = usesAimLayer && !!project.aimClip?.enabled;
   const usesHoldLocal = usesAimLayer;
   const shotSoundPath = usesFireSequence ? customSoundPath(project, 'shot') : null;
+  // The launch WAV rides the claim's `on_fire`, i.e. where WA fires this weapon.
+  // Two cases cannot have it: a claim that eats the trigger (a melee swing takes
+  // the worm, so `on_fire` never runs) and an author's own `on_fire`, which owns
+  // the key. Both are said in the file instead of being dropped in silence.
+  const launchSoundPath =
+    !hasCustomOnFire && project.fireType !== 'melee'
+      ? customSoundPath(project, 'launch')
+      : null;
+  const launchSoundPriority = Math.max(0, Math.round(project.customSounds?.launchPriority ?? 8));
+  const launchSoundPlay = launchSoundPath
+    ? `wa.sound.play(ev.worm, ${luaQuote(launchSoundPath)}, ${launchSoundPriority})`
+    : null;
   // The effects SDK's ribbon trail follows a missile WA builds from this
   // record, so it only applies to the missile families (a strike's bombs are
   // not one: their `m.weapon` is nil).
@@ -992,10 +1032,25 @@ export function generateLuaCode(project: WeaponProject): string {
   }
   if (usesFireSequence) {
     lines.push('local seq = require("wf-lib/fire_seq")');
+    // The aim clamp (`hold.aim_clamp`) is a limit on the fire angle too: a burst
+    // whose direction comes from the live aim is launched along the clamped aim,
+    // so the shot cannot leave at an angle the art cannot hold. WA's own vector
+    // for a plain record shot is not ours to change.
+    const shotClamp = aimClampOf(project);
+    if (shotClamp) {
+      const lo = Math.max(0, 0.5 - shotClamp.down / 180);
+      const hi = Math.min(1, 0.5 + shotClamp.up / 180);
+      lines.push(`local AIM_LO, AIM_HI = ${formatNumber(lo)}, ${formatNumber(hi)}`);
+      lines.push('local function aim_clamped(a)');
+      lines.push('  if a < AIM_LO then return AIM_LO end');
+      lines.push('  if a > AIM_HI then return AIM_HI end');
+      lines.push('  return a');
+      lines.push('end');
+    }
     // The worm's live aim as a unit vector: aim 0 is straight down, 1 straight
     // up, and `facing` mirrors it. `wa.math` keeps it deterministic.
     lines.push('local function seq_dir(w)');
-    lines.push('  local ang = (1 - w.aim) * math.pi');
+    lines.push(`  local ang = (1 - ${shotClamp ? 'aim_clamped(w.aim)' : 'w.aim'}) * math.pi`);
     lines.push('  if w.facing < 0 then ang = 2 * math.pi - ang end');
     lines.push('  return wa.math.sin(ang), -wa.math.cos(ang)');
     lines.push('end');
@@ -1263,6 +1318,16 @@ export function generateLuaCode(project: WeaponProject): string {
       // 50 Hz clock, so the preview and the game run the same arithmetic.
       const clip = project.aimClip;
       const clipOn = !!clip?.enabled || !!project.melee?.enabled;
+      // `aim_clamp`: degrees either side of level. The layer clamps the pose it
+      // draws and the aim a strike is thrown with, so a swing cannot start from
+      // straight up or straight down (and a cut cannot reach there either). It
+      // stands on its own: a firearm with no clip still limits its aim.
+      const clamp = aimClampOf(project);
+      if (clamp) {
+        holdRows.push(
+          `aim_clamp = { up = ${formatNumber(clamp.up)}, down = ${formatNumber(clamp.down)} },`,
+        );
+      }
       if (clipOn && clip && clip.keys.length > 0) {
         const keys = [...clip.keys].sort((a, b) => a.t - b.t);
         holdRows.push('swing = {');
@@ -1306,8 +1371,14 @@ export function generateLuaCode(project: WeaponProject): string {
       // damage, the kind and the taze module stay in this file.
       const melee = project.melee;
       if (melee?.enabled) {
-        const hitFrame = Math.max(0, Math.round(melee.hitFrame));
-        const damage = Math.max(0, Math.round(melee.damage));
+        // The strikes, in the order they land. One is the shape this file has
+        // always written (`hit_frame` / `damage` / `power`), so an untouched
+        // weapon's export does not change; two or more also carry a `hits`
+        // table, and the first strike is still written the old way so an older
+        // installed SDK lands something.
+        const strikes = meleeStrikes(melee);
+        const hitFrame = strikes[0].frame;
+        const damage = Math.max(0, Math.round(strikes[0].damage));
         holdRows.push('melee = {');
         holdRows.push(`  radius = ${formatNumber(Math.max(1, melee.radius))},`);
         holdRows.push(`  width = ${formatNumber(Math.max(0, melee.width))},`);
@@ -1321,7 +1392,32 @@ export function generateLuaCode(project: WeaponProject): string {
           holdRows.push('  push = "aim",');
           holdRows.push(`  power = ${formatNumber(melee.pushPower)},`);
         }
-        if ((melee.lift ?? 0) !== 0) holdRows.push(`  lift = ${formatNumber(melee.lift)},`);
+        if ((strikes[0].lift ?? 0) !== 0) holdRows.push(`  lift = ${formatNumber(strikes[0].lift)},`);
+        if (strikes.length > 1) {
+          const rows = strikes.map((hit) => {
+            const parts = [
+              `frame = ${hit.frame}`,
+              `damage = ${formatNumber(Math.max(0, Math.round(hit.damage)))}`,
+            ];
+            if (melee.pushMode !== 'fixed') parts.push(`power = ${formatNumber(hit.power)}`);
+            if (hit.lift !== 0) parts.push(`lift = ${formatNumber(hit.lift)}`);
+            if (hit.vx !== undefined) parts.push(`vx = ${formatNumber(hit.vx)}`);
+            if (hit.vy !== undefined) parts.push(`vy = ${formatNumber(hit.vy)}`);
+            return `{ ${parts.join(', ')} },`;
+          });
+          holdRows.push(`  hits = {`);
+          for (const row of rows) holdRows.push(`    ${row}`);
+          holdRows.push('  },');
+        }
+        // WA's own sound ids. The hit sound plays where a strike lands, the miss
+        // sound at the striker when it reaches nobody; the claim eats WA's fire,
+        // so the record's own sound never plays and a whiff would be silent.
+        if ((melee.hitSound ?? 0) !== 0) {
+          holdRows.push(`  hit_sound = ${Math.max(0, Math.round(melee.hitSound))},`);
+        }
+        if ((melee.missSound ?? 0) !== 0) {
+          holdRows.push(`  miss_sound = ${Math.max(0, Math.round(melee.missSound))},`);
+        }
         if (melee.oncePerTarget === false) holdRows.push('  once = false,');
         if (melee.spareShooter === false) holdRows.push('  spare_shooter = false,');
         // The only way to tell a swing that never started from one that tested
@@ -1329,14 +1425,20 @@ export function generateLuaCode(project: WeaponProject): string {
         if (melee.log) holdRows.push('  log = true,');
         // What a hit does. `sb.hold` tests the box and hands over the victim and
         // the throw; this callback is the weapon's own.
+        // The fourth argument is the strike that landed (`{ frame, damage,
+        // power, lift, ... }`), so a combo gives each hit its own damage; the
+        // literal fallback keeps a three-argument caller (an older installed
+        // SDK) landing the same hit.
         if (melee.kind === 'taze') {
           holdRows.push(
-            `  hit = function(victim, vx, vy) zap.hurt_electric(victim, ${damage}, ` +
+            `  hit = function(victim, vx, vy, hit) zap.hurt_electric(` +
+              `victim, hit and hit.damage or ${damage}, ` +
               '{ frames = 25, push_x = vx, push_y = vy, retain = true }) end,',
           );
         } else {
           holdRows.push(
-            `  hit = function(victim, vx, vy) victim:hurt{ amount = ${damage}, vx = vx, vy = vy } end,`,
+            `  hit = function(victim, vx, vy, hit) victim:hurt{ ` +
+              `amount = hit and hit.damage or ${damage}, vx = vx, vy = vy } end,`,
           );
         }
         holdRows.push('},');
@@ -1529,8 +1631,13 @@ export function generateLuaCode(project: WeaponProject): string {
     // `wep` and `copy_from` are mutually exclusive. The .wep supplies the
     // complete native record; the tables below only carry edits.
     lines.push(`      wep = ${luaQuote(wepPath)},`);
-  } else {
+  } else if (donorKnown) {
     lines.push(`      copy_from = ${luaQuote(donor)},`);
+  } else {
+    lines.push(
+      `      -- no copy_from: ${luaQuote(donorName)} is not one of WA's own weapons, ` +
+        'and the engine refuses a bundle that names one it does not know',
+    );
   }
   if (usesSwing) {
     // Space plays the clip instead of firing. WA's dispatch is eaten, so
@@ -1661,6 +1768,7 @@ export function generateLuaCode(project: WeaponProject): string {
   // Pack WAVs are declared by path in `sounds`; the engine loads them into
   // WormForge's own sample bank (WA's record sound fields take native ids).
   const packSounds: string[] = [];
+  if (launchSoundPath) packSounds.push(luaQuote(launchSoundPath));
   if (usesExplosionSound) packSounds.push(luaQuote(explosionSoundPath!));
   if (usesIntervalSound) packSounds.push(luaQuote(intervalSoundPath!));
   if (shotSoundPath) packSounds.push(luaQuote(shotSoundPath));
@@ -3171,6 +3279,9 @@ export function generateLuaCode(project: WeaponProject): string {
       : null;
     lines.push('      -- Sequential fire (`wf-lib/fire_seq`): one trigger, a burst.');
     lines.push('      on_fire = function(ev)');
+    if (launchSoundPlay) {
+      lines.push(`        ${launchSoundPlay} -- the launch WAV, once per trigger`);
+    }
     if (!live) {
       // Lock the aim to the moment the trigger was pulled.
       lines.push('        local dx, dy = seq_dir(ev.worm)');
@@ -3227,6 +3338,16 @@ export function generateLuaCode(project: WeaponProject): string {
       );
     }
     lines.push('        }');
+    lines.push('      end,');
+  }
+
+  // The launch WAV on its own: WA fires the weapon, the claim reports it. This
+  // is the file counterpart of the record's `missile.launch_sound`, which stays
+  // the author's native id (WA plays that one itself).
+  if (launchSoundPlay && !usesFireSequence) {
+    lines.push('      -- Launch sound: WA fires the weapon, so `on_fire` runs once.');
+    lines.push('      on_fire = function(ev)');
+    lines.push(`        ${launchSoundPlay}`);
     lines.push('      end,');
   }
 

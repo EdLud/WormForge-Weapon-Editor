@@ -1,4 +1,4 @@
-import type { MeleeConfig } from '../types/weapon';
+import type { MeleeConfig, MeleeHit } from '../types/weapon';
 
 /**
  * The melee strike's numbers and geometry.
@@ -24,6 +24,11 @@ export const DEFAULT_MELEE: MeleeConfig = {
   pushVx: 0,
   pushVy: 0,
   lift: 1,
+  // WA plays 96 when a grenade is thrown and when the bat comes off nothing: the
+  // swing's own whoosh. On by default, because a strike that reaches nobody is
+  // otherwise silent (the claim eats WA's fire, so the record's sound never runs).
+  hitSound: 0,
+  missSound: 96,
   oncePerTarget: true,
   spareShooter: true,
   log: false,
@@ -31,6 +36,43 @@ export const DEFAULT_MELEE: MeleeConfig = {
 
 /** How far inside the near edge the box reaches, so a worm at the feet is hit. */
 export const MELEE_SLACK = 3;
+
+/**
+ * The strikes a swing lands, sorted by frame.
+ *
+ * One list, three readers (the panel's table, the generator and the preview), so
+ * "how many hits and when" is answered in one place. An empty `hits` is the
+ * single hit the panel wrote before combos existed, built from the top-level
+ * numbers: that is what keeps an untouched weapon's export byte for byte the
+ * same, and what an older bundle's `hit_frame` / `damage` import becomes.
+ */
+export function meleeStrikes(melee: MeleeConfig): MeleeHit[] {
+  const listed = (melee.hits ?? []).filter((hit) => hit && Number.isFinite(hit.frame));
+  const hits =
+    listed.length > 0
+      ? listed.map((hit) => ({
+          frame: Math.max(0, Math.round(hit.frame)),
+          damage: Math.max(0, Number(hit.damage) || 0),
+          power: Number(hit.power) || 0,
+          lift: Number(hit.lift) || 0,
+          ...(hit.vx === undefined ? {} : { vx: Number(hit.vx) || 0 }),
+          ...(hit.vy === undefined ? {} : { vy: Number(hit.vy) || 0 }),
+        }))
+      : [
+          {
+            frame: Math.max(0, Math.round(melee.hitFrame) || 0),
+            damage: Math.max(0, Number(melee.damage) || 0),
+            power: Number(melee.pushPower) || 0,
+            lift: Number(melee.lift) || 0,
+          },
+        ];
+  return hits.sort((a, b) => a.frame - b.frame);
+}
+
+/** Total damage a full swing deals to one worm standing in the box. */
+export function meleeTotalDamage(melee: MeleeConfig): number {
+  return meleeStrikes(melee).reduce((sum, hit) => sum + hit.damage, 0);
+}
 
 /** The engine's aim angle in radians: `rot = (1 - aim) * PI`. */
 export function meleeRot(aim: number): number {
@@ -69,7 +111,8 @@ export function meleeScan(
 
 /**
  * Whether a point is inside the box: `along` runs outward from the worm, `across`
- * is the arc's half-width. This is the exact test `sb.hold` runs in Lua.
+ * is the arc's half-width. This is the exact test `sb.hold` runs in Lua, once per
+ * strike (`meleeStrikes`), and it does not care which strike it is.
  */
 export function meleeHits(
   target: { x: number; y: number },

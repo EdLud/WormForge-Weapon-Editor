@@ -43,7 +43,8 @@ import {
   type AimClipKey,
   type ClipPose,
 } from '../data/aimClip';
-import { MELEE_SLACK, meleeScan } from '../data/melee';
+import { MELEE_SLACK, meleeScan, meleeStrikes } from '../data/melee';
+import { KeyTickInput } from './KeyTickInput';
 import mapBackgroundSrc from '../../spec/pre_weapon_preview.png';
 import normalIconSrc from '../../spec/normal.png';
 import homingIconSrc from '../../spec/hmissil1.png';
@@ -322,43 +323,6 @@ const AIM_ZOOM_MIN = 0.5;
  * row moves with it. Typing the whole number first and committing once makes the
  * table move once, on purpose.
  */
-const KeyTickInput: React.FC<{
-  value: number;
-  label: string;
-  className: string;
-  onCommit: (value: number) => void;
-}> = ({ value, label, className, onCommit }) => {
-  const [draft, setDraft] = useState<string | null>(null);
-  const commit = () => {
-    if (draft === null) return;
-    const text = draft.trim();
-    setDraft(null);
-    if (text === '') return;
-    const next = Number(text);
-    if (Number.isNaN(next) || next === value) return;
-    onCommit(Math.max(0, next));
-  };
-  return (
-    <input
-      type="number"
-      min={0}
-      aria-label={label}
-      value={draft ?? String(value)}
-      onChange={(event) => setDraft(event.target.value)}
-      onBlur={commit}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter') {
-          event.preventDefault();
-          commit();
-        } else if (event.key === 'Escape') {
-          setDraft(null);
-        }
-      }}
-      className={className}
-    />
-  );
-};
-
 const HoldDial: React.FC<{
   id: string;
   label: string;
@@ -1045,11 +1009,22 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
       }
     }
 
+    // The layer's aim clamp (`aim_clamp`): the pose stops that many degrees
+    // short of straight up/down, the same numbers the Lua clamps with. The
+    // worm's own posture strip still follows the real aim, exactly as in game.
+    const clamp = hold.aimClamp;
+    const aimDrawn = clamp?.enabled
+      ? Math.min(
+          0.5 + Math.max(0, Math.min(90, Number(clamp.up) || 0)) / 180,
+          Math.max(0.5 - Math.max(0, Math.min(90, Number(clamp.down) || 0)) / 180, aimT),
+        )
+      : aimT;
+
     // worm_hold.rs: `rot = (1.0 - aim) * PI`.  Aim 0 is straight down and 1
     // is straight up; level aim (16/31) is PI/2.  The posture and hold sheets
     // are drawn right-facing, so the whole cell is mirrored below for the
     // left-facing pose, exactly as `SPRITE_MIRROR_X` mirrors the hold.
-    const rot = (1 - aimT) * Math.PI;
+    const rot = (1 - aimDrawn) * Math.PI;
     // The firing tab previews the firing role: the numbers the game blits on WA's
     // 0x6A/0x6B frames, with the firing sheet where the held art would be and
     // only the strip looping. Every other tab is the aim role.
@@ -1408,14 +1383,26 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
     // the side is one horizontal flip, which is the engine's `facing`.
     const meleeCfg = project.melee;
     if (meleeCfg?.enabled && !firingView) {
+      // Which strike the box belongs to. A swing can land several, so the box is
+      // the one being tested now: the last strike whose frame the clip has
+      // reached, and the first one before any of them. That is the box the game
+      // would be testing at this tick, not a box the panel invented.
+      const strikes = meleeStrikes(meleeCfg);
+      const clipTick = swingStart === null ? null : Math.min(swingTick, playerClip.ticks);
+      const current =
+        clipTick === null
+          ? strikes[0]
+          : [...strikes].reverse().find((hit) => hit.frame <= clipTick) ?? strikes[0];
       const hitPose =
         project.aimClip && project.aimClip.keys.length > 0
-          ? evalClip(project.aimClip, Math.max(0, Math.round(meleeCfg.hitFrame)))
+          ? evalClip(project.aimClip, Math.max(0, Math.round(current.frame)))
           : null;
       // The worm's own aim, not the art's: `weapRotation` turns the sheet, it
       // does not turn where the worm points.
       const scan = meleeScan(
-        aimT,
+        // The strike is thrown with the clamped aim, the same value the Lua
+        // latches at the press.
+        aimDrawn,
         1,
         meleeCfg.followSwing === false ? 0 : hitPose?.angle ?? 0,
       );
@@ -1435,7 +1422,7 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
       ctx.restore();
     }
     ctx.restore();
-  }, [hold, project.melee, project.aimClip, aimAngleIndex, currentFrame, facingRight, assetsLoaded, weaponLoadedImg, defaultHoldLoaded, putAwayCounter, flashLoadedImg, extraHandLoadedImg, firePreviewFrame, fireStripFrames, aimZoom, swingPose, echoPoses, aimTab]);
+  }, [hold, project.melee, project.aimClip, aimAngleIndex, currentFrame, facingRight, assetsLoaded, weaponLoadedImg, defaultHoldLoaded, putAwayCounter, flashLoadedImg, extraHandLoadedImg, firePreviewFrame, fireStripFrames, aimZoom, swingPose, swingStart, swingTick, echoPoses, aimTab]);
 
   // Derive active preview role settings for the 50 Hz simulation canvas
   const activeRolePreviewCfg = (() => {
@@ -2592,6 +2579,79 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
                   step={1}
                 />
               </div>
+            </div>
+
+            {/* The aim clamp. WA's own bat pipes its aim for the same reason:
+                straight up and straight down are where a held weapon looks
+                worst, and a pack cannot pipe WA's sweep, only its own draw. */}
+            <div className="space-y-1.5 rounded-lg border border-stone-200 bg-white p-3 dark:border-stone-700 dark:bg-stone-800">
+              <div className="flex items-center justify-between gap-2">
+                <span
+                  className="text-xs font-semibold text-stone-700 dark:text-stone-300"
+                  title="Keep the aim inside this many degrees either side of level. Straight up and straight down are where a held weapon looks worst: the art leaves its cell and a cut aimed vertically reads as noise, which is why WA pipes its own bat's aim. worm.aim_target is read-only, but worm:input{ aim } writes the same target WA's aim control writes, so the crosshair, the drawn pose, a swing, a melee strike and WA's own fire vector all stop at the limit (WA adds at most one of its own aim steps, 1.4 degrees, after the write)."
+                >
+                  Aim Clamp
+                </span>
+                <label
+                  htmlFor="hold-aim-clamp"
+                  className="flex cursor-pointer items-center gap-1.5 text-[11px] font-semibold text-stone-700 dark:text-stone-300"
+                >
+                  <input
+                    id="hold-aim-clamp"
+                    type="checkbox"
+                    checked={!!hold.aimClamp?.enabled}
+                    onChange={(event) =>
+                      updateHold({
+                        aimClamp: {
+                          up: hold.aimClamp?.up ?? 60,
+                          down: hold.aimClamp?.down ?? 60,
+                          enabled: event.target.checked,
+                        },
+                      })
+                    }
+                    className="h-3.5 w-3.5 cursor-pointer rounded text-forge-600 focus:ring-forge-500"
+                  />
+                  Limit
+                </label>
+              </div>
+              {hold.aimClamp?.enabled && (
+                <>
+                  <p className="text-[10px] text-stone-500 dark:text-stone-400">
+                    aim{' '}
+                    <span className="font-mono">
+                      {Math.round((0.5 - hold.aimClamp.down / 180) * 31)}..{Math.round((0.5 + hold.aimClamp.up / 180) * 31)}
+                    </span>{' '}
+                    of 31, level is 16
+                  </p>
+                  {/* Stacked, not side by side: a `HoldDial`'s number cell is
+                      92px, so two of them in one row leave nothing for the
+                      labels and "Up"/"Down" truncate away. */}
+                  <div className="space-y-2">
+                    <HoldDial
+                      id="hold-aim-clamp-up"
+                      label="Up"
+                      value={hold.aimClamp.up}
+                      onChange={(value) => updateHold({ aimClamp: { ...hold.aimClamp!, up: value } })}
+                      min={0}
+                      max={90}
+                      step={5}
+                      unit="°"
+                      title="How far above level the pose may go, in degrees (90 is straight up, 0 holds it at level)."
+                    />
+                    <HoldDial
+                      id="hold-aim-clamp-down"
+                      label="Down"
+                      value={hold.aimClamp.down}
+                      onChange={(value) => updateHold({ aimClamp: { ...hold.aimClamp!, down: value } })}
+                      min={0}
+                      max={90}
+                      step={5}
+                      unit="°"
+                      title="How far below level the pose may go, in degrees (90 is straight down, 0 holds it at level)."
+                    />
+                  </div>
+                </>
+              )}
             </div>
 
             {/* The second hand. `HoldSpec` has one hand slot, so the aim layer

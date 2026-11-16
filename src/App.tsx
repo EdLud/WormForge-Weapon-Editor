@@ -120,6 +120,8 @@ const INITIAL_PROJECT: WeaponProject = {
     handRad: 10,
     handRadLower: 0,
     handRadUpper: 0,
+    // Off by default: a weapon that never swings does not need an aim limit.
+    aimClamp: { enabled: false, up: 60, down: 60 },
   },
   packArt: {},
   customSprites: {},

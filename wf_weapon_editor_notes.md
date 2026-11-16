@@ -3086,3 +3086,128 @@ random, and a duration is a number of 50 Hz ticks from a stored start frame. Tha
 is why the clip is data (`clip_pose(t)`) and why a custom animation takes the worm
 instead of watching WA's state machine. `AGENTS.md` opens with it now, so a fresh
 reader starts from the right model.
+
+## The aim clamp: WA's sweep has two bad ends
+
+The last 30 degrees at either end of WA's 180 degree sweep are where a held
+weapon looks worst: the art leaves its cell, the hand crosses the worm's face,
+and a cut aimed straight down reads as noise. WA's own bat pipes its aim for
+exactly that reason, and the first version of this feature could not: the only
+things it could touch were our own draw, the swing's latched aim and a
+`px.fire_seq` burst's launch vector. A plain record shot still went where the
+player pointed, which is not what "cannot use that angle" means.
+
+`worm.aim` / `worm.aim_target` are read-only, so the second thought was that WA's
+aim is untouchable. It is not: **`worm:input{ aim = degrees }`** writes the very
+value `control_aim` writes (+0x24C, PX's FireAngle). `docs/agent/lua-worms.md`
+says so and names the trick (Core utilities' Fast aim), and `physics::worm_input`
+is two writes and a message loop. The only question is *when*, because WA steps
+the target 180/128 of a degree a frame while an aim key is held: the clamp has to
+run every frame, after the player's key and before the shot.
+
+`wa.on.body_move(fn, { kinds = { "worm" } })` is that hook: it runs before WA's
+per-body step, once per worm per frame, inside the simulation context
+(`dispatch::with_lua` -> `sim_context::with_sim`), which is what `worm:input`
+requires. So `hold_install_aim_clamp` clamps the turn's worm's target while it
+holds this weapon and the aim is out of range. WA still steps the target once
+after the write, so the aim can sit one step (1.41 degrees) past the limit and
+never further: the drawn aim eases to it, the fired vector comes from it, and the
+layer paints its own pose at exactly the limit.
+
+What that leaves for the layer is the parts a native write cannot do: the exact
+drawn pose (`hold_clamp_aim`), the aim a swing is latched with, the strike's
+reach, and a fallback for an engine build without `body_move`. It is also why
+the clamp forces the quads.
+
+Two things were paid for here. The first is that the engine always draws its own
+hand, at WA's aim, so a clamped layer showed two hands past the limit; `M.hold`
+parks it at `hand_radius = 0.01` (lesson 18's fallback, used for real) and the
+layer draws the clamped one. The second is that the clamp was first emitted
+inside the `swing` block, so a firearm with no clip got a clamp that reached
+nothing: it stands on its own now, and `WF 54` is the firearm case beside
+`WF 53`'s swing case. `harness_melee.py` walks the native path too: the fake
+`wa` gained `wa.on.body_move` and `worm:input`, WA's own aim step, and four
+checks that the target stalls at the limit, that an unclamped weapon still
+reaches straight up, and that the drawn aim follows.
+
+## One bad template kills the whole bundle
+
+`copy_from = "stock.famas"` reads like an ordinary donor name, and the engine
+answers `stock.famas: a template is one of WA's own weapons, stock.<name>`, then
+`overlay failed: no overlay (InitGraphic did not run)`: the bundle does not
+install, so **every** weapon in it is gone. A test pack with 54 weapons went down
+because one entry named a firearm family rather than a slot (`uzi` is the
+firearm donor; `famas` is a PX weapon, not a stock slot, and the editor's
+FAMAS figure is only firing art).
+
+Two guards came out of it. `gen_test_pack.ts` checks every entry's slot against
+`stockDonors.json` before writing anything, so a typo fails in the console
+instead of in the game. `generateLuaCode` no longer writes a template it cannot
+vouch for: an unknown slot emits no `copy_from` and one comment saying why, and
+the weapon takes its own slot's record. `tools/check_generator_edges.ts` holds
+both halves (a real donor is still written, an unknown one is not).
+
+## The throw is the aim vector too
+
+The scan box and the push are the same vector, which is worth stating because the
+box once read the art and the throw never did: `push = "aim"` hands
+`hit(victim, vx, vy)` the scan vector times `push power`, with `lift` subtracted
+from y (world y is down, so a positive lift throws up), and `push = { x, y }` is
+the author's literal throw and still gets `lift`. So a level strike throws
+`(power, -lift)`, a straight-down one `(0, power - lift)`, and neither knows what
+`weap_radius` or `weap_rotation` say.
+
+The `and/or` shape it used to have (`m.push_aim and (vx * m.power) or m.fvx`) was
+safe by accident of Lua's truthiness (only `nil` and `false` are falsy, so a zero
+component stays zero), which is the reason it survived: in most languages that
+expression silently swaps in the fixed numbers on exactly the frames that throw
+straight up or level. It is an explicit `if` now, and `harness_melee.py` pins both
+throws so a future edit cannot change what a hit hands over.
+
+## A swing can land several strikes, and a whiff has to be heard
+
+The strike was one hit on one frame, which is a bat, not a combo. `melee.hits` is
+a list now: each entry has its own `frame`, `damage`, `power` (or `vx`/`vy`) and
+`lift`, all tested with the same box, each latched once per worm, each following
+the clip's angle at its own frame. One strike still exports the old way
+(`hit_frame` / `damage` / `power`), so an untouched weapon's file does not change;
+two or more also carry `hits = { ... }`, with the first strike repeated in the old
+keys so an older installed SDK lands something.
+
+The `hit` callback gets the strike that landed as its fourth argument
+(`hit and hit.damage or 26`), which is how one callback serves three hits without
+a closure per strike, and why a three-argument caller still works.
+
+The sounds came with it. A melee claim eats WA's fire, so the record's own sound
+never plays: a swing that came off nothing was silent, which reads as a bug in
+game. `hit_sound` now plays where a strike lands (at the worm it took) and
+`miss_sound` at the striker when it takes nobody, once per strike either way.
+`wa.sound.play(target, id)` is WA's own native playback, localised at the target,
+so 96 is the same whiff the bat makes; `pcall`ed, because the verb is newer than
+some engine builds and a missing sound must not cost the strike.
+
+## The launch WAV, and the three hooks it cannot use
+
+The record's `missile.launch_sound` is a native sample id: WA plays it itself,
+and nothing in a pack can replace it. `customSounds.launch` is the file half of
+the same idea, and it rides the claim's `on_fire`, i.e. the frame WA fires the
+weapon. One play per trigger, on the firing worm's emitter, priority the author
+picks.
+
+Three cases shaped the emission:
+
+- **Sequential fire already owns `on_fire`.** The play goes at the top of the
+  handler `px.fire_seq` needs, before `seq.fire_seq_mis{`, so a three-round burst
+  reports the trigger once instead of once per shot. A second `on_fire` key would
+  have been the later one only.
+- **An author's own `on_fire` owns the key.** Emitting ours as well would write
+  the field twice, so the generated play is skipped and the card says so; the WAV
+  is still written, and their handler can call `wa.sound.play` itself.
+- **A melee claim never reaches `on_fire`.** `eat_fire` eats WA's fire dispatch
+  and the swing takes the worm on Space, so the card is offered for every family
+  but melee; the strike sounds cover that one.
+
+The import side needed a new discriminator: the launch play and the explosion
+play are the same shape (`wa.sound.play(ev.worm, path, n)`). The generated file
+name answers it for our own bundles (`launch.wav`); for a hand-written one the
+nearest enclosing hook before the play (`on_fire` or `on_explode`) does.

@@ -943,6 +943,9 @@ function M.hold_needs_lua(spec)
   -- A melee strike is simulated by the swing loop (`melee` in the spec), which
   -- only exists once the entry is registered, so it takes the layer path too.
   if spec.melee ~= nil then return true end
+  -- An aim clamp stops the pose short of the ends of WA's sweep, which only the
+  -- quads can draw: the engine always draws its own aim.
+  if type(spec.aim_clamp) == "table" and spec.aim_clamp.enabled ~= false then return true end
   -- A second hand is the layer's: `HoldSpec` has exactly one hand slot.
   if type(spec.extra_hand) == "table" and spec.extra_hand.draw ~= false then return true end
   return false
@@ -1316,6 +1319,41 @@ local function hold_worm_state(entry, w)
   return per_worm, ws
 end
 
+-- The strikes a melee swing lands: `hits = { { frame, damage, power, lift }, ... }`
+-- for a combo, or the single `hit_frame` / `damage` / `power` / `lift` a weapon
+-- wrote before combos existed. Sorted by frame, because the swing lands them in
+-- tick order however the author typed them, and a strike with no numbers of its
+-- own inherits the weapon's.
+local function hold_melee_hits(spec, push_aim)
+  local out = {}
+  local listed = type(spec.hits) == "table" and spec.hits or nil
+  if listed then
+    for i = 1, #listed do
+      local h = listed[i]
+      if type(h) == "table" then
+        out[#out + 1] = {
+          frame = math.max(0, math.floor(tonumber(h.frame) or 0)),
+          damage = math.max(0, tonumber(h.damage) or 0),
+          power = h.power ~= nil and tonumber(h.power) or (push_aim and (tonumber(spec.power) or 0) or 0),
+          lift = h.lift ~= nil and tonumber(h.lift) or (tonumber(spec.lift) or 0),
+          vx = h.vx ~= nil and tonumber(h.vx) or nil,
+          vy = h.vy ~= nil and tonumber(h.vy) or nil,
+        }
+      end
+    end
+  end
+  if #out == 0 then
+    out[1] = {
+      frame = math.max(0, math.floor(tonumber(spec.hit_frame) or 0)),
+      damage = math.max(0, tonumber(spec.damage) or 0),
+      power = tonumber(spec.power) or 0,
+      lift = tonumber(spec.lift) or 0,
+    }
+  end
+  table.sort(out, function(a, b) return a.frame < b.frame end)
+  return out
+end
+
 -- The melee strike (`melee` in the spec). The box is the worm's own aim and
 -- direction, nothing about the art: `hold_melee_scan` below reads `worm.aim`
 -- and `worm.facing` and turns the swing's angle into it, so turning the sheet
@@ -1346,21 +1384,39 @@ local function hold_melee_scan(entry, w, pose, aim_ov, facing_ov)
   return x * cr - y * sr, x * sr + y * cr
 end
 
--- One strike, at the swing's hit frame. Worms only: `wa.worms.all()` is a
--- deterministic list, so every peer hits the same worms in the same order, and
--- the weapon's own `hit` callback decides what a hit does (damage, kind, sound).
-local function hold_melee_strike(entry, w, st)
+-- One strike: hit `index` of the swing, on the tick it lands. Worms only:
+-- `wa.worms.all()` is a deterministic list, so every peer hits the same worms in
+-- the same order, and the weapon's own `hit` callback decides what a hit does
+-- (damage, kind, sound). `hit` is handed over as the callback's fourth argument,
+-- so a combo can give each strike its own damage and throw.
+local function hold_melee_strike(entry, w, st, index)
   local m = entry.melee
+  local hit = m.hits[index]
   local pose = nil
-  if entry.clip then pose = M.clip_pose(entry.clip, m.hit_frame) end
+  if entry.clip then pose = M.clip_pose(entry.clip, hit.frame) end
   -- The aim the swing was thrown with, not the one WA has drifted to since: a
   -- swing is one committed motion, and a taken worm can still turn its aim.
   local vx, vy = hold_melee_scan(entry, w, pose, st.aim, st.facing)
-  local push_x = m.push_aim and (vx * m.power) or m.fvx
-  local push_y = (m.push_aim and (vy * m.power) or m.fvy) - m.lift
-  local done = st.hit or {}
+  -- The throw. `push = "aim"` throws along the same unit vector the box was
+  -- tested with, so a hit goes the way the strike went; a `{ x, y }` table is the
+  -- author's literal throw (per hit when it has one, else the weapon's). `lift`
+  -- is subtracted from y (world y is down, so a positive lift throws up).
+  -- Explicit `if`s, not `and/or`: a zero component is a value (an aim straight
+  -- up has `vx = 0`, a level one has `vy = 0`).
+  local push_x, push_y
+  if m.push_aim then
+    push_x, push_y = vx * hit.power, vy * hit.power
+  else
+    push_x, push_y = (hit.vx or m.fvx), (hit.vy or m.fvy)
+  end
+  push_y = push_y - hit.lift
+  -- One table per strike: a worm can take hit 1 and hit 2, but not hit 2 twice.
+  st.hit = st.hit or {}
+  local done = st.hit[index] or {}
+  st.hit[index] = done
   local worms = wa.worms.all()
   local hits = 0
+  local first_hit = nil
   for i = 1, #worms do
     local o = worms[i]
     local skip = nil
@@ -1382,17 +1438,113 @@ local function hold_melee_strike(entry, w, st)
     if inside and not skip then
       done[o.id] = true
       hits = hits + 1
+      first_hit = first_hit or o
       -- A broken callback must not take the whole 50 Hz message down with it.
-      if m.hit then pcall(m.hit, o, push_x, push_y) end
+      -- The strike itself is the fourth argument, so a combo's callback reads
+      -- `hit.damage` instead of one number baked into the closure.
+      if m.hit then pcall(m.hit, o, push_x, push_y, hit) end
     end
   end
-  st.hit = done
   st.hits = (st.hits or 0) + hits
-  if m.log then
-    wa.log(string.format("[melee] hit frame %d: %d worm(s) of %d, scan %.2f,%.2f, reach %d wide %d, aim %.2f facing %s, push %.1f,%.1f",
-      m.hit_frame, hits, #worms, vx, vy, m.radius, m.width,
-      st.aim or -1, tostring(st.facing), push_x, push_y))
+  -- The strike's own sound. WA's native playback, localised at the emitter:
+  -- the first worm the box took when it landed, the striker when it took
+  -- nobody. A whiff would otherwise be silent, because the claim eats WA's fire
+  -- and the record's own sound never plays. `wa.sound` arrived with 0.9.x, so an
+  -- older engine keeps the strike and loses only the sound.
+  if wa.sound and wa.sound.play then
+    local sound = hits > 0 and m.hit_sound or m.miss_sound
+    if sound and sound ~= 0 then
+      local emitter = hits > 0 and first_hit or w
+      if emitter then pcall(wa.sound.play, emitter, sound) end
+    end
   end
+  if m.log then
+    wa.log(string.format("[melee] hit %d/%d at frame %d: %d worm(s) of %d, scan %.2f,%.2f, reach %d wide %d, aim %.2f facing %s, damage %d, push %.1f,%.1f",
+      index, #m.hits, hit.frame, hits, #worms, vx, vy, m.radius, m.width,
+      st.aim or -1, tostring(st.facing), hit.damage, push_x, push_y))
+  end
+end
+
+-- Every strike whose frame has been reached and has not landed yet. `>=` with a
+-- per-strike latch, not `==`: a frame whose message never arrives cannot cost a
+-- strike its hit, and it still lands only once. Returns whether anything landed.
+local function hold_melee_step(entry, w, st, tick)
+  local m = entry.melee
+  local landed = false
+  st.struck = st.struck or {}
+  for i = 1, #m.hits do
+    if not st.struck[i] and tick >= m.hits[i].frame then
+      st.struck[i] = true
+      hold_melee_strike(entry, w, st, i)
+      landed = true
+    end
+  end
+  return landed
+end
+
+-- An aim clamp (`aim_clamp = { up = 60, down = 60 }` in the spec, degrees either
+-- side of level). WA's sweep is 180 degrees: 0 is straight down, 0.5 level, 1
+-- straight up, and both ends are where a held weapon looks worst, because the art
+-- leaves its cell and a cut aimed vertically reads as noise. WA's own bat pipes
+-- its aim for the same reason.
+--
+-- `worm.aim` and `worm.aim_target` are read-only, but `worm:input{ aim = deg }`
+-- writes the same target WA's own `control_aim` writes (+0x24C, Project X's
+-- FireAngle), so the clamp is applied to WA's aim as well as to the layer's draw
+-- (`hold_install_aim_clamp`) and the shot itself stays inside the limit.
+local function hold_aim_range(spec)
+  local c = type(spec.aim_clamp) == "table" and spec.aim_clamp or nil
+  if not c or c.enabled == false then return nil end
+  local function degrees(value)
+    local n = tonumber(value)
+    if n == nil then n = 60 end
+    if n < 0 then n = 0 elseif n > 90 then n = 90 end
+    return n / 180.0
+  end
+  return { lo = 0.5 - degrees(c.down), hi = 0.5 + degrees(c.up) }
+end
+
+-- The native half of the clamp: WA's own aim target, written every frame the
+-- turn's worm holds this weapon. `wa.on.body_move` is the per-frame simulation
+-- hook for worms and it runs before WA's body step, so WA adds at most one of its
+-- own aim steps (180/128 of a degree while an aim key is held) after the write:
+-- the target can sit that one step past the limit, never further, and the drawn
+-- aim eases to it. One Lua call per worm per frame, bailing on the first read
+-- for every worm that is not this turn's, and one native write only while the
+-- aim is actually outside the range.
+local function hold_install_aim_clamp(entry)
+  local range = entry.aim_range
+  if not range or entry.aim_clamped then return end
+  if not (wa.on and wa.on.body_move) then return end
+  entry.aim_clamped = true
+  local lo, hi = (range.lo - 0.5) * 180, (range.hi - 0.5) * 180
+  local warned = false
+  -- One spec table for the lifetime of the weapon: an out-of-range frame
+  -- allocates nothing.
+  local spec = { aim = 0 }
+  wa.on.body_move(function(w)
+    if not (w and w.turn and w.weapon == entry.weapon) then return end
+    local target = w.aim_target
+    if target == nil then return end
+    if target >= lo and target <= hi then return end
+    if target < lo then target = lo else target = hi end
+    spec.aim = target
+    local ok, err = pcall(w.input, w, spec)
+    if not ok and not warned then
+      warned = true
+      wa.log(("[wfws] aim_clamp cannot write WA's aim (%s): the draw stays clamped, "
+        .. "the shot does not"):format(tostring(err)))
+    end
+  end, { kinds = { "worm" } })
+end
+
+local function hold_clamp_aim(entry, aim)
+  local a = aim or 0.5
+  local r = entry.aim_range
+  if not r then return a end
+  if a < r.lo then return r.lo end
+  if a > r.hi then return r.hi end
+  return a
 end
 
 -- True while the engine would draw this worm's hold: alive, visible, body
@@ -1478,6 +1630,11 @@ local function hold_ensure_hook()
                 -- its aim mid-clip does not drag the art round with it.
                 aim_ov = st.aim
                 face_ov = st.facing
+              else
+                -- `aim_clamp`: the aim the layer draws stops at the limit, so
+                -- the player sees the weapon refuse the angle rather than
+                -- swinging from somewhere it cannot reach.
+                aim_ov = hold_clamp_aim(entry, w.aim)
               end
               -- Ghost trail: the same clip at earlier ticks, farthest first so
               -- the live art lands on its own smear. The pose is a pure
@@ -1594,12 +1751,7 @@ local function swing_ensure()
           -- The clip is its own clock: WA's worm states cannot end it, so a
           -- swing of any length plays in full.
           local tick = now - st.start
-          -- `>=` with a latch, not `==`: a frame whose message never arrives
-          -- must not cost the swing its hit, and it can still land only once.
-          if entry.melee and not st.struck and tick >= entry.melee.hit_frame then
-            st.struck = true
-            hold_melee_strike(entry, sw, st)
-          end
+          if entry.melee then hold_melee_step(entry, sw, st, tick) end
           if tick >= entry.clip.ticks then
             st.start = nil
             if st.taken then
@@ -1625,7 +1777,7 @@ local function swing_ensure()
           st.worm = w
           st.worm_id = w.id
           st.start = now
-          st.aim = w.aim
+          st.aim = hold_clamp_aim(entry, w.aim)
           st.facing = w.facing
           st.taken = took or nil
           st.hit = {}
@@ -1638,16 +1790,17 @@ local function swing_ensure()
             -- shot itself uses, printed here so a press can be checked without
             -- guessing at the art.
             wa.log(("[melee] swing at tick %d: %s the worm at %.0f,%.0f (weapon %s), " ..
-              "aim %.3f (FireAngle %.1f deg) facing %d, hit frame %d")
+              "aim %.3f (FireAngle %.1f deg) facing %d, hit frame(s) %s")
               :format(now, took and "took" or "could not take", w.x or 0, w.y or 0,
                 tostring(w.weapon), w.aim or -1, w.aim_target or 0, w.facing or 1,
-                entry.melee.hit_frame or 0))
+                entry.melee.frames_text))
+            if st.aim ~= (w.aim or 0.5) then
+              wa.log(("[melee] aim clamped %.3f -> %.3f by the layer's aim_clamp")
+                :format(w.aim or 0.5, st.aim))
+            end
           end
-          -- `hit_frame = 0` lands on the press itself.
-          if entry.melee and entry.melee.hit_frame == 0 then
-            st.struck = true
-            hold_melee_strike(entry, w, st)
-          end
+          -- A strike whose frame is 0 lands on the press itself.
+          if entry.melee then hold_melee_step(entry, w, st, 0) end
         end
         st.space = space
       end
@@ -1697,6 +1850,14 @@ function M.hold(ctx, spec)
     rust.sheets = sheets
     silent = #sheets
   end
+
+  -- An aim clamp moves the hand as well as the weapon (the layer draws it at
+  -- the clamped pose), so the engine's own hand, which it always draws at the
+  -- real aim, has to be parked on the worm or two hands show past the limit.
+  -- `hand_radius = 0.01` is the same fallback `draw_hand = false` needs: the
+  -- engine ignores the flag but honours a radius.
+  local aim_range = hold_aim_range(spec)
+  if aim_range and rust.hand_radius then rust.hand_radius = 0.01 end
 
   if not M.hold_needs_lua(spec) then return rust end
   if weapon == nil then
@@ -1752,19 +1913,28 @@ function M.hold(ctx, spec)
       radius = math.max(1, melee_spec.radius or 32),
       width = math.max(0, melee_spec.width or 16),
       follow_swing = melee_spec.follow_swing ~= false,
-      hit_frame = math.max(0, math.floor(melee_spec.hit_frame or 0)),
       -- `push = "aim"` throws along the weapon; a `{ x, y }` table is the
-      -- literal throw. `lift` is added to either (positive is up).
+      -- literal throw, per strike when the strike names one and the weapon's
+      -- otherwise. `lift` is added to either (positive is up).
       push_aim = push == nil or push == "aim",
-      power = melee_spec.power or 0,
       fvx = type(push) == "table" and (push.x or 0) or 0,
       fvy = type(push) == "table" and (push.y or 0) or 0,
-      lift = melee_spec.lift or 0,
+      -- WA's own sound ids: where a strike lands, and where it does not. 0 is
+      -- silent; the editor's default whiff is 96, WA's grenade throw and bat
+      -- miss.
+      hit_sound = math.floor(tonumber(melee_spec.hit_sound) or 0),
+      miss_sound = math.floor(tonumber(melee_spec.miss_sound) or 0),
       once = melee_spec.once ~= false,
       spare_shooter = melee_spec.spare_shooter ~= false,
       log = melee_spec.log and true or false,
       hit = melee_spec.hit,
+      hits = hold_melee_hits(melee_spec, push == nil or push == "aim"),
     }
+    melee.hit_frame = melee.hits[1].frame
+    -- One string for the press log: "8", or "8, 16, 22" for a combo.
+    local frames = {}
+    for i = 1, #melee.hits do frames[i] = tostring(melee.hits[i].frame) end
+    melee.frames_text = table.concat(frames, ", ")
   end
   local entry = {
     weapon = weapon,
@@ -1792,6 +1962,7 @@ function M.hold(ctx, spec)
     draw_hand = spec.draw_hand,
     frames = spec.frames or 1,
     anim_speed = spec.anim_speed or 1.0,
+    aim_range = aim_range,
     static_angles = rust.static,
     fire = fire,
     -- `keep_while_firing` is the engine's key for the same idea; once the layer
@@ -1831,6 +2002,7 @@ function M.hold(ctx, spec)
   }
   hold_entries[#hold_entries + 1] = entry
   hold_ensure_hook()
+  hold_install_aim_clamp(entry)
   if clip then swing_ensure() end
   return rust
 end

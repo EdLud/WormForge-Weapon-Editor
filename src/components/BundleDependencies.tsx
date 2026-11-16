@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { WeaponProject } from '../types/weapon';
 import { Boxes, Plus, X } from 'lucide-react';
 import { usesWfwsBuilder } from '../data/spriteBuilder';
+import { holdNeedsAimLayer } from '../utils/luaGenerator';
 
 interface BundleDependenciesProps {
   project: WeaponProject;
@@ -21,8 +22,13 @@ export function BundleDependencies({ project, onChange }: BundleDependenciesProp
   if (project.hold?.enabled) {
     auto.push({ id: 'wf.sdk', reason: 'hold art builder' });
   }
+  // The aim layer is `wfws.sdk`'s, so anything that forces the quads (an
+  // offset, a firing role, a swing, a strike, an aim clamp, a second hand)
+  // needs the library even when the flight builder is off.
   if (usesWfwsBuilder(project)) {
     auto.push({ id: 'wfws.sdk', reason: 'flight sprite builder' });
+  } else if (holdNeedsAimLayer(project)) {
+    auto.push({ id: 'wfws.sdk', reason: 'aim layer' });
   }
   const customOnExplode =
     !!project.enableCustomLua &&

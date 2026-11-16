@@ -57,13 +57,29 @@ def worm_record(w):
 
     def hurt(_self, opts=None):
         amount = opts["amount"] if opts is not None else 0
+        vx = opts["vx"] if opts is not None and opts["vx"] is not None else 0.0
+        vy = opts["vy"] if opts is not None and opts["vy"] is not None else 0.0
         w["hp"] -= amount or 0
-        EVENTS.append(("hurt", w["id"], amount))
+        EVENTS.append(("hurt", w["id"], amount, float(vx), float(vy)))
+        return True
+
+    # `worm:input{ aim = degrees }` writes WA's own aim target (+0x24C), the
+    # engine's `control_aim` value. Read-only fields stay read-only.
+    def input_(_self, spec=None):
+        aim = spec["aim"] if spec is not None else None
+        if aim is None:
+            raise ValueError("worm:input without aim in the harness")
+        # The engine writes the worm's +0x24C, so the record the layer reads
+        # changes; the dict keeps it across `step`'s per-frame copy.
+        _self["aim_target"] = float(aim)
+        w["aim_target"] = float(aim)
+        EVENTS.append(("aim_input", w["id"], float(aim)))
         return True
 
     t.take = take
     t.release = release
     t.hurt = hurt
+    t.input = input_
     for k, v in w.items():
         t[k] = v
     return t
@@ -128,11 +144,24 @@ def quad(*args):
 wa.draw.quad = quad
 DRAW = []
 MSG = []
+BODY = []
 wa.on = lua.table()
 wa.on.draw = lambda fn: DRAW.append(fn)
 wa.on.worm_message = lambda fn, opts=None: MSG.append(fn)
+wa.on.body_move = lambda fn, opts=None: BODY.append(fn)
 wa.weapons = lua.table()
 wa.weapons.hold_sheet = lambda weapon, n: EVENTS.append(("mute", n))
+wa.sound = lua.table()
+
+
+def play_sound(target, sound, flags=None):
+    # The engine plays a numeric id natively; the target is the emitter the
+    # voice is positioned at.
+    EVENTS.append(("sound", sound, target["id"] if target is not None else None))
+    return True
+
+
+wa.sound.play = play_sound
 
 lua.globals()["wa"] = wa
 
@@ -150,7 +179,8 @@ ctx = lua.table()
 ctx.id = "test.bat"
 
 
-def build_spec(weapon="test.bat", weap_rotation=1):
+def build_spec(weapon="test.bat", weap_rotation=1, aim_clamp=None, follow_swing=True,
+               power=3, lift=1, hits=None, hit_sound=0, miss_sound=0):
     spec = lua.table_from({
         "weapon": weapon,
         "sheet": "sprites/test.bat/hold.png",
@@ -176,15 +206,27 @@ def build_spec(weapon="test.bat", weap_rotation=1):
             ]),
         }),
         "melee": lua.table_from({
-            "radius": 32, "width": 16, "follow_swing": True, "hit_frame": 8,
-            "push": "aim", "power": 3, "lift": 1, "log": True,
+            "radius": 32, "width": 16, "follow_swing": follow_swing, "hit_frame": 8,
+            "damage": 24,
+            "push": "aim", "power": power, "lift": lift, "log": True,
         }),
     })
+    if aim_clamp is not None:
+        spec["aim_clamp"] = lua.table_from({"up": aim_clamp[0], "down": aim_clamp[1]})
+    if hits is not None:
+        spec["melee"]["hits"] = lua.table_from([
+            lua.table_from({key: value for key, value in hit.items()}) for hit in hits
+        ])
+    spec["melee"]["hit_sound"] = hit_sound
+    spec["melee"]["miss_sound"] = miss_sound
 
     # The claim's own hit callback, written the way the generator writes it:
     # `hit = function(victim, vx, vy) victim:hurt{ amount = 24, vx = vx, vy = vy } end`
+    # The generator's shape: the strike that landed is the callback's fourth
+    # argument, and the literal is only the fallback for a three-argument caller.
     spec["melee"]["hit"] = lua.execute(
-        "return function(victim, vx, vy) victim:hurt{ amount = 24, vx = vx, vy = vy } end")
+        "return function(victim, vx, vy, hit) "
+        "victim:hurt{ amount = hit and hit.damage or 24, vx = vx, vy = vy } end")
     return spec
 
 
@@ -200,13 +242,41 @@ draw_fn = DRAW[0]
 msg_fn = MSG[0]
 
 
+# WA's own aim control: 180/128 of a degree a frame while an aim key is held
+# (`worm.aim_target`'s step, docs/agent/lua-worms.md), and the drawn `aim`
+# +0x270 eased toward it. The harness snaps instead of easing, which is the
+# strict version: a clamped target can never be drawn past.
+AIM_STEP = 180.0 / 128.0
+
+
+def native_aim(rec, w):
+    keys = WORLD["keys"]
+    if keys.get("aim_up") or keys.get("aim_down"):
+        target = rec["aim_target"]
+        if keys.get("aim_up"):
+            target = min(90.0, target + AIM_STEP)
+        else:
+            target = max(-90.0, target - AIM_STEP)
+        rec["aim_target"] = w["aim_target"] = target
+        rec["aim"] = w["aim"] = max(0.0, min(1.0, (target + 90.0) / 180.0))
+    else:
+        # A test set `aim` by hand: WA's stored target follows what is drawn.
+        rec["aim_target"] = w["aim_target"] = (rec["aim"] - 0.5) * 180.0
+
+
 def step(n, space=False):
-    """One 50 Hz frame: the draw, then WA's frame-end messages, then the draw."""
+    """One 50 Hz frame: the bodies (body_move, then WA's own step for each), the
+    frame-end messages, then the draw."""
     WORLD["frame"] = n
     WORLD["keys"]["space"] = space
     for i, rec in enumerate(RECORDS):
         for k, v in WORMS[i].items():
             rec[k] = v
+    for fn in BODY:
+        for w in WORMS:
+            fn(FRESH(w["id"]))
+    for i, w in enumerate(WORMS):
+        native_aim(RECORDS[i], w)
     QUADS.clear()
     draw_fn()
     msg_fn(all_worms()[1], wa.msg.FRAME_FINISH)
@@ -377,6 +447,246 @@ check(
     "; ".join(LOG) or "no lines",
 )
 WORM["weapon"] = "test.bat"
+
+# The aim clamp (`aim_clamp`): the pose and the strike stop that many degrees
+# either side of level, so a vertical aim cannot be swung from. 45/45 puts the
+# limit at aim 0.25 and 0.75, which is what the victim positions below use.
+clamp_ctx = lua.table()
+clamp_ctx.id = "test.bat.clamp"
+clamp_rust = sb.hold(clamp_ctx, build_spec("test.bat.clamp", 1, (45, 45)))
+check(
+    "the clamp parks the engine hand",
+    abs(float(clamp_rust.hand_radius) - 0.01) < 1e-9,
+    "hand_radius %s (the layer draws the clamped hand, so the engine's must hide)"
+    % clamp_rust.hand_radius,
+)
+
+# Aimed 26 px straight down with a 45 degree limit: the strike goes along the
+# clamped 45 (down and forward), not straight down, so a worm straight below is
+# out of the box.
+EVENTS.clear()
+LOG.clear()
+WORM["weapon"] = "test.bat.clamp"
+WORM["aim"] = 0.0
+VICTIM["x"], VICTIM["y"] = 1000, 1026
+VICTIM["hp"] = 100
+step(400)
+step(401, space=True)
+for n in range(402, 418):
+    step(n, space=True)
+check(
+    "a vertical aim is clamped for the strike",
+    VICTIM["hp"] == 100,
+    "victim hp %d (a worm straight below is outside a 45 degree clamp)" % VICTIM["hp"],
+)
+check(
+    "the clamp is reported in the log",
+    any("aim clamped" in line for line in LOG),
+    "; ".join(line for line in LOG if "clamp" in line) or "no clamp line",
+)
+
+# What a hit throws is the aim vector, not the art: `push = "aim"` is the scan
+# vector times `power`, minus `lift` on y. Two straight-line cases with the swing
+# rotation off, so the numbers are the aim alone.
+def strike_at(weapon, aim, victim_at, spec_kwargs, tick):
+    """Run one swing from `aim` and return the (vx, vy) the victim was thrown by."""
+    EVENTS.clear()
+    WORM["weapon"] = weapon
+    WORM["aim"] = aim
+    VICTIM["x"], VICTIM["y"] = victim_at
+    VICTIM["hp"] = 100
+    WORLD["keys"]["aim_up"] = False
+    WORLD["keys"]["aim_down"] = False
+    step(tick)
+    step(tick + 1, space=True)
+    for n in range(tick + 2, tick + 18):
+        step(n, space=True)
+    for event in EVENTS:
+        if event[0] == "hurt" and event[1] == VICTIM["id"]:
+            return event[3], event[4]
+    return None
+
+
+straight_ctx = lua.table()
+straight_ctx.id = "test.bat.straight"
+sb.hold(straight_ctx, build_spec("test.bat.straight", 1, None, follow_swing=False, power=3, lift=1))
+level = strike_at("test.bat.straight", 0.5, (1024, 1000), {}, 800)
+check(
+    "a level strike throws along the aim",
+    level is not None and abs(level[0] - 3.0) < 1e-6 and abs(level[1] + 1.0) < 1e-6,
+    "throw %s (level aim: x = power, y = -lift)" % (level,),
+)
+down = strike_at("test.bat.straight", 0.0, (1000, 1024), {}, 850)
+check(
+    "a straight-down strike has no side push",
+    down is not None and abs(down[0]) < 1e-9 and abs(down[1] - 2.0) < 1e-6,
+    "throw %s (straight down: x = 0 even though it is the zero case, y = power - lift)"
+    % (down,),
+)
+
+# A combo: three strikes on their own ticks, each with its own damage and throw.
+combo_ctx = lua.table()
+combo_ctx.id = "test.bat.combo"
+COMBO = [
+    {"frame": 4, "damage": 7, "power": 1, "lift": 0},
+    {"frame": 8, "damage": 9, "power": 3, "lift": 1},
+    {"frame": 12, "damage": 11, "power": 5, "lift": 2},
+]
+sb.hold(combo_ctx, build_spec("test.bat.combo", 1, None, follow_swing=False, hits=COMBO,
+                             hit_sound=96, miss_sound=96))
+EVENTS.clear()
+LOG.clear()
+WORM["weapon"] = "test.bat.combo"
+WORM["aim"] = 0.5
+VICTIM["x"], VICTIM["y"] = 1024, 1000
+VICTIM["hp"] = 100
+step(900)
+step(901, space=True)
+for n in range(902, 920):
+    step(n, space=True)
+hurt = [e for e in EVENTS if e[0] == "hurt" and e[1] == VICTIM["id"]]
+check(
+    "a combo lands every strike",
+    len(hurt) == 3,
+    "%d hit(s): %s" % (len(hurt), [h[2] for h in hurt]),
+)
+check(
+    "each strike brings its own damage",
+    [h[2] for h in hurt] == [7, 9, 11],
+    "damage %s" % ([h[2] for h in hurt],),
+)
+check(
+    "and its own throw",
+    [round(h[3], 3) for h in hurt] == [1.0, 3.0, 5.0],
+    "vx %s (power 1, 3, 5 along a level aim)" % ([round(h[3], 3) for h in hurt],),
+)
+check(
+    "and its own lift",
+    [round(h[4], 3) for h in hurt] == [0.0, -1.0, -2.0],
+    "vy %s (lift subtracted from a level aim's zero)" % ([round(h[4], 3) for h in hurt],),
+)
+check(
+    "a combo is logged strike by strike",
+    sum(1 for line in LOG if "hit " in line and " at frame" in line) >= 3,
+    "; ".join(line for line in LOG if " at frame" in line) or "no per-strike lines",
+)
+
+combo_sounds = [e for e in EVENTS if e[0] == "sound"]
+check(
+    "each landed strike plays the hit sound once",
+    [e[1] for e in combo_sounds] == [96, 96, 96] and all(e[2] == VICTIM["id"] for e in combo_sounds),
+    "%d play(s) at %s (one per strike, at the worm it took)"
+    % (len(combo_sounds), [e[2] for e in combo_sounds]),
+)
+
+# A swing into thin air: the same weapon, nobody in the box, so every strike
+# plays the whiff at the striker instead.
+EVENTS.clear()
+LOG.clear()
+WORM["aim"] = 0.5
+VICTIM["x"], VICTIM["y"] = 2000, 2000
+step(880)
+step(881, space=True)
+for n in range(882, 908):
+    step(n, space=True)
+whiffs = [e for e in EVENTS if e[0] == "sound"]
+check(
+    "a strike that takes nobody plays the whiff at the striker",
+    len(whiffs) == 3 and all(e[1] == 96 and e[2] == WORM["id"] for e in whiffs),
+    "%d play(s): %s" % (len(whiffs), whiffs),
+)
+VICTIM["x"], VICTIM["y"] = 1024, 1000
+
+# Each strike tests the box at its own frame, so a worm that leaves after the
+# first one is not hit by the rest: the combo is not a single damage packet.
+EVENTS.clear()
+LOG.clear()
+VICTIM["hp"] = 100
+WORMS[1]["y"] = 1000
+WORM["aim"] = 0.5
+step(950)
+step(951, space=True)
+moved = False
+for n in range(952, 968):
+    if n == 958:
+        # Out of the box, and out of reach: y is a hundred pixels off the line.
+        WORMS[1]["y"] = 1100
+        moved = True
+    step(n, space=True)
+hurt = [e for e in EVENTS if e[0] == "hurt" and e[1] == VICTIM["id"]]
+check(
+    "a strike tests the box at its own frame",
+    moved and [h[2] for h in hurt] == [7],
+    "damage %s (strike 1 landed, 2 and 3 had nobody to hit)" % ([h[2] for h in hurt],),
+)
+WORMS[1]["y"] = 1000
+WORM["weapon"] = "test.bat"
+
+# The native half: `worm:input{ aim = deg }` writes WA's own aim target, so the
+# shot is inside the limit too, not only the draw. Hold the aim key and let WA
+# step the target 180/128 degrees a frame: it must stall at the limit (one native
+# step past it at most), not run on to straight up.
+EVENTS.clear()
+LOG.clear()
+WORM["aim"] = 0.5
+WORM["aim_target"] = 0.0
+WORM["weapon"] = "test.bat.clamp"
+WORLD["keys"]["aim_up"] = True
+WORLD["keys"]["aim_down"] = False
+for n in range(600, 660):
+    step(n)
+WORLD["keys"]["aim_up"] = False
+writes = [e for e in EVENTS if e[0] == "aim_input"]
+worst = max((e[2] for e in writes), default=None)
+check(
+    "the native aim is clamped, not only the draw",
+    worst is not None and worst <= 45.0 + 1e-9,
+    "worst native aim write %s, WA's target now %s"
+    % (worst, RECORDS[0]["aim_target"]),
+)
+check(
+    "the target stalls at the limit instead of reaching straight up",
+    45.0 - 1e-6 <= RECORDS[0]["aim_target"] <= 45.0 + AIM_STEP + 1e-6,
+    "target %.3f after 60 frames of held aim (limit 45, step %.3f)"
+    % (RECORDS[0]["aim_target"], AIM_STEP),
+)
+check(
+    "the drawn aim follows the clamped target",
+    abs(RECORDS[0]["aim"] - (0.5 + 45.0 / 180.0)) < 0.01,
+    "drawn aim %.3f, clamped 0.750" % RECORDS[0]["aim"],
+)
+
+# Without the clamp the same input runs to the top of WA's sweep: the check above
+# means nothing if the harness cannot reach it.
+WORLD["keys"]["aim_up"] = True
+for n in range(700, 780):
+    step(n)
+WORLD["keys"]["aim_up"] = False
+unclamped = RECORDS[1]["aim_target"]  # the victim's weapon has no aim_clamp
+check(
+    "an unclamped weapon still reaches straight up",
+    unclamped > 45.0,
+    "target %.3f (the harness itself can reach the top)" % unclamped,
+)
+
+# The same clamp aimed level still strikes the worm in front, at the aim pose's
+# own 45 degree clip angle.
+EVENTS.clear()
+LOG.clear()
+WORM["aim"] = 0.5
+VICTIM["x"], VICTIM["y"] = 1024, 1000
+VICTIM["hp"] = 100
+step(500)
+step(501, space=True)
+for n in range(502, 518):
+    step(n, space=True)
+check(
+    "a level aim still lands inside the clamp",
+    VICTIM["hp"] < 100,
+    "victim hp %d (the clamp must not narrow the ordinary swing)" % VICTIM["hp"],
+)
+WORM["weapon"] = "test.bat"
+WORM["aim"] = 0.5
 
 print()
 for line in LOG:

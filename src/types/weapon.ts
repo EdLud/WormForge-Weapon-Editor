@@ -261,6 +261,29 @@ export interface HoldConfig {
    * hand's art, which is the usual case (PX's `PX_HANDS` sheet).
    */
   extraHand?: ExtraHandConfig;
+  /**
+   * Keep the aim inside a sane part of WA's 180 degree sweep (`aim_clamp` in the
+   * `sb.hold` spec). Straight up and straight down are where a swing looks
+   * worst: the held art leaves its cell and a cut fired vertically reads as
+   * noise, which is why WA's own bat pipes its aim. `up`/`down` are degrees
+   * either side of level (0.5), so `up = 60` reaches 60 degrees above level.
+   *
+   * `worm.aim` and `worm.aim_target` are read-only, but `worm:input{ aim }` writes
+   * the same target WA's own aim control writes, so the layer writes the clamped
+   * aim every frame (one native write, only while out of range): the crosshair,
+   * the swing, a melee strike and WA's own fire vector all stop at the limit.
+   * WA adds at most one of its own aim steps (180/128 of a degree) after the
+   * write, and the draw the layer paints is clamped exactly.
+   */
+  aimClamp?: AimClampConfig;
+}
+
+export interface AimClampConfig {
+  enabled: boolean;
+  /** Degrees above level the art may be drawn at, 0 to 90. */
+  up: number;
+  /** Degrees below level, 0 to 90. */
+  down: number;
 }
 
 /** How the strike throws its victim. */
@@ -268,6 +291,24 @@ export type MeleePushMode = 'aim' | 'fixed';
 
 /** The hit kind the strike hands to `worm:hurt`. */
 export type MeleeKind = 'normal' | 'taze';
+
+/**
+ * One strike of a melee swing. A swing can land several (a three-hit combo), each
+ * on its own tick of the clip, with its own damage and throw. The box is the same
+ * for every hit: reach, arc and side are the weapon's.
+ */
+export interface MeleeHit {
+  /** 50 Hz tick of the swing; `0` lands on the press itself. */
+  frame: number;
+  damage: number;
+  /** Throw along the aim, in WA's hurt speed (px/frame). */
+  power: number;
+  /** Upward lift on top of the throw (px/frame, positive is up). */
+  lift: number;
+  /** The literal throw, in `fixed` push mode only. Unset: the weapon's own. */
+  vx?: number;
+  vy?: number;
+}
 
 export interface MeleeConfig {
   enabled: boolean;
@@ -281,6 +322,13 @@ export interface MeleeConfig {
    * an overhead swing reach an overhead worm.
    */
   followSwing: boolean;
+  /**
+   * The strikes, in the order they land (the SDK sorts them by frame). Empty or
+   * unset means the single hit described by `hitFrame` / `damage` / `pushPower`
+   * / `lift`, which is also what this file wrote before combos existed: a weapon
+   * that never touches the table exports exactly what it used to.
+   */
+  hits?: MeleeHit[];
   /** 50 Hz ticks after the Space press at which the box lands. */
   hitFrame: number;
   damage: number;
@@ -294,6 +342,16 @@ export interface MeleeConfig {
   pushVy: number;
   /** Upward lift added to either mode, in px per frame (positive = up). */
   lift: number;
+  /**
+   * WA's own sound played where a strike lands (`wa.sound.play` at the victim),
+   * as a native sound id. `0` is silent. A strike that reaches nobody plays
+   * `missSound` at the striker instead, which is how a swing that comes off the
+   * art is heard at all: the claim eats WA's fire, so the record's own sound
+   * never plays.
+   */
+  hitSound: number;
+  /** Played at the striker when a strike lands on nothing. WA's whiff is 96. */
+  missSound: number;
   /** Hit each worm once per swing, not once per frame the box is live. */
   oncePerTarget: boolean;
   /** Leave the firing worm out of its own strike. */
@@ -485,6 +543,15 @@ export interface CustomSoundAsset {
  * WormForge resolves the paths from this bundle at load (`sounds = {...}`).
  */
 export interface CustomSoundsConfig {
+  /**
+   * Played once where WA fires the weapon (`on_fire`), so the pack's own launch
+   * report replaces nothing and needs no stock sample slot. The record's
+   * `missile.launch_sound` is the native-id counterpart and still plays when it
+   * is set, so this is the file half of the same idea.
+   */
+  launchEnabled: boolean;
+  launch?: CustomSoundAsset;
+  launchPriority: number;
   explosionEnabled: boolean;
   explosion?: CustomSoundAsset;
   /** One WAV per shot of a `fire_seq` burst (`on_shot`). */

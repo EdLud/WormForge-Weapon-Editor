@@ -350,6 +350,42 @@ quad showed as a second hand on every weapon whose `weap_scale` was not 1. A
 nudged hand (`hand_offset`, or a clip's `dx`/`dy`) does move away from the
 engine's copy, which is the one visible limit of taking the aim pose over.
 
+### Limiting the aim (`aim_clamp`)
+
+WA's sweep is 180 degrees: 0 is straight down, 0.5 level, 1 straight up, and both
+ends are where a held weapon looks worst, because the art leaves its cell and a
+cut aimed vertically reads as noise. WA's own bat pipes its aim for that reason,
+and a pack cannot, so the layer clamps what it draws instead:
+
+```lua
+aim_clamp = { up = 60, down = 60 },  -- degrees either side of level, 0 to 90
+```
+
+`worm.aim` and `worm.aim_target` are read-only, but **`worm:input{ aim = deg }`
+writes the same target WA's own `control_aim` writes** (+0x24C, Project X's
+FireAngle), so the clamp reaches the engine's aim and not only our draw:
+
+- `hold_install_aim_clamp` registers one `wa.on.body_move` hook (worms only) and
+  writes the clamped target while the turn's worm holds this weapon and its aim
+  is outside the range. `body_move` runs before WA's body step, so WA adds at
+  most one of its own aim steps (180/128 of a degree) after the write: the target
+  can sit that one step past the limit, never further. One native write, and only
+  while the aim is actually out of range. An engine without `body_move` (or
+  `worm:input`) logs one line and keeps the drawn clamp;
+- the aiming pose stops at the limit too (`hold_clamp_aim`), while the worm's own
+  posture strip keeps following the real aim, as it does in game;
+- a Space press latches the **clamped** aim, so a swing and a melee strike are
+  thrown along it (`[melee] aim clamped 0.000 -> 0.250 ...` says when it bit);
+- a `px.fire_seq` burst whose direction comes from the live aim launches along
+  it, because the generator wraps `seq_dir`'s aim in `aim_clamped` (`AIM_LO`,
+  `AIM_HI`): belt and braces over the first frame, when the native write has not
+  landed yet.
+
+The engine always draws its own hand at whatever WA's aim is, so with a clamp on,
+`M.hold` parks it at `hand_radius = 0.01` (the same fallback `draw_hand = false`
+needs) and the layer draws the clamped one; otherwise two hands show past the
+limit.
+
 ### A second hand (`extra_hand`)
 
 `HoldSpec` has one hand slot, so a second hand (a support hand on a foregrip, a
@@ -498,10 +534,11 @@ table draws the same clip a few ticks behind itself:
 
 ### The melee strike (`melee`)
 
-`melee = { radius, width, follow_swing, hit_frame, push = "aim" | { x, y }, power,
-lift, once, spare_shooter, hit = function(victim, vx, vy) ... end }` turns the
-swing into the attack: the weapon fires nothing, and on one tick of the clip a
-box in front of the worm is tested against the living worms.
+`melee = { radius, width, follow_swing, hit_frame | hits, push = "aim" | { x, y },
+power, lift, hit_sound, miss_sound, once, spare_shooter, hit = function(victim, vx,
+vy, hit) ... end }` turns the swing into the attack: the weapon fires nothing, and
+on each strike's tick a box in front of the worm is tested against the living
+worms.
 
 - **The box is the worm's aim, and nothing else.** `worm.aim` is WA's sweep
   (`0` straight down, `0.5` level, `1` straight up) and `worm.facing` is the side,
@@ -518,6 +555,31 @@ box in front of the worm is tested against the living worms.
   (`0` lands on the press). The swing loop already runs once per game frame, so
   the frame that matches is the only one that strikes and every peer sees the
   same tick.
+- **`hits` is a list of strikes**, each with its own tick and throw, which is how
+  a combo works:
+
+  ```lua
+  hits = {
+    { frame = 8,  damage = 10, power = 2 },
+    { frame = 16, damage = 12, power = 4, lift = 1 },
+    { frame = 22, damage = 16, power = 6, lift = 3 },
+  }
+  ```
+
+  It replaces `hit_frame`/`damage`/`power`/`lift` when present (those stay
+  readable for an older weapon), is sorted by frame, and a strike that leaves out
+  `power`, `lift`, `vx` or `vy` inherits the weapon's. Every strike tests the same
+  box with the clip's angle at *its* frame, and `once` is per strike, so a worm
+  that stands in the box for the whole swing takes all three. `hit_frame` stays
+  the first strike's frame.
+- **`hit_sound` / `miss_sound`** are WA's own sound ids (0 is silent). Each strike
+  plays one: `hit_sound` at the first worm the box took, `miss_sound` at the
+  striker when it took nobody, once per strike however many worms it took. A
+  swing that comes off nothing is silent without it, because a melee claim eats
+  WA's fire and the record's own sound never plays. `96` is WA's grenade throw and
+  baseball miss, the editor's default whiff. `wa.sound.play` is `pcall`ed: the
+  verb is newer than some engine builds and a missing sound must not cost the
+  strike.
 - **Targets come from `wa.worms.all()`**, a deterministic list, so the hit set and
   order are identical on every peer. `spare_shooter` (default on) skips the worm
   that swung, `once` (default on) records each victim for that swing, and the flag
@@ -531,7 +593,9 @@ box in front of the worm is tested against the living worms.
   `[wfws] Space pressed … no hold layer has an entry` means the weapon's layer is
   not installed at all.
 - **What a hit does is the weapon's callback**, not the library's: the box test
-  passes `(victim, vx, vy)`, the throw the layer computed, and the callback calls
+  passes `(victim, vx, vy, hit)`, the throw the layer computed and the strike that
+  landed (`hit.frame`, `hit.damage`, `hit.power`, `hit.lift`), and the callback
+  calls
   `victim:hurt{ amount = 24, vx = vx, vy = vy }` or, for an electrical strike,
   `zap.hurt_electric(victim, 24, { push_x = vx, push_y = vy, retain = true })`.
   Damage, kind, sound and any extra effect stay in the weapon, so the SDK needs no

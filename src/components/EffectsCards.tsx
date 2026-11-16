@@ -51,6 +51,16 @@ export function supportsExplosionSound(project: WeaponProject): boolean {
   return supportsExplosionEffect(project);
 }
 
+/**
+ * `on_fire` is WA's fire dispatch, so the launch WAV needs nothing but a weapon
+ * WA actually fires. A melee claim eats the trigger (`eat_fire`) and takes the
+ * worm on Space, so its `on_fire` never runs; its swing sounds the strikes
+ * instead (`melee.hitSound` / `missSound`).
+ */
+export function supportsLaunchSound(project: WeaponProject): boolean {
+  return project.fireType !== 'melee';
+}
+
 /** Only a round WA flies has `wa.on.missile_frame` samples to tick against. */
 export function supportsIntervalSound(project: WeaponProject): boolean {
   return project.fireType === 'power' || (project.fireType === 'drop' && !!project.body.fuse);
@@ -888,11 +898,16 @@ export function CustomSoundsCard({ project, onChange }: CardProps) {
   const sounds: CustomSoundsConfig = project.customSounds ?? DEFAULT_CUSTOM_SOUNDS;
   const update = (patch: Partial<CustomSoundsConfig>) =>
     onChange({ customSounds: { ...sounds, ...patch } });
+  const canLaunch = supportsLaunchSound(project);
   const canExplode = supportsExplosionSound(project);
   const canInterval = supportsIntervalSound(project);
-  if (!canExplode && !canInterval) return null;
+  if (!canLaunch && !canExplode && !canInterval) return null;
   const customOnExplode =
     !!project.enableCustomLua && /^\s*on_explode\s*=/m.test(project.customLuaSnippet || '');
+  // The author's own `on_fire` owns the claim's only fire hook, so the generated
+  // play is not emitted: the WAV is written and their handler is the trigger.
+  const customOnFire =
+    !!project.enableCustomLua && /(?:^|\n)[ \t]*on_fire\s*=/.test(project.customLuaSnippet || '');
 
   return (
     <div className="space-y-5">
@@ -903,7 +918,80 @@ export function CustomSoundsCard({ project, onChange }: CardProps) {
         desc="Import custom PCM WAV files declared in the mod's sounds list and played via wa.sound.play without using native WA sample slots."
       />
 
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
+        {/* On Launch */}
+        <div className="space-y-3.5 rounded-xl bg-stone-50/70 p-4 dark:bg-stone-950/40">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-stone-200/80 pb-2.5 dark:border-stone-800">
+            <SubSectionTitle
+              title="On Launch"
+              code="on_fire"
+              desc="Plays once where WA fires the weapon, on the firing worm's voice emitter. The stock half of the same idea is the record's own launch sound (a native sample id, set in Physics and Blast); WA plays that one itself, so both can run."
+            />
+            <label className="flex cursor-pointer items-center gap-1.5">
+              <input
+                type="checkbox"
+                id="sound-launch-enable"
+                checked={sounds.launchEnabled}
+                disabled={!canLaunch}
+                onChange={(e) => update({ launchEnabled: e.target.checked })}
+                className="h-3.5 w-3.5 rounded text-forge-600 focus:ring-forge-500"
+              />
+              <span className="text-xs font-semibold text-stone-700 dark:text-stone-300">
+                Enable
+              </span>
+            </label>
+          </div>
+
+          {!canLaunch ? (
+            <p className="text-xs text-stone-500">
+              A melee swing eats the trigger, so it has no fire to report; its sounds live on the
+              Melee Strike page.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              <SoundUpload
+                id="sound-launch"
+                asset={sounds.launch}
+                disabled={false}
+                onPick={(asset) => update({ launch: asset, launchEnabled: true })}
+                onRemove={() => update({ launch: undefined, launchEnabled: false })}
+              />
+              <div>
+                <TooltipLabel
+                  label="Voice Priority"
+                  code="priority"
+                  desc="Higher priorities interrupt lower-priority sounds if the engine voice pool is full."
+                  htmlFor="sound-launch-priority"
+                />
+                <select
+                  id="sound-launch-priority"
+                  value={sounds.launchPriority}
+                  onChange={(e) => update({ launchPriority: Number(e.target.value) })}
+                  className={selectClass}
+                >
+                  {SOUND_PRIORITIES.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {customOnFire ? (
+                <p className="text-[11px] text-amber-700 dark:text-amber-300">
+                  Your custom Lua owns <code className="font-mono">on_fire</code>, so the WAV is
+                  written to the bundle but nothing plays it. Call{' '}
+                  <code className="font-mono">wa.sound.play(w, path, priority)</code> there.
+                </p>
+              ) : (
+                <p className="text-[11px] text-stone-500 dark:text-stone-400">
+                  The record&apos;s <code className="font-mono">launch_sound</code> is a native id
+                  WA plays by itself; this is the uploaded file.
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+
         {/* On Detonation */}
         <div className="space-y-3.5 rounded-xl bg-stone-50/70 p-4 dark:bg-stone-950/40">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-stone-200/80 pb-2.5 dark:border-stone-800">

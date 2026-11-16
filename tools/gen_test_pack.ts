@@ -4,6 +4,10 @@
  * Writes one WormForge bundle with one component per test plus a profile that
  * places all of them, so an engine behaviour can be checked in one match.
  *
+ * Every entry's slot is one of WA's own weapons, checked before anything is
+ * written: the engine refuses the whole bundle for a `copy_from` it does not
+ * know, so one wrong name costs the other 53 weapons too.
+ *
  * Every role draws a different sheet from `spec/`, so a test that draws the wrong
  * role is obvious in the match instead of "another grenade":
  *
@@ -1898,6 +1902,10 @@ const TESTS: TestCase[] = [
         pushMode: 'aim',
         pushPower: 3.5,
         lift: 2,
+        // The default pair: nothing on the hit, WA's 96 whiff when the swing
+        // comes off nothing.
+        hitSound: 0,
+        missSound: 96,
         oncePerTarget: true,
         spareShooter: true,
         log: true,
@@ -1906,9 +1914,176 @@ const TESTS: TestCase[] = [
     intent:
       'The melee strike: Space swings the held art, and on the hit frame the scan box the panel draws in red is tested against the living worms in front of the striker. The swing takes the worm (`worm:take{ turn = "freeze" }`), so the clip is the clock rather than WA`s worm states.',
     expect:
-      'Pressing Space freezes the worm and plays all 16 ticks of the swing (no aim pose needed, no firing state involved), a worm standing in the box (in front, within the reach and the arc) takes 24 damage on tick 8 and is thrown away from the striker with a little lift, the swinger is never hit, and each worm only takes it once per swing. Nothing is fired and no ammo is used; the worm is given back and the turn ends when the clip does.',
+      'Pressing Space freezes the worm and plays all 16 ticks of the swing (no aim pose needed, no firing state involved), a worm standing in the box (in front, within the reach and the arc) takes 24 damage on tick 8 and is thrown away from the striker with a little lift, the swinger is never hit, and each worm only takes it once per swing. Nothing is fired and no ammo is used; the worm is given back and the turn ends when the clip does. The hit itself is silent (the default `hit_sound = 0`), while a swing that takes nobody plays the default whiff, `miss_sound = 96`, at the striker.',
     watch:
       'No damage at all (the `melee` table not registered because `sb.hold` took the engine path, the hit frame past the end of the clip, or the swing never starting: the log would then show no `swing at tick` line), nothing drawn for the whole clip while the strike lands (the draw pass comparing worm handles instead of `worm.id`), the animation playing for one frame and stopping (the clip still gated on an aim state instead of the swing), damage on every frame the box overlaps (the once-per-worm table not resetting per swing), the swinger hurting itself (spare_shooter), a worm behind the striker taking it (the scan vector mirrored wrongly, so the box points backwards on one side), the sheep launching instead of swinging (the take firing or `eat_fire` missing), or the worm left frozen with no turn end (the release and `set_turn_clock(0)` at the end of the clip). Set `log = true` (it is on here) and read the `[melee]` lines.',
+  },
+  {
+    project: makeOp({
+      id: 'wftest.55_melee_combo',
+      name: 'WF 55 Melee Combo',
+      slot: 'sheep_launcher',
+      fireType: 'melee',
+      body: { damage: 0 },
+      hold: {
+        enabled: true,
+        handType: 'mid',
+        handRadius: 10,
+        weapRadius: 4,
+        weapRotation: 0,
+        scale: 1,
+        frames: 1,
+        drawHand: true,
+        thrown: false,
+        putAway: true,
+      },
+      aimClip: {
+        enabled: true,
+        ticks: 24,
+        finish: 'endTurn',
+        // A cut that goes one way and comes back, so a strike per swing angle is
+        // visible: the clip's own angle turns each box.
+        keys: [
+          { t: 0, angle: 0, dx: 0, dy: 0, scale: 1, ease: 'out_quad' },
+          { t: 8, angle: -35, dx: 1, dy: -1, scale: 1.1, ease: 'out_cubic' },
+          { t: 16, angle: 30, dx: -1, dy: -1, scale: 1.1, ease: 'inout_quad' },
+          { t: 24, angle: 0, dx: 0, dy: 0, scale: 1, ease: 'out_quad' },
+        ],
+      },
+      melee: {
+        enabled: true,
+        radius: 40,
+        width: 18,
+        followSwing: true,
+        // Three strikes, each with its own damage and throw: 10 then 12 then a
+        // heavy finisher that throws harder and lifts.
+        hits: [
+          { frame: 8, damage: 10, power: 2, lift: 0 },
+          { frame: 16, damage: 12, power: 4, lift: 1 },
+          { frame: 22, damage: 16, power: 6, lift: 3 },
+        ],
+        hitFrame: 8,
+        damage: 10,
+        kind: 'normal',
+        pushMode: 'aim',
+        pushPower: 2,
+        pushVx: 0,
+        pushVy: 0,
+        lift: 0,
+        hitSound: 96,
+        missSound: 96,
+        oncePerTarget: true,
+        spareShooter: true,
+        log: true,
+      },
+    }),
+    intent:
+      'A three-hit melee combo: the swing lands one strike at frame 8, another at 16 and a finisher at 22, each with its own damage and throw, each following the clip`s angle at its own frame. `hits = { { frame, damage, power, lift }, ... }` in the `sb.hold` spec; the `hit` callback receives the strike as its fourth argument so it can use `hit.damage`.',
+    expect:
+      'One Space press, three separate hits on a worm standing in the box: 10 damage, then 12, then 16 (38 in all), thrown harder by each, with the third lifting the victim. Each hit lands once, on its own tick; the swing plays its full 24 ticks and ends the turn. Each landed strike plays `hit_sound` (96 here) at the victim, and a strike that takes nobody plays `miss_sound` at the striker, so a swing into thin air is heard as a whiff. Read the `[melee] hit n/3 at frame ...` lines.',
+    watch:
+      'One hit only (the SDK reading `hit_frame` and ignoring `hits`), all three landing on the same tick (the strikes not sorted, or `tick >=` compared against the wrong frame), the same damage three times (the callback ignoring its fourth argument), every strike throwing the same (per-hit `power`/`lift` not read), a worm hit twice by one strike (`once` not kept per strike), the swing ending after the first hit, three sounds on a single landed strike (the sound played per worm instead of per strike), or no whiff on an empty swing (`miss_sound` dropped, or `wa.sound` missing from the engine build).',
+  },
+  {
+    project: makeOp({
+      id: 'wftest.53_aim_clamp',
+      name: 'WF 53 Aim Clamp',
+      slot: 'sheep_launcher',
+      fireType: 'melee',
+      body: { damage: 0 },
+      hold: {
+        enabled: true,
+        handType: 'mid',
+        handRadius: 10,
+        weapRadius: 4,
+        weapRotation: 0,
+        scale: 1,
+        frames: 1,
+        drawHand: true,
+        thrown: false,
+        putAway: true,
+        // 45 degrees either side of level: the pose and the strike stop there,
+        // the way WA's bat pipes its own aim.
+        aimClamp: { enabled: true, up: 45, down: 45 },
+      },
+      aimClip: {
+        enabled: true,
+        ticks: 16,
+        finish: 'endTurn',
+        keys: [
+          { t: 0, angle: 0, dx: 0, dy: 0, scale: 1, ease: 'out_quad' },
+          { t: 8, angle: 45, dx: 2, dy: -2, scale: 1.1, ease: 'out_cubic' },
+          { t: 16, angle: 0, dx: 0, dy: 0, scale: 1, ease: 'out_quad' },
+        ],
+      },
+      melee: {
+        enabled: true,
+        radius: 40,
+        width: 18,
+        followSwing: false,
+        hitFrame: 8,
+        damage: 20,
+        kind: 'normal',
+        pushMode: 'aim',
+        pushPower: 3,
+        lift: 1,
+        oncePerTarget: true,
+        spareShooter: true,
+        log: true,
+      },
+    }),
+    intent:
+      'The aim clamp (`aim_clamp`): WA`s own aim target is clamped, not only our draw. `worm.aim_target` is read-only, but `worm:input{ aim = deg }` writes the same value `control_aim` writes, so the tool writes it every frame from `wa.on.body_move` while the aim is outside 45 degrees either side of level. The drawn pose, the swing and the strike follow, and the engine`s hand is parked (`hand_radius = 0.01`) because the layer draws the clamped one.',
+    expect:
+      'Aim well above or below 45 degrees: the aim itself stops at the limit (not only the art: WA adds at most one of its own 1.41 degree steps after the write, so the crosshair may sit a hair past 45 and no further), the held art stops with it, only one hand is visible, and a Space press struck from a vertical aim still swings along the clamped direction (the worm in front at level takes the hit, one overhead does not). The log prints `aim clamped` when the press was past the limit.',
+    watch:
+      'The aim running all the way to straight up or down (the `body_move` hook not installed: this engine build has no `wa.on.body_move`, and the log then says so), the art following the crosshair past the limit (the mask or the layer not reading `aim_clamp`), two hands past the limit (the engine hand not parked to 0.01), the strike landing on a worm straight above (the press latching the unclamped aim), or the whole weapon not swinging (an aim clamp alone should not need anything else on the card).',
+  },
+  {
+    project: makeOp({
+      id: 'wftest.54_fire_angle_clamp',
+      name: 'WF 54 Fire Angle Clamp',
+      // `uzi`: the firearm family's donor. A template has to be one of WA's own
+      // weapons (`stock.<name>`), and a name that is not takes the whole bundle
+      // down with it, so the pack checks every slot before it writes.
+      slot: 'uzi',
+      fireType: 'hitscan',
+      // The same clamp a swing weapon uses, worn by a firearm: the burst's
+      // launch direction comes from `seq_dir(w)` (live aim), so the limit is a
+      // real limit on the fire angle, not only on the drawn pose.
+      hold: {
+        enabled: true,
+        handType: 'mid',
+        handRadius: 10,
+        weapRadius: 4,
+        weapRotation: 0,
+        scale: 1,
+        frames: 1,
+        drawHand: true,
+        thrown: false,
+        putAway: true,
+        aimClamp: { enabled: true, up: 30, down: 30 },
+      },
+      fireSequence: {
+        enabled: true,
+        mode: 'missiles',
+        count: 6,
+        delay: 3,
+        speed: 16,
+        standoff: 20,
+        spreadX: 0.1,
+        spreadY: 0.1,
+        offsetY: -3,
+        liveAim: true,
+        cancelOnWeaponChange: true,
+      },
+    }),
+    intent:
+      'The aim clamp on a firearm, both halves at once: WA`s own aim target is clamped to 30 degrees either side of level (`worm:input` from a `body_move` hook), and `seq_dir(w)` launches the burst along that clamped aim as well, so a shot cannot leave at an angle the held art cannot hold even on the first frame.',
+    expect:
+      'Aim straight up or straight down and press Space: the crosshair itself stops at 30 degrees from level, the stream leaves along it, and the held art stops at the same limit. Aiming inside the limit changes nothing.',
+    watch:
+      'Shells flying fully vertical (the clamp not emitted into `seq_dir`, or emitted after it, and the `body_move` hook absent), a stationary aim still firing vertically on the first shot only (the clamp latched but not used by `vx`/`vy`), the whole burst missing (`aim_clamped` placed after its first use, so `seq_dir` reads a nil local), the aim running to straight up on a weapon whose art stops (the native write failing: the log says so once), or the art not clamped (the hold table missing `aim_clamp`).',
   },
   {
     project: makeOp({
@@ -1991,6 +2166,18 @@ let usesExplosion = false;
 let usesElectric = false;
 let usesFireSeq = false;
 let usesHolds = false;
+
+// A template has to be one of WA's own weapons: the engine refuses the whole
+// bundle for a name it does not know, which takes every other weapon with it.
+// One typo here once cost a whole in-game pass, so the pack checks its own slots
+// before it writes a byte.
+const badSlots = TESTS.map((test) => (test.project.based_on || test.project.slot || 'grenade')
+  .replace(/^stock\./, ''))
+  .filter((slot) => !stockDonor(slot));
+if (badSlots.length > 0) {
+  console.error(`not one of WA's own weapons: ${[...new Set(badSlots)].join(', ')}`);
+  process.exit(1);
+}
 
 for (const test of TESTS) {
   const project = test.project;
