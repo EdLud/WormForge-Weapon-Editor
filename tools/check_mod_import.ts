@@ -1126,9 +1126,17 @@ return {
     comboHits.map((hit) => `${hit.power}/${hit.lift}`).join(','),
   );
   check(
+    'WF 55: a melee claim imports as the melee family',
+    combo.fireType === 'melee',
+    `fireType is ${combo.fireType}: the record is an ordinary power one, so only the claim says melee`,
+  );
+  check(
     'WF 55: the strike sounds come back',
-    `${combo.melee?.hitSound}/${combo.melee?.missSound}` === '96/96',
-    `${combo.melee?.hitSound}/${combo.melee?.missSound}`,
+    combo.melee?.hitSound.id === 96 &&
+      combo.melee?.hitSound.priority === 10 &&
+      combo.melee?.missSound.id === 96 &&
+      combo.melee?.missSound.priority === 8,
+    `${combo.melee?.hitSound.id}@${combo.melee?.hitSound.priority} / ${combo.melee?.missSound.id}@${combo.melee?.missSound.priority}`,
   );
   const comboLua = generateLuaCode(fullProject(combo, 'WF 55 Melee Combo'));
   check(

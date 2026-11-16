@@ -595,8 +595,24 @@ needs any of them is drawn by `wfws.sdk`'s quad layer instead of the engine.
   record is the Sheep Launcher (`stock.sheep_launcher`, not WA's bat)**: a special
   melee subtype resolves its whole hit in one native frame, so its worm never
   animates, while a power record gives the worm a real aim phase for the swing to
-  take over. Not modelled: `stopOnTerrain` and a dedicated swing WAV (the record's
-  `fires` sound plays).
+  take over. Not modelled: `stopOnTerrain`.
+- **Melee is a claim, not a WA fire type**, so it is not in the Weapon Type
+  select: `WeaponSettings` has a **Melee strike** switch (`#ws-melee-toggle`)
+  beside it, which sets `fireType: 'melee'` and the Sheep Launcher donor, and
+  turning it off returns to the family the weapon last was and clears
+  `melee.enabled` (a melee table left enabled on a projectile would still eat
+  WA's fire). Picking a WA type in the select clears it the same way. The record
+  tables cannot say "melee" (a melee weapon's record is an ordinary power one),
+  so the claim's own `melee` table is what `importWeapon.ts` reads: without that
+  an imported swing came back as a projectile.
+- **A strike sound is an id or a WAV** (`MeleeSound { id, file?, priority }`,
+  `hitSound` / `missSound`): the native id when nothing is uploaded, the file
+  when there is (`hit_wav` / `miss_wav`, declared in the claim's `sounds` and
+  written as `sounds/<mod>/melee_hit.wav` / `melee_miss.wav`), so a hit or a
+  whiff can be the author's own sample. The file wins, as `fire_draw` does, and
+  the id box is parked while it is set. The default whiff is WA's 96, the
+  grenade throw and the bat's miss; a strike lands one play per strike either
+  way, at the first worm it took or at the striker when it took nobody.
 - Keyframe ticks commit on blur (`KeyTickInput`), because the keys are sorted by
   `t` and writing the `1` of "16" re-sorted the table mid-typing.
 

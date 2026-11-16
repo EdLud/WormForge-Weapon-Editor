@@ -4,6 +4,7 @@ import { STOCK_BY_ID, STOCK_WEAPONS, StockWeaponInfo } from '../data/stockWeapon
 import { WFWS_PREFIX, weaponIdSuffix, withWfwsPrefix } from '../utils/weaponId';
 import { TooltipLabel, UnitNumberInput, buildTooltip } from './RecordEditor';
 import { NumberInput } from './NumberInput';
+import { DEFAULT_MELEE } from '../data/melee';
 import {
   Image as ImageIcon,
   Trash2,
@@ -78,6 +79,14 @@ const FIRE_TYPE_OPTIONS: { id: FireType; label: string; defaultDonor: string; de
   },
 ];
 
+/**
+ * Melee is not one of WA's fire types. The record stays an ordinary power one (a
+ * melee weapon is based on the Sheep Launcher) and the claim does the rest, so it
+ * is offered as its own switch rather than as a kind of projectile: the select
+ * above lists what `fires.type` / `method` can actually be.
+ */
+const MELEE_OPTION = FIRE_TYPE_OPTIONS.find((option) => option.id === 'melee')!;
+const WA_FIRE_TYPES = FIRE_TYPE_OPTIONS.filter((option) => option.id !== 'melee');
 const FAMILY_GROUPS: { label: string; families: StockWeaponInfo['family'][] }[] = [
   { label: 'Missiles, Bombs & Animals', families: ['missile'] },
   { label: 'Firearms', families: ['gun'] },
@@ -97,6 +106,11 @@ export const WeaponSettings: React.FC<WeaponSettingsProps> = ({ project, onChang
   const selectedSlot = STOCK_BY_ID.get(project.slot);
   const selectedDonor = STOCK_BY_ID.get(project.based_on);
   const activeFireOption = FIRE_TYPE_OPTIONS.find((f) => f.id === project.fireType);
+  // Turning the melee claim off returns to the family the weapon last was. It is
+  // UI memory on purpose: the project has one `fireType`, and the type a melee
+  // weapon came from is not part of the record.
+  const lastWaFireType = useRef<FireType>('power');
+  if (project.fireType !== 'melee') lastWaFireType.current = project.fireType;
 
   const groupedDonors = useMemo(
     () =>
@@ -374,16 +388,73 @@ export const WeaponSettings: React.FC<WeaponSettingsProps> = ({ project, onChang
                   slot: defaultDonor,
                   based_on: defaultDonor,
                   panel_icon: project.customIconFile ? project.panel_icon : defaultDonor,
+                  // Leaving melee through the select is leaving the claim: a
+                  // melee table left enabled on a projectile would still eat WA's
+                  // fire, so the two never disagree.
+                  ...(nextType === 'melee'
+                    ? {}
+                    : { melee: { ...(project.melee ?? DEFAULT_MELEE), enabled: false } }),
                 });
               }}
               className={selectInput}
             >
-              {FIRE_TYPE_OPTIONS.map((ft) => (
+              {WA_FIRE_TYPES.map((ft) => (
                 <option key={ft.id} value={ft.id}>
                   {ft.label}
                 </option>
               ))}
+              {/* The current type has to be shown, not dropped: an imported melee
+                  weapon is on this value and the select must not read blank. */}
+              {project.fireType === 'melee' && (
+                <option value="melee">{MELEE_OPTION.label}</option>
+              )}
             </select>
+
+            {/* Melee is a custom claim, not a fire type, so it is its own switch. */}
+            <label
+              className="mt-2 flex cursor-pointer items-start gap-2 rounded-lg border border-stone-200 bg-stone-50/70 px-2.5 py-2 dark:border-stone-700 dark:bg-stone-900/50"
+              title={`${MELEE_OPTION.desc} The record stays an ordinary power one, so the physics tabs come back the moment the claim is off.`}
+            >
+              <input
+                type="checkbox"
+                id="ws-melee-toggle"
+                checked={project.fireType === 'melee'}
+                onChange={(e) => {
+                  if (e.target.checked) {
+                    const melee = project.melee ?? DEFAULT_MELEE;
+                    onChange({
+                      fireType: 'melee',
+                      teleport: false,
+                      // A melee weapon wants a power record WA still fires, so the
+                      // worm gets an aim phase for the swing to take over.
+                      slot: MELEE_OPTION.defaultDonor,
+                      based_on: MELEE_OPTION.defaultDonor,
+                      panel_icon: project.customIconFile
+                        ? project.panel_icon
+                        : MELEE_OPTION.defaultDonor,
+                      melee: { ...melee, enabled: true },
+                    });
+                  } else {
+                    // Off means off: the record keeps its donor (a melee weapon's
+                    // Sheep Launcher is a valid projectile record) and only the
+                    // claim goes.
+                    onChange({
+                      fireType: lastWaFireType.current,
+                      melee: { ...(project.melee ?? DEFAULT_MELEE), enabled: false },
+                    });
+                  }
+                }}
+                className="mt-0.5 h-3.5 w-3.5 rounded text-forge-600 focus:ring-forge-500"
+              />
+              <span className="text-[11px] leading-snug">
+                <span className="font-semibold text-stone-700 dark:text-stone-200">
+                  Melee strike
+                </span>{' '}
+                <span className="text-stone-500 dark:text-stone-400">
+                  custom claim, not a WA fire type
+                </span>
+              </span>
+            </label>
           </div>
 
           {/* Based On Donor Dropdown */}

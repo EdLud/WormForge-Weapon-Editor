@@ -1324,6 +1324,23 @@ end
 -- wrote before combos existed. Sorted by frame, because the swing lands them in
 -- tick order however the author typed them, and a strike with no numbers of its
 -- own inherits the weapon's.
+--- One strike sound: a pack WAV if the weapon uploaded one, else WA's own id.
+-- The file wins, so a strip that keeps both keys played while it had a WAV does
+-- not start playing its old id when the WAV is removed (`priority` is the third
+-- argument `wa.sound.play` takes for either kind).
+local function hold_melee_sound(spec, role)
+  local wav = spec[role .. "_wav"]
+  if type(wav) == "string" and wav ~= "" then
+    return {
+      sound = wav,
+      priority = math.floor(tonumber(spec[role .. "_priority"]) or 8),
+    }
+  end
+  local id = math.floor(tonumber(spec[role .. "_sound"]) or 0)
+  if id == 0 then return nil end
+  return { sound = id, priority = math.floor(tonumber(spec[role .. "_priority"]) or 8) }
+end
+
 local function hold_melee_hits(spec, push_aim)
   local out = {}
   local listed = type(spec.hits) == "table" and spec.hits or nil
@@ -1446,16 +1463,17 @@ local function hold_melee_strike(entry, w, st, index)
     end
   end
   st.hits = (st.hits or 0) + hits
-  -- The strike's own sound. WA's native playback, localised at the emitter:
-  -- the first worm the box took when it landed, the striker when it took
-  -- nobody. A whiff would otherwise be silent, because the claim eats WA's fire
-  -- and the record's own sound never plays. `wa.sound` arrived with 0.9.x, so an
-  -- older engine keeps the strike and loses only the sound.
+  -- The strike's own sound. `wa.sound.play` takes a native id or a pack WAV path
+  -- and localises the voice at the emitter: the first worm the box took when it
+  -- landed, the striker when it took nobody. A whiff would otherwise be silent,
+  -- because the claim eats WA's fire and the record's own sound never plays.
+  -- `wa.sound` arrived with 0.9.x, so an older engine keeps the strike and loses
+  -- only the sound.
   if wa.sound and wa.sound.play then
-    local sound = hits > 0 and m.hit_sound or m.miss_sound
-    if sound and sound ~= 0 then
+    local audio = hits > 0 and m.hit_audio or m.miss_audio
+    if audio then
       local emitter = hits > 0 and first_hit or w
-      if emitter then pcall(wa.sound.play, emitter, sound) end
+      if emitter then pcall(wa.sound.play, emitter, audio.sound, audio.priority) end
     end
   end
   if m.log then
@@ -1919,11 +1937,13 @@ function M.hold(ctx, spec)
       push_aim = push == nil or push == "aim",
       fvx = type(push) == "table" and (push.x or 0) or 0,
       fvy = type(push) == "table" and (push.y or 0) or 0,
-      -- WA's own sound ids: where a strike lands, and where it does not. 0 is
-      -- silent; the editor's default whiff is 96, WA's grenade throw and bat
-      -- miss.
-      hit_sound = math.floor(tonumber(melee_spec.hit_sound) or 0),
-      miss_sound = math.floor(tonumber(melee_spec.miss_sound) or 0),
+      -- The strike's sounds: where it lands, and where it does not. Either
+      -- half is one of WA's own ids (`hit_sound`) or a pack WAV played by path
+      -- (`hit_wav`), and the file wins, like the firing art's fire_draw. 0 and
+      -- no path is silent; the editor's default whiff is 96, WA's grenade throw
+      -- and bat miss.
+      hit_audio = hold_melee_sound(melee_spec, "hit"),
+      miss_audio = hold_melee_sound(melee_spec, "miss"),
       once = melee_spec.once ~= false,
       spare_shooter = melee_spec.spare_shooter ~= false,
       log = melee_spec.log and true or false,

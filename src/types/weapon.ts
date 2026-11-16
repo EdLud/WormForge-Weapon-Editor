@@ -310,6 +310,21 @@ export interface MeleeHit {
   vy?: number;
 }
 
+/**
+ * A strike's sound: one of WA's own sample ids, or an uploaded PCM WAV that wins
+ * over it (the same rule as the firing art's `fireDrawHand ?? drawHand`). A WAV
+ * is played by bundle path, declared in the claim's `sounds` list, and needs no
+ * stock sample slot.
+ */
+export interface MeleeSound {
+  /** Native WA sample id, `0` for silent. Ignored while a file is set. */
+  id: number;
+  /** Uploaded WAV, played by path instead of `id`. */
+  file?: CustomSoundAsset;
+  /** Voice priority (4 quiet, 8 the engine default, 10 loud, 16 lead). */
+  priority: number;
+}
+
 export interface MeleeConfig {
   enabled: boolean;
   /** Reach along the weapon, in px from the worm's body. */
@@ -343,15 +358,14 @@ export interface MeleeConfig {
   /** Upward lift added to either mode, in px per frame (positive = up). */
   lift: number;
   /**
-   * WA's own sound played where a strike lands (`wa.sound.play` at the victim),
-   * as a native sound id. `0` is silent. A strike that reaches nobody plays
-   * `missSound` at the striker instead, which is how a swing that comes off the
-   * art is heard at all: the claim eats WA's fire, so the record's own sound
-   * never plays.
+   * Played where a strike lands (`wa.sound.play` at the first worm it took), and
+   * the whiff played at the striker when it takes nobody: a swing that comes off
+   * the art is heard at all only because the claim eats WA's fire, so the
+   * record's own sound never plays.
    */
-  hitSound: number;
-  /** Played at the striker when a strike lands on nothing. WA's whiff is 96. */
-  missSound: number;
+  hitSound: MeleeSound;
+  /** WA's whiff is 96, the grenade throw and the bat's miss. */
+  missSound: MeleeSound;
   /** Hit each worm once per swing, not once per frame the box is live. */
   oncePerTarget: boolean;
   /** Leave the firing worm out of its own strike. */

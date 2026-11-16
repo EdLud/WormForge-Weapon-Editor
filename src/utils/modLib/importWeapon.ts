@@ -184,6 +184,11 @@ export async function importBundleWeapon(
       mapped.action === 'dig' || (mapped.burst === 'clusters' && bitAction === 'dig'),
   });
   notes.push(...features.notes);
+  // A melee weapon is a custom claim, not a WA fire type: its record is an
+  // ordinary power one (the Sheep Launcher), so nothing in the record tables says
+  // "melee" and `fireTypeOf` answers `power`. The claim's own `melee` table is the
+  // signal, and without this an imported swing came back as a projectile.
+  const isMelee = !!features.project.melee?.enabled;
   const unmodelled = unmodelledClaimKeys(weapon.source);
   if (unmodelled.length > 0) {
     notes.push(`not carried: ${unmodelled.join(', ')}`);
@@ -194,6 +199,7 @@ export async function importBundleWeapon(
     project: {
       ...project,
       ...features.project,
+      fireType: isMelee ? 'melee' : (project.fireType ?? 'power'),
       id,
       name,
       description:

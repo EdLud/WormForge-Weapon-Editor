@@ -1,8 +1,10 @@
 import React from 'react';
 import { Plus, Swords, Target, Trash2 } from 'lucide-react';
-import type { MeleeHit, WeaponProject } from '../types/weapon';
+import type { MeleeHit, MeleeSound, WeaponProject } from '../types/weapon';
 import { DEFAULT_MELEE, meleeStrikes, meleeTotalDamage } from '../data/melee';
+import { SOUND_PRIORITIES } from '../data/soundPresets';
 import { KeyTickInput } from './KeyTickInput';
+import { SoundUpload } from './EffectsCards';
 
 interface MeleeCardProps {
   project: WeaponProject;
@@ -21,6 +23,88 @@ const selectClass =
  * (so the hit is the same frame on every peer, and the preview's red box is the
  * box the game tests).
  */
+/**
+ * One strike sound: an uploaded WAV, or one of WA's own sample ids when none is.
+ * The file wins (`sound_wav` over `sound`), so the id box is parked while a WAV
+ * is loaded, and the priority applies to whichever of the two plays.
+ */
+const MeleeSoundField: React.FC<{
+  role: 'hit' | 'miss';
+  label: string;
+  hint: string;
+  sound: MeleeSound;
+  onChange: (sound: MeleeSound) => void;
+}> = ({ role, label, hint, sound, onChange }) => {
+  const patch = (next: Partial<MeleeSound>) => onChange({ ...sound, ...next });
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <span
+          className="text-xs font-semibold text-stone-700 dark:text-stone-300"
+          title={hint}
+        >
+          {label}
+        </span>
+        <span className="text-[10px] text-stone-400 dark:text-stone-500">
+          {sound.file ? 'your WAV' : 'WA id'}
+        </span>
+      </div>
+      <SoundUpload
+        id={`melee-${role}-wav`}
+        asset={sound.file}
+        onPick={(asset) => patch({ file: asset })}
+        onRemove={() => patch({ file: undefined })}
+      />
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <label
+            htmlFor={`melee-${role}-sound`}
+            className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-stone-400 dark:text-stone-500"
+            title="WA's own sample id, used while no WAV is loaded. 0 is silent."
+          >
+            Id
+          </label>
+          <input
+            id={`melee-${role}-sound`}
+            type="number"
+            min={0}
+            max={2000}
+            value={sound.id}
+            disabled={!!sound.file}
+            onChange={(event) => {
+              const value = Number(event.target.value);
+              if (event.target.value.trim() === '' || Number.isNaN(value)) return;
+              patch({ id: Math.max(0, Math.round(value)) });
+            }}
+            className={inputClass}
+          />
+        </div>
+        <div>
+          <label
+            htmlFor={`melee-${role}-priority`}
+            className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-stone-400 dark:text-stone-500"
+            title="Voice priority: a higher value may replace a lower one when the voice pool is full. The engine's own default is 8."
+          >
+            Priority
+          </label>
+          <select
+            id={`melee-${role}-priority`}
+            value={sound.priority}
+            onChange={(event) => patch({ priority: Number(event.target.value) })}
+            className={selectClass}
+          >
+            {SOUND_PRIORITIES.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.value}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 export const MeleeCard: React.FC<MeleeCardProps> = ({ project, onChange }) => {
   const melee = { ...DEFAULT_MELEE, ...(project.melee ?? {}) };
   const clip = project.aimClip;
@@ -483,64 +567,35 @@ export const MeleeCard: React.FC<MeleeCardProps> = ({ project, onChange }) => {
 
           {/* The strike's own sounds. The claim eats WA's fire, so the record's
               sound never plays: a swing that comes off nothing is silent unless
-              the layer says otherwise. */}
-          <div className="space-y-2 rounded-xl border border-stone-200 bg-white p-3 dark:border-stone-700 dark:bg-stone-800">
+              the layer says otherwise. Either role takes one of WA's ids or an
+              uploaded WAV, and the file wins. */}
+          <div className="space-y-3 rounded-xl border border-stone-200 bg-white p-3 dark:border-stone-700 dark:bg-stone-800">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span
                 className="text-xs font-semibold text-stone-700 dark:text-stone-300"
-                title="WA's own sounds, played at the worm a strike lands on (the hit) or at the striker when a strike takes nobody (the whiff). Native sound ids, 0 is silent. The default whiff is 96, the one WA plays for a grenade throw and for the baseball bat coming off nothing."
+                title="Played at the worm a strike lands on (the hit) or at the striker when a strike takes nobody (the whiff). Either can be one of WA's own sample ids or an uploaded PCM WAV; a WAV wins over the id and needs no stock sample slot. The default whiff is 96, the one WA plays for a grenade throw and for the baseball bat coming off nothing."
               >
                 Strike Sounds
               </span>
               <span className="text-[10px] text-stone-400 dark:text-stone-500">
-                native ids, 0 is silent
+                WA id or your own WAV
               </span>
             </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div>
-                <label
-                  htmlFor="melee-hit-sound"
-                  className="mb-1 block text-xs font-semibold text-stone-700 dark:text-stone-300"
-                  title="Played where the strike lands, at the worm it took. 0 leaves the hit silent. One strike plays it once, however many worms it takes, so a three-hit combo is three plays."
-                >
-                  Hit Sound
-                </label>
-                <input
-                  id="melee-hit-sound"
-                  type="number"
-                  min={0}
-                  max={2000}
-                  value={melee.hitSound}
-                  onChange={(event) => {
-                    const value = Number(event.target.value);
-                    if (event.target.value.trim() === '' || Number.isNaN(value)) return;
-                    update({ hitSound: Math.max(0, Math.round(value)) });
-                  }}
-                  className={inputClass}
-                />
-              </div>
-              <div>
-                <label
-                  htmlFor="melee-miss-sound"
-                  className="mb-1 block text-xs font-semibold text-stone-700 dark:text-stone-300"
-                  title="Played at the striker when a strike lands on nothing, which is the only way a whiff is heard: the claim eats WA's fire, so the record's own sound never plays. 96 is WA's grenade throw and the baseball bat's miss."
-                >
-                  Miss Sound
-                </label>
-                <input
-                  id="melee-miss-sound"
-                  type="number"
-                  min={0}
-                  max={2000}
-                  value={melee.missSound}
-                  onChange={(event) => {
-                    const value = Number(event.target.value);
-                    if (event.target.value.trim() === '' || Number.isNaN(value)) return;
-                    update({ missSound: Math.max(0, Math.round(value)) });
-                  }}
-                  className={inputClass}
-                />
-              </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <MeleeSoundField
+                role="hit"
+                label="Hit Sound"
+                hint="Played where the strike lands, at the worm it took. One strike plays it once, however many worms it takes, so a three-hit combo is three plays."
+                sound={melee.hitSound}
+                onChange={(sound) => update({ hitSound: sound })}
+              />
+              <MeleeSoundField
+                role="miss"
+                label="Miss Sound"
+                hint="Played at the striker when a strike lands on nothing, which is the only way a whiff is heard: the claim eats WA's fire, so the record's own sound never plays. 96 is WA's grenade throw and the baseball bat's miss."
+                sound={melee.missSound}
+                onChange={(sound) => update({ missSound: sound })}
+              />
             </div>
             <p className="text-[10px] leading-snug text-stone-500 dark:text-stone-400">
               Each strike plays one of them: the hit sound where it lands, the miss sound when it

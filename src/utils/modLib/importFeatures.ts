@@ -33,7 +33,7 @@ import type {
   WeaponProject,
 } from '../../types/weapon';
 import { DEFAULT_MELEE } from '../../data/melee';
-import type { MeleeHit } from '../../types/weapon';
+import type { MeleeHit, MeleeSound } from '../../types/weapon';
 import {
   CLIP_EASES,
   DEFAULT_AIM_ECHO,
@@ -851,6 +851,31 @@ export async function readBundleFeatures(args: {
           });
         }
       }
+      const meleeSoundOf = async (role: 'hit' | 'miss'): Promise<MeleeSound> => {
+        const fallback = role === 'hit' ? DEFAULT_MELEE.hitSound : DEFAULT_MELEE.missSound;
+        const wav = str(meleeTable[`${role}_wav`]);
+        const id = Math.max(0, Math.round(num(meleeTable[`${role}_sound`]) ?? fallback.id));
+        const priority = Math.max(
+          0,
+          Math.round(num(meleeTable[`${role}_priority`]) ?? fallback.priority),
+        );
+        if (!wav) return { id, priority };
+        const asset = await readAsset(files, bundleDir, wav);
+        return {
+          id,
+          priority,
+          ...(asset
+            ? {
+                file: {
+                  file: asset.file,
+                  fileName: asset.file.name,
+                  previewUrl: asset.preview,
+                  size: asset.bytes.length,
+                },
+              }
+            : {}),
+        };
+      };
       project.melee = {
         enabled: true,
         radius: num(meleeTable.radius) ?? DEFAULT_MELEE.radius,
@@ -866,8 +891,9 @@ export async function readBundleFeatures(args: {
         lift: num(meleeTable.lift) ?? 0,
         // A bundle written before the strike had sounds carries neither key, so
         // it comes back with the editor's default whiff (96) and a silent hit.
-        hitSound: num(meleeTable.hit_sound) ?? DEFAULT_MELEE.hitSound,
-        missSound: num(meleeTable.miss_sound) ?? DEFAULT_MELEE.missSound,
+        // `hit_wav` / `miss_wav` are uploaded files: the file wins over the id.
+        hitSound: await meleeSoundOf('hit'),
+        missSound: await meleeSoundOf('miss'),
         oncePerTarget: meleeTable.once !== false,
         spareShooter: meleeTable.spare_shooter !== false,
         log: meleeTable.log === true,

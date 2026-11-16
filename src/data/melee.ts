@@ -27,8 +27,9 @@ export const DEFAULT_MELEE: MeleeConfig = {
   // WA plays 96 when a grenade is thrown and when the bat comes off nothing: the
   // swing's own whoosh. On by default, because a strike that reaches nobody is
   // otherwise silent (the claim eats WA's fire, so the record's sound never runs).
-  hitSound: 0,
-  missSound: 96,
+  // Either can be an uploaded WAV instead of an id.
+  hitSound: { id: 0, priority: 10 },
+  missSound: { id: 96, priority: 8 },
   oncePerTarget: true,
   spareShooter: true,
   log: false,

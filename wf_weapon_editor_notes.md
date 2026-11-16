@@ -3211,3 +3211,25 @@ The import side needed a new discriminator: the launch play and the explosion
 play are the same shape (`wa.sound.play(ev.worm, path, n)`). The generated file
 name answers it for our own bundles (`launch.wav`); for a hand-written one the
 nearest enclosing hook before the play (`on_fire` or `on_explode`) does.
+
+## Melee is a family of one, and its sounds can be yours
+
+Two follow-ups to the strike work.
+
+**Import.** A melee weapon's record is an ordinary power one (the Sheep
+Launcher), so `fireTypeOf` read it as a projectile and the imported weapon lost
+its Melee Strike page and its claim semantics. The record cannot answer it; the
+claim's own `melee` table can, so `importWeapon` sets `fireType: 'melee'` when it
+finds one. In the panel the same conclusion became a switch: melee is not one of
+WA's fire types, and offering it in the Weapon Type select read like a fourth
+kind of projectile. It is now a `Melee strike` switch beside the select, which
+also clears `melee.enabled` when the author picks a real WA type, because a melee
+table left enabled on a projectile would still eat WA's fire.
+
+**Sounds.** The strike sound was a native id only. `MeleeSound` is `{ id, file?,
+priority }` now: the id plays when nothing is uploaded, the file when it is, and
+the file wins, exactly like `fire_draw` over `draw_hand`. The WAVs are declared
+in the claim's `sounds` list (so the SDK resolves them like any pack sound) and
+written as `sounds/<mod>/melee_hit.wav` and `melee_miss.wav`. One play per
+strike, at the first worm it took or at the striker when it took nobody, and the
+priority is the third argument `wa.sound.play` takes either way.

@@ -10,6 +10,7 @@ import {
   bitFlightSheetPath,
   behaviorStateSheetPath,
   customSoundPath,
+  meleeSoundPath,
   extraHandSheetPath,
   flashSheetPath,
   holdNeedsAimLayer,
@@ -205,6 +206,15 @@ export async function exportModZip(project: WeaponProject): Promise<Blob> {
           : role === 'interval'
             ? project.customSounds?.interval
             : project.customSounds?.shot;
+    if (path && asset?.file) {
+      zip.file(`${modFolder}/${path}`, asset.file);
+    }
+  }
+
+  // The melee strike's own WAVs, played by the swing (`hit_wav` / `miss_wav`).
+  for (const role of ['hit', 'miss'] as const) {
+    const path = meleeSoundPath(project, role);
+    const asset = role === 'hit' ? project.melee?.hitSound?.file : project.melee?.missSound?.file;
     if (path && asset?.file) {
       zip.file(`${modFolder}/${path}`, asset.file);
     }

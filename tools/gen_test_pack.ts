@@ -1904,8 +1904,8 @@ const TESTS: TestCase[] = [
         lift: 2,
         // The default pair: nothing on the hit, WA's 96 whiff when the swing
         // comes off nothing.
-        hitSound: 0,
-        missSound: 96,
+        hitSound: { id: 0, priority: 10 },
+        missSound: { id: 96, priority: 8 },
         oncePerTarget: true,
         spareShooter: true,
         log: true,
@@ -1970,8 +1970,8 @@ const TESTS: TestCase[] = [
         pushVx: 0,
         pushVy: 0,
         lift: 0,
-        hitSound: 96,
-        missSound: 96,
+        hitSound: { id: 96, priority: 10 },
+        missSound: { id: 96, priority: 8 },
         oncePerTarget: true,
         spareShooter: true,
         log: true,

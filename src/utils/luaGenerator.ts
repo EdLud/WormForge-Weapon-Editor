@@ -5,6 +5,7 @@ import {
   DigActionConfig,
   FlightRoleArt,
   HoldConfig,
+  MeleeSound,
   PackArtSlot,
   RoamActionConfig,
   WeaponProject,
@@ -811,6 +812,20 @@ export function customSoundPath(
   return `sounds/${sanitizeModFolder(project.id)}/${role}.wav`;
 }
 
+/**
+ * Bundle path of an uploaded melee strike WAV, or null when that role has no
+ * file. The claim plays it by path, so it needs no stock sample slot; the id in
+ * `MeleeSound` is the native fallback.
+ */
+export function meleeSoundPath(
+  project: WeaponProject,
+  role: 'hit' | 'miss',
+): string | null {
+  const sound = role === 'hit' ? project.melee?.hitSound : project.melee?.missSound;
+  if (!sound?.file) return null;
+  return `sounds/${sanitizeModFolder(project.id)}/melee_${role}.wav`;
+}
+
 /** A safe `.wep` filename for the exported bundle. */
 export function sanitizeWepFileName(name: string): string {
   const base = (name || 'weapon.wep').replace(/\\/g, '/').split('/').pop() || 'weapon.wep';
@@ -1409,15 +1424,25 @@ export function generateLuaCode(project: WeaponProject): string {
           for (const row of rows) holdRows.push(`    ${row}`);
           holdRows.push('  },');
         }
-        // WA's own sound ids. The hit sound plays where a strike lands, the miss
+        // The strike's sounds. The hit sound plays where a strike lands, the miss
         // sound at the striker when it reaches nobody; the claim eats WA's fire,
         // so the record's own sound never plays and a whiff would be silent.
-        if ((melee.hitSound ?? 0) !== 0) {
-          holdRows.push(`  hit_sound = ${Math.max(0, Math.round(melee.hitSound))},`);
-        }
-        if ((melee.missSound ?? 0) !== 0) {
-          holdRows.push(`  miss_sound = ${Math.max(0, Math.round(melee.missSound))},`);
-        }
+        // Either can be WA's own id or an uploaded WAV: a WAV wins (the same rule
+        // as `fireDrawHand ?? drawHand`) and is declared in the claim's `sounds`.
+        const meleeSoundRows = (role: 'hit' | 'miss', sound: MeleeSound | undefined) => {
+          if (!sound) return;
+          const priority = Math.max(0, Math.round(sound.priority ?? 8));
+          if (sound.file) {
+            holdRows.push(`  ${role}_wav = ${luaQuote(meleeSoundPath(project, role)!)},`);
+          } else if ((sound.id ?? 0) !== 0) {
+            holdRows.push(`  ${role}_sound = ${Math.max(0, Math.round(sound.id))},`);
+          }
+          // WA's own playback takes the same third argument, so one row serves
+          // both kinds; the engine default is 8.
+          if (priority !== 8) holdRows.push(`  ${role}_priority = ${priority},`);
+        };
+        meleeSoundRows('hit', melee.hitSound);
+        meleeSoundRows('miss', melee.missSound);
         if (melee.oncePerTarget === false) holdRows.push('  once = false,');
         if (melee.spareShooter === false) holdRows.push('  spare_shooter = false,');
         // The only way to tell a swing that never started from one that tested
@@ -1769,6 +1794,16 @@ export function generateLuaCode(project: WeaponProject): string {
   // WormForge's own sample bank (WA's record sound fields take native ids).
   const packSounds: string[] = [];
   if (launchSoundPath) packSounds.push(luaQuote(launchSoundPath));
+  // A melee strike's uploaded WAVs are played by the swing, so they are declared
+  // like any other pack sound (the SDK resolves the path through this list).
+  // Only when the claim is really emitted: the melee block lives inside the
+  // hold spec, so a weapon with no hold art has nothing to play these.
+  if (usesHoldLocal && project.melee?.enabled) {
+    for (const role of ['hit', 'miss'] as const) {
+      const path = meleeSoundPath(project, role);
+      if (path) packSounds.push(luaQuote(path));
+    }
+  }
   if (usesExplosionSound) packSounds.push(luaQuote(explosionSoundPath!));
   if (usesIntervalSound) packSounds.push(luaQuote(intervalSoundPath!));
   if (shotSoundPath) packSounds.push(luaQuote(shotSoundPath));

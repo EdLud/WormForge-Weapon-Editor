@@ -14,9 +14,15 @@
  *    custom `on_explode` with "the end" in a comment was truncated and the rest
  *    of the snippet was emitted as broken Lua.
  */
-import { parseCustomLua, generateLuaCode, customSoundPath } from '../src/utils/luaGenerator';
+import {
+  parseCustomLua,
+  generateLuaCode,
+  customSoundPath,
+  meleeSoundPath,
+} from '../src/utils/luaGenerator';
 import { stockDonor, stockDonorBaseline } from '../src/data/stockDonors';
 import { DEFAULT_BODY } from '../src/data/defaults';
+import { DEFAULT_MELEE } from '../src/data/melee';
 import type { WeaponProject } from '../src/types/weapon';
 
 let failed = 0;
@@ -222,6 +228,53 @@ const makeProject = (patch: Partial<WeaponProject> = {}): WeaponProject => {
     'a burst plays the launch WAV inside its own on_fire',
     fireAt >= 0 && playAt > fireAt && playAt < seqText.indexOf('seq.fire_seq_mis{'),
     playAt < 0 ? 'no play' : 'the play is outside the trigger',
+  );
+}
+
+// ---- a melee strike's uploaded WAV ---------------------------------------
+{
+  // The swing plays the file by path, so the path has to be declared in the
+  // claim's `sounds` list and the native id must step aside (a WAV wins).
+  const wav = new File([new Uint8Array([82, 73, 70, 70])], 'hit.wav', { type: 'audio/wav' });
+  const melee = makeProject({
+    fireType: 'melee',
+    hold: { enabled: true } as WeaponProject['hold'],
+    aimClip: {
+      enabled: true,
+      ticks: 16,
+      finish: 'endTurn',
+      keys: [],
+      echo: { enabled: false, count: 0, every: 1, fade: 0.6, blend: 'alpha' },
+    } as WeaponProject['aimClip'],
+    melee: {
+      ...DEFAULT_MELEE,
+      enabled: true,
+      hitSound: {
+        id: 96,
+        priority: 16,
+        file: { file: wav, fileName: 'hit.wav', previewUrl: '', size: 4 },
+      },
+      missSound: { id: 96, priority: 8 },
+    },
+  });
+  const text = generateLuaCode(melee);
+  const hitPath = meleeSoundPath(melee, 'hit')!;
+  const rows = text.split(String.fromCharCode(10));
+  check(
+    'a melee WAV is played by path and its id steps aside',
+    text.includes(`hit_wav = "${hitPath}"`) && !rows.some((l) => /^\s*hit_sound = /.test(l)),
+    rows.find((l) => l.includes('hit_')) ?? 'no row',
+  );
+  check(
+    'and the strike WAV is declared in the claim sounds list',
+    rows.some((l) => l.startsWith('      sounds = {') && l.includes(hitPath)),
+    'the engine would have nothing to play',
+  );
+  check(
+    'the whiff keeps its native id and no priority row',
+    rows.some((l) => /^\s*miss_sound = 96,$/.test(l)) &&
+      !rows.some((l) => l.includes('miss_priority')),
+    'the default 8 needs no row',
   );
 }
 

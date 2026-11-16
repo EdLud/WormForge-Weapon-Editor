@@ -155,9 +155,12 @@ wa.sound = lua.table()
 
 
 def play_sound(target, sound, flags=None):
-    # The engine plays a numeric id natively; the target is the emitter the
-    # voice is positioned at.
-    EVENTS.append(("sound", sound, target["id"] if target is not None else None))
+    # A numeric id is WA's own playback, a string is a pack WAV played by path;
+    # the target is the emitter the voice is positioned at, the third argument
+    # the voice priority.
+    EVENTS.append(
+        ("sound", sound, target["id"] if target is not None else None, flags)
+    )
     return True
 
 
@@ -180,7 +183,8 @@ ctx.id = "test.bat"
 
 
 def build_spec(weapon="test.bat", weap_rotation=1, aim_clamp=None, follow_swing=True,
-               power=3, lift=1, hits=None, hit_sound=0, miss_sound=0):
+               power=3, lift=1, hits=None, hit_sound=0, miss_sound=0,
+               hit_wav=None, miss_wav=None, hit_priority=8, miss_priority=8):
     spec = lua.table_from({
         "weapon": weapon,
         "sheet": "sprites/test.bat/hold.png",
@@ -219,6 +223,12 @@ def build_spec(weapon="test.bat", weap_rotation=1, aim_clamp=None, follow_swing=
         ])
     spec["melee"]["hit_sound"] = hit_sound
     spec["melee"]["miss_sound"] = miss_sound
+    spec["melee"]["hit_priority"] = hit_priority
+    spec["melee"]["miss_priority"] = miss_priority
+    if hit_wav is not None:
+        spec["melee"]["hit_wav"] = hit_wav
+    if miss_wav is not None:
+        spec["melee"]["miss_wav"] = miss_wav
 
     # The claim's own hit callback, written the way the generator writes it:
     # `hit = function(victim, vx, vy) victim:hurt{ amount = 24, vx = vx, vy = vy } end`
@@ -533,7 +543,7 @@ COMBO = [
     {"frame": 12, "damage": 11, "power": 5, "lift": 2},
 ]
 sb.hold(combo_ctx, build_spec("test.bat.combo", 1, None, follow_swing=False, hits=COMBO,
-                             hit_sound=96, miss_sound=96))
+                             hit_sound=96, miss_sound=96, hit_priority=10))
 EVENTS.clear()
 LOG.clear()
 WORM["weapon"] = "test.bat.combo"
@@ -579,10 +589,39 @@ check(
     % (len(combo_sounds), [e[2] for e in combo_sounds]),
 )
 
-# A swing into thin air: the same weapon, nobody in the box, so every strike
-# plays the whiff at the striker instead.
+# A weapon that uploaded its own WAV: the path plays instead of the id, with its
+# own priority (the file wins, like `fire_draw` over `draw_hand`).
 EVENTS.clear()
 LOG.clear()
+WORM["weapon"] = "test.bat"
+WORM["aim"] = 0.5
+VICTIM["x"], VICTIM["y"] = 1024, 1000
+wav_ctx = lua.table()
+# The same weapon, so the sampler finds it: a second entry under another name is
+# never asked for, since the worm's weapon is the key.
+sb.hold(wav_ctx, build_spec("test.bat", 1, None, follow_swing=False, hits=COMBO,
+                            hit_sound=96, miss_sound=96,
+                            hit_wav="sounds/test/melee_hit.wav",
+                            miss_wav="sounds/test/melee_miss.wav",
+                            hit_priority=16, miss_priority=4))
+step(920)
+step(921, space=True)
+for n in range(922, 948):
+    step(n, space=True)
+wav_plays = [e for e in EVENTS if e[0] == "sound"]
+check(
+    "an uploaded WAV plays instead of the native id",
+    [e[1] for e in wav_plays] == ["sounds/test/melee_hit.wav"] * 3
+    and all(e[3] == 16 for e in wav_plays),
+    "%s" % (wav_plays,),
+)
+
+# A swing into thin air: the same weapon, nobody in the box, so every strike
+# plays the whiff at the striker instead. The id-sound combo entry answers again
+# (two entries under one weapon would both swing).
+EVENTS.clear()
+LOG.clear()
+WORM["weapon"] = "test.bat.combo"
 WORM["aim"] = 0.5
 VICTIM["x"], VICTIM["y"] = 2000, 2000
 step(880)
@@ -594,6 +633,11 @@ check(
     "a strike that takes nobody plays the whiff at the striker",
     len(whiffs) == 3 and all(e[1] == 96 and e[2] == WORM["id"] for e in whiffs),
     "%d play(s): %s" % (len(whiffs), whiffs),
+)
+check(
+    "the whiff keeps the weapon's own priority",
+    all(e[3] == 8 for e in whiffs),
+    "%s" % ([e[3] for e in whiffs],),
 )
 VICTIM["x"], VICTIM["y"] = 1024, 1000
 
