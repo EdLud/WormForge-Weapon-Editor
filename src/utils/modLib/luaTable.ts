@@ -419,6 +419,43 @@ export function scanLua(code: string): LuaScan {
   return scan;
 }
 
+/**
+ * The table a named local function returns: `local function <name>(...)` whose
+ * body ends in `return { ... }`.
+ *
+ * The editor's own emitter writes its options that way (`emitter_for`, so the
+ * table is rebuilt per spawn and no caller can edit it), and `scanLua` only
+ * records a `return {` under no name at all. Reading it by the function's name
+ * is the exact inverse.
+ */
+export function readReturnedTable(
+  code: string,
+  functionName: string,
+): { table: LuaTable; text: string } | undefined {
+  const { tokens } = tokenize(code);
+  let start = -1;
+  for (let i = 0; i < tokens.length; i += 1) {
+    if (tokens[i].kind === 'name' && tokens[i].value === functionName) {
+      start = i;
+      break;
+    }
+  }
+  if (start < 0) return undefined;
+  for (let i = start + 1; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (token.kind === 'name' && token.value === 'return') {
+      const open = tokens[i + 1];
+      if (!(open?.kind === 'punct' && open.value === '{')) return undefined;
+      const reader = new Reader(tokens, i + 1);
+      const table = reader.table();
+      const end = tokens[reader.position - 1];
+      const closer = end?.kind === 'punct' && end.value === '}' ? 1 : 0;
+      return { table, text: code.slice(open.at, (end?.at ?? open.at) + closer) };
+    }
+  }
+  return undefined;
+}
+
 /** First table found among the given assignment paths. */
 export function firstTable(scan: LuaScan, ...paths: string[]): LuaTable | undefined {
   for (const path of paths) {

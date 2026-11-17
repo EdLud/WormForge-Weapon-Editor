@@ -1,7 +1,9 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { WeaponProject } from '../types/weapon';
 import { generateLuaCode, generateModToml, generateProfileToml, sanitizeModFolder } from '../utils/luaGenerator';
 import { Copy, Check, FileCode2, Settings, UserCheck, X } from 'lucide-react';
+import { checkLua } from '../utils/luaCheck';
+import { LuaFindings } from './LuaFindings';
 
 interface LuaPreviewModalProps {
   project: WeaponProject;
@@ -19,6 +21,14 @@ export const LuaPreviewModal: React.FC<LuaPreviewModalProps> = ({ project, isOpe
   const luaCode = generateLuaCode(project);
   const modToml = generateModToml(project);
   const profileToml = generateProfileToml(project);
+
+  // The generated Lua is a complete file, so the editor can say whether it
+  // would run: custom code (or a hook an imported bundle carried in) that reads a
+  // name nothing declares, which is the Pulsar's `aura` and the Vortex's
+  // `start_vortex`, a `math.sin` that is not lockstep safe, a block left open.
+  // The report is on the file, not on the text box, and a finding inside the
+  // marked custom block is tagged as such by `LuaFindings`.
+  const luaFindings = useMemo(() => checkLua(luaCode, { mode: 'fragment' }), [luaCode]);
 
   const getActiveContent = () => {
     if (activeFile === 'lua') return luaCode;
@@ -98,6 +108,12 @@ export const LuaPreviewModal: React.FC<LuaPreviewModalProps> = ({ project, isOpe
           )}
         </div>
       </div>
+
+      {activeFile === 'lua' && luaFindings.length > 0 && (
+        <div className="border-b border-stone-200 bg-stone-50 p-3 dark:border-stone-800 dark:bg-stone-900">
+          <LuaFindings findings={luaFindings} limit={4} />
+        </div>
+      )}
 
       {/* Code Editor Viewport */}
       <div className="flex-1 overflow-auto bg-stone-950 p-4 font-mono text-xs leading-relaxed text-forge-400">

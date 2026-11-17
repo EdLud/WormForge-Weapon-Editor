@@ -327,7 +327,7 @@ const shell: Record<string, any> = {
   bitFlight: { ...DEFAULT_ROLE_ART },
   behaviorArt: {},
   roamSheets: { flight1: {}, flight2: {} },
-  ribbonTrail: { enabled: false, max: 12, every: 2, vanish: 2, coreWidth: 8, glowWidth: 13, color: '#fff', target: 'main' },
+  ribbonTrail: { enabled: false, max: 12, every: 2, vanish: 2, coreWidth: 8, glowWidth: 13, noise: 0, rainbow: false, color: '#fff', target: 'main' },
   explosionEffect: { ...DEFAULT_EXPLOSION_EFFECT },
   customSounds: { ...DEFAULT_CUSTOM_SOUNDS },
   extraDependencies: [],

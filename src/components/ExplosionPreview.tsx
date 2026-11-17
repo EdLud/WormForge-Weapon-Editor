@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ExplosionEffectConfig } from '../types/weapon';
 import { assetUrl } from '../utils/assetUrl';
+import { tintedSheet } from '../utils/sheetTint';
 import frozenWormSrc from '../../spec/wicestnd.png';
 
 /**
@@ -111,24 +112,6 @@ function parseHex(color: string): { r: number; g: number; b: number } {
   if (!match) return { r: 255, g: 255, b: 255 };
   const value = parseInt(match[1], 16);
   return { r: (value >> 16) & 255, g: (value >> 8) & 255, b: value & 255 };
-}
-
-/**
- * The sheets are white-on-black and the game multiplies them by the effect
- * colour, so a tinted copy is made once per colour and reused: `multiply` keeps
- * the texture's shading, and the black background adds nothing under `lighter`.
- */
-function tintedSheet(image: HTMLImageElement, color: string): HTMLCanvasElement {
-  const canvas = document.createElement('canvas');
-  canvas.width = image.naturalWidth || image.width;
-  canvas.height = image.naturalHeight || image.height;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return canvas;
-  ctx.drawImage(image, 0, 0);
-  ctx.globalCompositeOperation = 'multiply';
-  ctx.fillStyle = color;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  return canvas;
 }
 
 interface ExplosionPreviewProps {

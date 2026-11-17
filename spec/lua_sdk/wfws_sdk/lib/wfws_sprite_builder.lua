@@ -425,7 +425,11 @@ function M.flight(ctx, opts)
     bit_cfg = resolve(opts.bits, size, offset)
     bit_art = true
   elseif opts.bits == "inherit" then
+    -- The same art, but a bit is still a bit: `sb.role` has to answer "bit"
+    -- for a frag, or an effect with `target = "bit"` never attaches to one and
+    -- `"main"` attaches to both. Identity is not the sheet.
     bit_cfg = main
+    bit_art = true
   end
 
   local extra = {}
@@ -489,6 +493,51 @@ function M.flight(ctx, opts)
   local age = {}         -- [id] = frames since first sight, for homing ms
   local logged = {}      -- [id] = frames logged so far (opts.log)
   local gen = 0
+
+  -- Bounded per-missile state. `gone` (a follower's brain) is what normally
+  -- clears these, and a missile that never gets a follower has no brain to run:
+  -- a stock walk pose WA draws itself, a `states` entry with `native`, a roam
+  -- primary before takeoff. Those used to leave `kind`/`sig`/`active`/... behind
+  -- for the rest of the match. First sightings are kept in the order they
+  -- arrived, which is age order, and the head is dropped once it is a second old
+  -- with no follower to clean up after it. The clock has to be the world frame:
+  -- `age[id]` stops advancing on exactly the paths that return early and never
+  -- make a follower, so it would never see the leak.
+  local STALE_AGE = 50      -- one second at 50 Hz
+  local seen_ids = {}
+  local seen_at = {}        -- [id] = the frame it was first classified
+  local seen_head = 1
+
+  local function sweep_stale(now)
+    while seen_head <= #seen_ids do
+      local id = seen_ids[seen_head]
+      local at = seen_at[id]
+      if at == nil or now - at < STALE_AGE then
+        break -- the queue is in age order, so everything behind it is younger
+      end
+      if not follow[id] then
+        kind[id], sig[id], age[id], armed[id] = nil, nil, nil, nil
+        flying[id], logged[id], dig_dir[id], dig_hold[id] = nil, nil, nil, nil
+        active[id], spin_ang[id], cycl_phase[id], roam_side[id] = nil, nil, nil, nil
+      end
+      -- An id with a follower is `gone`'s to clear; either way it leaves the
+      -- queue, so the sweep only ever holds ids that are still in flight.
+      seen_at[id] = nil
+      seen_ids[seen_head] = false
+      seen_head = seen_head + 1
+    end
+    -- Compact once the dropped prefix is worth the copy, so the queue is a list
+    -- of live ids and cannot grow with the match either.
+    if seen_head > 32 then
+      local n = 0
+      for i = seen_head, #seen_ids do
+        n = n + 1
+        seen_ids[n] = seen_ids[i]
+      end
+      for i = n + 1, #seen_ids do seen_ids[i] = nil end
+      seen_head = 1
+    end
+  end
 
   -- Identity: first sight, before this module has zeroed m.sprite.
   local function classify(m)
@@ -568,6 +617,11 @@ function M.flight(ctx, opts)
       kind[id] = ent
       remember_role(id, ent.ident)
       age[id] = 0
+      -- First sight is where this missile enters every per-missile table, so it
+      -- is the one place the staleness sweep is due.
+      seen_ids[#seen_ids + 1] = id
+      seen_at[id] = (wa.world.frame and wa.world.frame()) or 0
+      sweep_stale(seen_at[id])
       -- `log = true` for one line per missile's first three frames: what the
       -- identity test actually saw. Turn it off once a convention is settled.
       if opts.log then
@@ -1206,6 +1260,13 @@ local function hold_draw_fire(entry, w, ws)
   local fire = entry.fire
   local pi = math.pi
   local facing = w.facing < 0 and -1 or 1
+  -- The raw aim, on purpose: `aim_clamp` writes WA's own aim target in
+  -- `body_move`, before WA's body step, so this value is already the clamped
+  -- one and can only sit one native step (180/128 of a degree) past the limit.
+  -- `hold_clamp_aim` belongs to the *held* art, which must draw exactly at the
+  -- limit while the aim is still easing there; using it here would also draw a
+  -- clamped shot on a build where the native write was refused, where the round
+  -- really does leave at the raw aim.
   local a = w.aim or 0.5
   local rot = (1.0 - a) * pi
   local rot_w = rot + pi * fire.weap_radial_rotation
@@ -1719,6 +1780,11 @@ local swing_space = false
 local function swing_ensure()
   if swing_hooked then return end
   if not (wa.on and wa.on.worm_message and wa.world and wa.world.frame) then return end
+  -- `wa.msg` is built with `wa` in this engine, but the filter is a table read at
+  -- install: on a build without it (or one that gates it) the index would throw
+  -- inside the weapon's `install` and take the whole bundle down, not just the
+  -- swing. The handler works unfiltered, so this only costs the filter.
+  if not (wa.msg and wa.msg.FRAME_FINISH) then return end
   swing_hooked = true
   wa.on.worm_message(function()
     local now = wa.world.frame() or 0
@@ -1924,6 +1990,14 @@ function M.hold(ctx, spec)
   end
   -- The melee strike. It needs the clip: the hit frame is a tick of the swing.
   local melee_spec = type(spec.melee) == "table" and spec.melee or nil
+  -- A `melee` table without a clip cannot land anything: the strike's frames are
+  -- ticks of the swing, and `swing_ensure` (which owns the Space edge) only runs
+  -- when there is one. The editor writes the single key such a strike needs; a
+  -- hand-written bundle gets told instead of shipping a dead weapon silently.
+  if melee_spec and not clip then
+    wa.log("wfws_sprite_builder.hold: melee = { ... } needs swing = { ticks, keys "
+      .. "}: without a clip the strike never lands and Space does nothing")
+  end
   local melee = nil
   if melee_spec and clip then
     local push = melee_spec.push

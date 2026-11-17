@@ -3233,3 +3233,745 @@ in the claim's `sounds` list (so the SDK resolves them like any pack sound) and
 written as `sounds/<mod>/melee_hit.wav` and `melee_miss.wav`. One play per
 strike, at the first worm it took or at the striker when it took nobody, and the
 priority is the third argument `wa.sound.play` takes either way.
+
+## The compiler's rules, in the editor, before the code is carried
+
+Importing a real bundle loses its code, and the one kind of code that survives
+(`on_explode`'s body) can survive broken: the Pulsar export carried
+`aura[ev.missile] = nil` while the `aura` table stayed behind, so `on_explode`
+threw on every blast. Carrying code needs a checker first, which is where the
+work started rather than with the carrying, because a carried body nobody
+validated is worse than a dropped one.
+
+`src/utils/luaCheck.ts` reads Lua the way `wfcheck` does, without running it, and
+uses the compiler's rule ids so a finding means the same thing in both tools:
+`lockstep-rng` (`math.random/sin/cos/atan`, an error with the rewrite to
+`wa.random`/`wa.math.*` offered, and `math.random()` deliberately not rewritten
+because `wa.random()` is the raw 32-bit draw), `lockstep-pairs`, `module-wa`
+(a `wa` read outside every function body, lesson 21), `undefined-global`,
+`lua-ast`, `lua-nul`, `lua-size`, `undeclared-require`. `wa.on.draw` and
+`wa.on.hud` bodies are exempt from the lockstep rules, as the engine words it.
+
+Three surfaces: the custom Lua box (with Fix buttons), the generated file in
+Bundle & Export, and an imported module (its findings become an import note). The
+first pass needed four rounds of false positives before it was quiet: anonymous
+function parameters (`function(fire)`), `for i = 1, n` (the `` before `=`
+never matched), the `x68` of `0xFF000000`, and `require` arguments, which are
+blank in the masked copy and have to be read from the original text. It is now
+zero findings on the 55-weapon pack, both SDKs and the three real modules, and
+exactly one on the Pulsar re-export, which is the real bug.
+
+## Checked against the compiler, not against our own tests
+
+The first version of `luaCheck.ts` was validated by its own cases, which is the
+one dataset that cannot tell you the rules are wrong. So it was diffed against
+the two implementations that already exist: `compiler-cli/src/checks.rs` (the
+`wfcheck` the repo already runs, on the real Lua 5.4 AST via full_moon) and
+`src/services/parser.ts` (the app's baseline, which wins `mergeDiagnostics`).
+Same inputs, same files, both sides, rule by rule.
+
+On the code this editor writes, they agreed from the start: 61 of 61 files in
+`test_pack/wftest_pack` and `spec/lua_sdk` produced an identical rule set. On the
+engine's own `mods/examples` they did not, and every difference was ours.
+
+**Severities were wrong in three places.** `wfcheck` reports `math.cos/sin/atan`
+as a *warning* (the sandbox leaves them working; the C library result may differ
+per machine, which is a risk, not a crash), `pairs()` as *info*, and
+`undefined-global` as a *warning*. We had error, warning, error. The visible
+damage was the import summary, which counted `severity === 'error'` as
+"blocking": an imported paint-only draw file reported two blocking problems that
+the compiler calls advisories. `LuaFinding` has `info` now, and the card renders
+three bands.
+
+**The draw band was too wide and too shallow.** Only trig is presentation, and
+`math.random` is nil in the sandbox rather than merely unsafe, so it raises even
+from `wa.on.draw`. We muted everything in there, which hid a real error on
+`stress.lua`. The band's roots were also found by searching forward for the next
+`function` keyword after `wa.on.draw(`, which swallowed whatever function
+happened to be defined below the registration (and missed a real `math.sin`).
+Roots are function literals now, and a local helper called from inside the band
+joins it transitively, which is the engine's own rule: a draw callback nearly
+always delegates to a `sheet()` helper, and refusing to follow it was reporting
+the engine's own packs as broken.
+
+**Three shapes of valid Lua were reported as broken**, all found on real files:
+`self` inside `function M:heal()` (bound implicitly, flagged as an undefined
+global on every method of the audit harness), `arg` (a harness global missing
+from our ambient list), and a bare `do ... end` inside a loop, which the block
+counter read as the loop's own `do` and then called the file uncompilable.
+Labels were reported as undefined names because `goto` was ignored. `bit32` was
+in the ambient list; Lua 5.4 has no `bit32`, so listing it silenced a real typo.
+
+The block counter was the worst of them, because `scanBlockEnd` is shared with
+`parseCustomLua`: a bare `do` could end an `on_explode` body at the wrong `end`.
+It consumes a loop header's `do` with a pending flag now, instead of asking
+whether the text before the `do` mentions a `for`.
+
+Two smaller ones: the global dedupe re-read its own message (`split('`')[1]`) to
+find the name, so rewording a message would silently merge every later finding
+into the first one, and the Fix button rewrote trig inside the draw band, where
+there was no finding to fix.
+
+What is left is deliberate. `wa-namespace-typo`, `worm-api`, `spec-key-typo` and
+the `handle-union` notice need `engine_data.rs` (generated from the pinned engine)
+and a real AST; a 449-line scan must not pretend to those, so it simply says
+nothing and `wfcheck` stays the authority. After the pass: 61/61 on the pack
+again, 14 of 15 on `mods/examples` (the one left is `wa-namespace-typo`), and the
+custom Lua box verified in the browser: `math.random(1, 6)` reads as one blocking
+issue with a working Fix, `pairs` as an advisory, trig in a draw body and `self`
+in a method as nothing at all.
+
+## The sprite-builder audit: five fixes, two findings that did not hold
+
+`reqs/audit_wfws_sprite_builder_2026-11-16.md` reported seven "A" findings
+against `wfws.sdk` 0.16.0. Checked against the SDK and the engine Rust before
+touching anything, five held, two did not, and one of the five was in the wrong
+file.
+
+**A3 (a stale swing handle can act on another worm) does not hold.** `WormHandle`
+carries the body uid it was built with and `get()` returns 0 once that uid is
+gone, precisely so a freed handle cannot read the body WA put there instead
+("it split online games", `actor.rs`). So `sw.hp` is 0, the swing's existing
+`if st.start and not live` block clears it, and the release is a no-op. The
+audit's open item 1 was a question; the answer was in the constructor.
+
+**A7 (a spawn with no owner throws) does not hold either.** `runtime_spawn` maps
+a nil owner to team 0 (`spawn.rs`: `Value::Nil => (inherit_owner.unwrap_or(0),
+false)`). `missile_frame` sets no spawn owner, so `owner = owner or
+current_worm()` landing nil costs the follower a team, not an error. The
+sentence it cites ("a spawn without an owner errors") is stale in
+`docs/agent/lua-world.md`; `owner = "none"` is still the clearer intent.
+
+**A4 was the generator's.** `hold_melee_hits` is
+`h.lift ~= nil and tonumber(h.lift) or spec.lift`, and 0 is truthy in Lua, so an
+explicit `lift = 0` already passed through. What dropped it was
+`if (hit.lift !== 0)` in `luaGenerator.ts`: a combo whose second strike throws
+flat inherited the first strike's lift. Every listed strike writes its own
+`lift` now, zero included; the single-strike keys still omit a zero.
+
+**A6 was reachable only by import.** `melee` with no clip keys left a layer that
+registers and a Space press that does nothing. The key table refuses to delete
+the last key, so the panel cannot make it; an imported bundle with an empty
+`swing` can. The export now writes one pose at the strike frame (with a comment
+saying why), and the SDK logs once when a hand-written bundle asks for a strike
+with no clip.
+
+**A2 needed a different clock than the audit proposed.** The leak is real:
+`gone` is the follower's brain, so a missile that never gets one (a stock walk
+pose, a `states` entry with `native`, a roam primary before takeoff) keeps its
+per-missile entries for the match. The first patch keyed the sweep on `age[id]`
+and could never fire, because those are exactly the paths that return before
+`age` advances. It uses `wa.world.frame()` now, with first sightings queued in
+age order and the head dropped after a second when no follower owns it: one
+fresh classification, never a growing table. `harness_flight.py` pins both
+halves (swept, and not swept with a follower).
+
+**A5 was declined after a question worth asking.** The firing pose reads `w.aim`
+raw while the held art is drawn through `hold_clamp_aim`. But the clamp is a
+native write in `body_move`, before WA's body step, so `w.aim` is already the
+clamped target plus at most one WA aim step; and in the case the audit cites
+(the write refused) the round genuinely leaves at the raw aim, so clamping the
+firing art would draw a shot the engine does not take. It gets a comment instead
+of a fix.
+
+Landed as `wfws.sdk` 0.16.1: A2, B11 (`bits = "inherit"` keeps the identity, so
+`sb.role` answers `"bit"` for a frag drawn from the primary's sheet), the A6
+install log and the A1 hardening (a `wa.msg` guard before the swing's
+`worm_message` filter, so a build without it cannot fail the whole install).
+
+Validation: `lint`, `build`, `check_generator_edges` (two new cases),
+`check_mod_import` (55/55), `check_copyfrom`, `check_sheet_dedupe`,
+`check_lua_rules`, `audit_records`, `wfcheck` on the re-generated pack and on
+`spec/lua_sdk`, `harness_melee.py`, `harness_flight.py` (13 checks).
+
+## Carrying a bundle's Lua: the plan, checked against real bundles (M0)
+
+`reqs/custom_code_import_plan.md` was reviewed against the four bundles the
+machine actually has (`conductor`, `pulsar`, `railgun`, `vortex`) and then
+against the whole installed corpus (47 bundles, 336 components, 255 weapon
+modules outside the SDKs). The plan holds, with corrections that changed the
+work order.
+
+**The evidence is a spectrum, not one case.** `railgun` was authored with this
+editor's generator, and its round trip is exact: trail (`max = 64`, `core_w` and
+`glow_w` 40), interval sound (`every = 10`, `limit = 1`, priority 16) and blast
+(`damage = 50`, `push = 150`, `hole = 40`) all come back byte for byte, because
+its two `wa.on.missile_frame` handlers *are* the trail and interval-sound
+features. `pulsar` is the same base plus hand-written handlers, so the modelled
+parts survive and the `aura` line survives without its table. `vortex` is
+hand-written from scratch: 119 lines out of 325, `on_explode` reduced to a call
+to a `start_vortex` that nothing declares, and `wa.on.draw`, which draws the
+hole, gone. `conductor` is a handgun whose whole weapon is its `on_fire` (65
+lines, not the 190 the plan guessed): the export is a plain handgun with custom
+hold art. So the rule is **generated code survives, hand-written code does not**,
+and the plan's risk class is the plausible export (a grenade with a purple
+burst) rather than the obviously broken one.
+
+**`unmodelledClaimKeys` was quieter than it looked, in the wrong places.** It does
+report `on_click` (PX's `marked_for_death` imports with `not carried: on_click`);
+the silent keys were `on_fire` (in the "handled" list, carried nowhere) and
+`on_explode` (handled, partly carried). The corpus also priced the plan: 76
+modules with a claim hook, 97 with a `wa.on.*` registration, **118** whose hook
+bodies close over module-level names and **20** over install-level ones (M2 and
+M3, sized), 58 registrations carrying a `msgs` filter as their second argument,
+and 58 hook bodies reading a name the generator also declares, of which two bind
+a *different* module under it (`sb = require("wf-lib/seq-spb")` in the gas pump,
+`zap = require("lib/electric_damage")` in PX's electric mine).
+
+**M0 shipped (report-only, no carrying).** `src/data/luaHooks.ts` now holds the
+hook keys and the corpus counts that ordered them, with the claim keys the panels
+regenerate. On top of it:
+
+- an imported `on_fire` is reported as not carried unless the `fire_seq` burst
+  inside it was rebuilt (`unmodelledClaimKeys(source, absorbed)`), so the
+  editor's own weapons stay quiet and the Conductor's weapon stops vanishing in
+  silence;
+- a module with no readable `copy_from` says so instead of quietly becoming a
+  Grenade with 42 donor fields (`px.ports`, 97 records, builds its claim table at
+  load through `lib/weapon.merge`);
+- an imported sound role with nowhere to play is reported, which is how the
+  Conductor's `shot` WAV was being dropped (the `shot` role is the fire
+  sequence's `on_shot`, and a single-shot handgun has none);
+- the custom `on_explode` body is wrapped in `NOT_GENERATED_OPEN`/`CLOSE` and
+  `checkLua` tags findings inside as `notGenerated`, which `LuaFindings` shows as
+  a `custom` chip with an explanation and the export toast repeats. The wording
+  says "the editor did not generate this" rather than "carried from a bundle",
+  because at M0 the field is shared: an import fills the box and an author types
+  in it. The severity stays `wfcheck`'s.
+
+Two bugs fell out of doing it. `customExplodeBody` scanned the raw text for the
+block's `end`, so a comment containing the word "end" (the first version of the
+close marker) closed the body early and left a dangling `--` in the snippet; it
+scans the masked copy now, like `parseCustomLua` always did, which also fixes a
+body with `"end"` in a string. And the marker had to be dropped on re-import, or
+a second export nested them.
+
+**PX-style bundles stay out of scope, provably.** A module whose claim table is
+assembled at load (`weapon.definition()` returning `lib/weapon.merge(...)`) has
+no claim literal, no `copy_from` literal and no hook literal in the file, so
+carrying it would mean carrying PX's `lib/` graph. The plan now says so, which is
+why the reader's misses there are expected rather than bugs.
+
+Validation: `lint`, `build`, `check_lua_rules` (57 cases, the four marker regions
+included), `check_generator_edges` (one marker pair, around the body, none
+without a custom body), `check_mod_import` (55/55 plus the `on_fire`/absorbed
+cases), `check_copyfrom`, `check_sheet_dedupe`, `audit_records`, `wfcheck` on the
+re-generated pack (56 files, no findings), and a Playwright pass over Bundle &
+Export showing `1 warning, 1 in code the editor did not generate` with the
+`CUSTOM` chip.
+
+## M1: the hook registry and the module splitter
+
+M0 made the loss visible; M1 reads the file the loss is in. Two pieces, neither of
+which emits anything.
+
+**`src/data/luaHooks.ts`** is now the registry. `CLAIM_HOOKS` gains what each key
+receives (`actor.rs`'s `weapon_emit` builds one table per fire/explode:
+`x, y, weapon, worm`, plus `missile`/`vx`/`vy`), and `WA_ON_EVENTS` lists all 17
+events the engine binds with their argument shapes and corpus counts. The fact
+worth having in data rather than in a comment is `api.rs`'s `bind_on`: **only
+`worm_message` takes an options table, and only `body_move` takes `kinds`**; every
+other event errors on a second argument ("wa.on.{name} takes only a function").
+`worm_message_msgs` then requires `msgs` to be a non-empty list of numbers. So a
+carried `worm_message` whose filter was dropped still *loads* and runs on every
+message, which is the quiet failure M6 has to avoid, and the registry now says so
+in the same place the carrying code will read.
+
+**`src/utils/modLib/splitModule.ts`** reads a module the way the engine loads it:
+the preamble (module-level requires, constants, helpers), the install body's own
+statements (the install-time locals and the registrations), every `wa.on.*` call
+with its **whole argument list** split into handler and options, and the claim
+hook bodies. It is the input M2, M3 and M5 need, and it already pays for itself as
+an import note: `module code: 14 module-level declaration(s), 24 install
+statement(s), 2 wa.on registration(s), 1 claim hook(s)` for the Conductor, `24,
+25, 2, 1` for vortex.
+
+Two bugs were found by writing its own tests, and both are the same mistake
+`customExplodeBody` had:
+
+- the statement scan ended a statement at the first newline, which cut
+  `local x = function() … end` and every multi-line table in half, and a file with
+  no trailing newline could not be closed at all (`return { … }` at EOF returned
+  -1). Brackets *and* blocks now have to be closed, and EOF closes a balanced
+  statement;
+- the argument split only counted brackets, so the commas inside
+  `wa.on.draw(function() for i = #bolts, 1, -1 do … end end)` were read as
+  argument separators: the conductor's `draw` registration came out with two
+  arguments and an options table of `1, -1 do local b = bolts[i] …`. The same
+  `Depth` bookkeeping now serves the statement scan and the argument split, which
+  is why the corpus check for "every option it passes is one the engine accepts"
+  passes on all four bundles.
+
+`tools/check_lua_hooks.ts` pins 56 cases: the registry's invariants, the editor's
+own module shape, the Conductor's filtered registration, PX's
+`function M.install(ctx)` form, bodies that contain `end` in a comment, `"end"` in
+a string and a nested function, the four real bundles (registration and hook
+counts, and the conductor's `msgs` filter), and all 55 generated weapons (each
+splits with no notes; every file that contains `wa.on.` yields a registration and
+every event is one the engine binds). No fixtures were vendored from other
+authors' mods: the shapes are built inline and the real bundles are read from
+`Mods/` when they are there.
+
+Validation: `lint`, `build`, `check_lua_hooks` (56), `check_lua_rules` (57),
+`check_generator_edges`, `check_mod_import` (55/55), `check_copyfrom`,
+`check_sheet_dedupe`, `audit_records`, `wfcheck` on the pack.
+
+## M1.5: recognising this editor's own output
+
+The plan's open questions 2 and 3 were about doubling: once M6 carries
+`wa.on.*` registrations, a bundle this editor wrote would arrive with its own
+ribbon-trail sweep and interval-sound ticker, and those are exactly what the
+ribbon trail and interval sound cards already emit. Carrying both means two
+ribbons and two sounds from one import.
+
+`src/utils/modLib/ownOutput.ts` answers the question the decision needs, from the
+text: did this editor write this block. Three signatures, each one true only of
+our emission and each requiring the side table the generator writes with it, so a
+weapon that merely follows missiles is not claimed:
+
+- **ribbon trail**: `missile_frame` calling `trail.add(m.id, trail_worm(), TRAIL)`
+  with `local TRAIL = {` in the install body (and `trail_is_bit` when the target
+  is not `main`);
+- **interval sound**: `missile_frame` ticking `sound_ticks[m.id]` and playing
+  `SOUND.path`, with `local SOUND = { path = … }`;
+- **fuse sampler**: `worm_message` filtered to `FRAME_FINISH`, writing
+  `fuse_by_worm[w.id]` from the keyboard digit, with `FUSE_DEFAULT` above it (a
+  module-level declaration, which is why the signature spans the preamble and the
+  install body).
+
+The near misses are the test cases: a hand-written `missile_frame` that plays a
+WAV on a timer, a `FRAME_FINISH` handler with no fuse table, and a `trail.add(`
+call with no `TRAIL` table all stay foreign.
+
+The import summary now separates the two halves instead of counting them:
+
+```
+Pulsar    wa.on handlers: 2 rebuilt from the panels (ribbon trail, interval sound); 1 not modelled (missile_frame)
+Railgun   wa.on handlers: 2 rebuilt from the panels (ribbon trail, interval sound)
+Vortex    wa.on handlers: 1 rebuilt from the panels (ribbon trail); 1 not modelled (draw)
+Conductor wa.on handlers: 2 not modelled (draw, worm_message)
+```
+
+The pack invariant is the strong one: all 8 registrations across the 55 generated
+weapons are recognised, so the editor never writes a handler it cannot identify.
+That is `tools/check_lua_hooks.ts` (68 checks now) plus 9 assertions in
+`check_mod_import.ts` that no test-pack weapon reports a handler as unmodelled.
+
+One gap is left on purpose, and the plan records it: a recognised block whose card
+is switched off in the import (a hand-written fuse sampler beside a custom
+`on_fire` is the real case) is still reported as rebuilt, and the export would drop
+it. Choosing between "carried" and "regenerated" is M6's decision, because M6 is
+where carrying exists.
+
+Validation: `lint`, `build`, `check_lua_hooks` (68), `check_mod_import` (55/55),
+`check_lua_rules`, `check_generator_edges`, `check_copyfrom`,
+`check_sheet_dedupe`, `audit_records`, `wfcheck` on the pack.
+
+## M2 and M3: carrying a hook's closure
+
+The plan's M2 (preamble) and M3 (install locals) turned out to be one milestone.
+Carrying a module's preamble with no hook that reads it is dead code, and carrying
+an install-time local without the module constant it reads is a nil at run time.
+The unit is the **closure of the hook body this editor actually carries today**,
+`on_explode`.
+
+Vortex is the case that sized the work. Its `on_explode` is one line,
+`start_vortex(ev.x, ev.y, ev.worm)`, and the chain under it is:
+
+```
+start_vortex -> tick -> pull -> steer
+                    -> scatter
+                    -> finish
+                    -> play_at
+                    -> vortices, END_AT, BLAST_AT, DAMAGE, BLAST_RADIUS,
+                       TERRAIN, REACH, CAPTURE, SPEED_MIN/MAX, TURN_MIN/MAX
+```
+
+Eight install helpers and twelve module constants. Pulsar needs one install table
+(`aura`). Railgun and the Conductor need nothing, for different reasons: railgun's
+`on_explode` is the editor's own, and the Conductor's code is `on_fire`, which
+waits for M6.
+
+`src/utils/modLib/carryClosure.ts` resolves free names with `luaCheck`'s own
+reader (`freeNames`, the new `editorAmbient: false` option: a carried block's `fx`
+is the bundle's, not ours), install body first, preamble second, source order, and
+emits survivors twice: the preamble before `return {`, the prologue at the end of
+`install` before the claim.
+
+Four hazards, all found by writing the check first:
+
+1. **Shadowing.** Every one of the four bundles declares `fx`, `trail`, `sb` or
+   `zap`, and the generator declares its own. Same module: drop the carried block
+   (the generated local serves both). Different module: rename to `<name>_bundle`
+   across all carried text, because a shadowed `fx` is a callback that silently
+   does nothing. The rename runs on the masked copy, so `"fx"` in a sound path and
+   `a.fx` survive untouched.
+2. **Our own output carries back.** WF 37/39/43/44 (the stamp weapons) re-imported
+   with their generated `local STAMP_HIT` / `local function stamp_hit` carried as
+   foreign code, because the hook body reads them and the export declares them. A
+   block whose text is **identical** to something the export writes is dropped;
+   that also makes the round trip idempotent, which is the property the check
+   pins.
+3. **A bare assignment is not a declaration.** Pulsar declares `local zap` at
+   module level and assigns `zap = require("wf-lib/electric/damage")` inside
+   `install` (lesson 21's shape). Carrying only the assignment writes a global, so
+   the resolver follows it out to the `local` that owns it.
+4. **The bundle's art does not travel with its code.** The ZIP ships
+   `sprites/<mod>/` and nothing else, so a carried
+   `sprite = "sprites/vortex/hold.png"` names a folder the export does not have.
+   Only the folder segment is rewritten: the file names are the author's, and a
+   file the export does not write is a missing-art error with the path in it,
+   which is the failure mode we want.
+
+Lockstep maths is rewritten rather than blocked, and through the same
+`fixLockstepRng` the custom Lua box's Fix button uses, so there is one mapping in
+the editor: `math.random` to `wa.random`, `math.sin/cos/atan` to `wa.math.*`. The
+float form `math.random()` has no equivalent (`wa.random()` is the raw 32-bit
+draw) and is reported instead of silently changed.
+
+Carried `require`s also bring their dependency: `effects.sdk`, `px.electric`,
+`wf.sdk`, `wfws.sdk`, `px.fire_seq`, added to `extraDependencies` because a
+manifest line the import never saw is what makes a carried require resolve.
+
+Result, measured: vortex exports with `start_vortex` declared, no dangling name,
+and `wfcheck` clean; its black hole runs and still cannot draw (`wa.on.draw` is
+M6's), which the import summary says instead of leaving a plausible purple burst.
+Pulsar exports with `aura` declared, so the hook no longer writes to a nil.
+
+`bun run tools/check_carried_lua.ts` pins 43 cases: the closure shapes, the
+lockstep rewrites, the float form, a dangling name, an unclosed block refused, the
+rename with a string saying `fx` left alone, same-module dedupe, the art-path move,
+the dependency map, the four real bundles (counts, no dangling name, round-trip
+identity, one header per export) and the 55 test-pack weapons carrying nothing of
+their own.
+
+## M5 and M6: the hook has its own slot, and the hole gets its draw
+
+M5 was a deceptively small item on the plan: "the carried `on_explode` merge".
+Yesterday an imported bundle's `on_explode` body was stuffed into the author's
+`customLuaSnippet` box, which meant the next export could not tell the two apart,
+the panel showed a snippet nobody wrote, and `customExplodeBody` (which strips our
+own generated lines on a re-import) was rewriting the bundle's code as if it were
+ours.
+
+The fix is a second list. `project.carriedLua.hooks` holds `{ key, text, line }`
+for every claim hook nothing models, and the generator inlines it at the top of
+the one handler it emits for that key, each region wrapped in `NOT_GENERATED_*`
+markers with its own `local <param> = ev`. Pulsar's export is the proof:
+
+```lua
+on_explode = { on = function(ev)
+  if ev.worm then wa.sound.play(ev.worm, "sounds/pulsar/explosion.wav", 10) end
+  zap.set_message_electric(20, 0, -4, true)
+  blast.explode{ ... }
+  -- not generated by the editor: custom Lua, or a hook an imported bundle carried in
+  if ev.missile then aura[ev.missile] = nil end
+  -- end not generated
+end },
+```
+
+One key. The author's box stays empty, so an author can still add their own line to
+the same callback without touching what the bundle brought.
+
+M6 then had three parts, and only the first was the one the plan named:
+
+**`on_fire`.** Same merge, same order: the launch-WAV play, the `fire_seq` burst,
+then the carried body. The Conductor is the whole reason: its weapon *is* a
+65-line hand-written gun in `on_fire`, with its own bolt geometry, its own
+`wa.actors.spawn` calls and a `wa.on.draw` that paints them. Nothing in the panels
+models a crossbow bolt, so the honest answer is to carry the code and its chain.
+That chain is 14 prologue and 12 preamble blocks (`bolt_end`, `draw_bolt`,
+`step_bolts`, `BOLT`, `BEAM_FRAMES`).
+
+One trap: a bundle's `on_fire` that is *only*
+`wa.sound.play(ev.worm, "sounds/<mod>/launch.wav", …)` is this editor's own
+output, written by the Custom WAV card. The importer recognises that shape and
+does not carry it, or the re-export would play the launch sample twice.
+
+**Registrations.** `ownOutputOf` (M1.5) already separates our three signatures from
+everything else, so the carry is `ownOutputOf(split).foreign`, written verbatim
+after everything the editor installs, reindented by four, options table included.
+That last word is the part that matters: `wa.on.worm_message` is the only event
+that takes `msgs` and `wa.on.body_move` the only one that takes `kinds`, and an
+event given the wrong second argument fails at load. The Conductor's
+`{ msgs = { wa.msg.FIRE_WEAPON } }` survives because it is *text*, not something
+the importer re-derives.
+
+**Art.** The one part the plan understated. Vortex's `start_vortex` draws its black
+hole through `wa.draw.quad{ sprite = HOLE }`, and carrying the code without the
+sheet would have produced a weapon whose whole point was invisible. Four separate
+things had to be true, and each was a bug until it was:
+
+1. the path is rewritten with the code (`sprites/vortex/blackhole.png` becomes
+   `sprites/vortex_grenade/blackhole.png`, folder segment only);
+2. the file is in the ZIP (bytes identical to the source, checked with a hash);
+3. it is *declared*, with the source bundle's own `[sprites."…"]` table: vortex's
+   sheet is a 15-frame rotation strip, so `frames = 15, fps = 10` has to survive.
+   Matched by file name, because by then the path has already moved;
+4. it is in the claim's `sprites` list, because `wa.draw.quad` resolves a pack path
+   through the sprite-key registry that list fills.
+
+`carryClosure` now returns `paths: { source, target }[]` rather than a count, so
+the importer can load each file from where it actually was. A path that is
+*already* the export's own (which is what a re-import sees) is recorded too: without
+it, the second pass would find no move, forget the sheet and quietly drop it.
+
+Measured after M6, with `wfcheck` on each export:
+
+| bundle | carried | registrations | wfcheck |
+| --- | --- | --- | --- |
+| vortex | 12 prologue, 21 preamble | `draw` + our trail | no findings |
+| pulsar | 7 prologue | `missile_frame` (aura) + our 2 | one `handle-union` note |
+| conductor | 14 prologue, 12 preamble | `draw`, `worm_message` | one `handle-union` note |
+| railgun | nothing | our 2 | no findings |
+
+`bun run tools/check_carried_lua.ts` is 59 cases now and pins the three things that
+would silently regress: the author's snippet stays empty, the export writes one
+`on_explode` key, and each carried registration appears once, so the export is
+exactly ours plus theirs, never ours twice.
+
+Two smaller lessons, both paid for in this pass:
+
+- **A test that reads a bundle as text loses its WAVs.** The round-trip check read
+  every exported file with `readFileSync(full, 'utf8')`, which turned
+  `interval.wav` into mojibake with no `bytes`. Pulsar's interval sound feature
+  was then off on the second import, `sound_worm` became an orphan and got carried
+  as a new block, and the check reported a round-trip mismatch that was entirely
+  the harness's fault. Art has to be read as bytes, in the harness as in the app.
+- **`maskLuaCode` has to keep a string's quotes.** With the whole literal blanked,
+  `local HOLE = "sprites/vortex/blackhole.png"` and the next line's `local FRAMES =
+  15` became one declaration, and vortex's `FRAMES` came back as an unresolved
+  name. One character of fix (`"` on each side), and the closure resolved again.
+
+## The emitter: PX's effect manager as something that lives in the world
+
+The effects SDK could already draw a burst at a point (`fx.burst`), a ring at a
+point (`fx.ring`) and a ribbon behind a round (`trail`). What it could not do is
+*stay*: PX's `CEffectManager` is an object with a position, a target it follows
+and a lifetime, and the three weapons that use it in Project X (the red saw's
+three rings around the flying disc, the electric mine's thunder, the marked-for-
+death bolt) are all the same object with different tables. So the new feature is
+`fx.emitter`, not three presets, and the editor's card edits one table.
+
+**An emitter is an actor, and actors need a brain and an owner.** `wa.actors.spawn`
+refuses a zero handle, and `wa.on.draw` must not decide anything (§0), so the
+driver's own `on` brain is the whole simulation of it: sample the anchor, move the
+ring, age the bolts, remove the parts whose clock ran out, and despawn when
+nothing is left. Drawn in `draw`, moved in the brain. Because the ring is an
+`fx.ring` with a `follow` closure, the ring needed no code of its own: the anchor
+closure the emitter passes down is the same one the card configures. The one gap
+was a ring given no anchor, which then stood still while the emitter walked away
+from it; a ring with no `follow` now gets a closure over its emitter that returns
+`nil` once the emitter is dead, so it follows and it dies with it. That was a real
+bug found by the harness, not by reading.
+
+**Turn-based, so one emitter is enough.** There is no "which worm's emitter" table:
+the muzzle emitter is moved only while `w.turn and w.weapon == ctx.id`, so the
+second worm's aim never touches the first one's ring. The plan for a per-worm map
+was dropped for the reason §0 gives: it cannot happen.
+
+**The anchor has to be able to give up.** A round emitter follows the newest
+missile of this weapon, latched by `m.id` (counted up, never reused, identical on
+every peer), and its closure returns nothing once that missile is gone, which ends
+the emitter through the ordinary path. `round` is refused where WA has no missile
+of ours: a placed mine is a mine entity, and a strike's bombs are built from the
+strike's own record copy with no `m.weapon` (lesson 14's twin). The card greys the
+switch and the generator falls back to `muzzle` rather than writing an anchor that
+would never fire.
+
+**The muzzle emitter is the aim clamp's hook again.** `wa.on.body_move` is the
+per-frame worm hook the clamp already installs, and the fire angle is the same
+one the melee box uses: `(facing * sin(aim*PI), cos(aim*PI))`, with `worm.aim`
+WA's 0..1 sweep. PX's `curDist` is the offset along it. Nothing here reads the
+held art's `weap_radius`, so an emitter cannot end up behind the worm the way the
+melee box once did.
+
+**A gesture the editor writes must be a gesture it recognises.** The generated
+`body_move` registration and the `on_fire` hand-off are new output shapes, and
+`ownOutput.ts` has no way to tell them from a bundle's own code by accident, so
+the emitter is a fourth `OwnFeature`: a `body_move` handler that calls
+`emitter_muzzle(`/`emitter_for(` in a module that declares `local function
+emitter_for(`. Without it, importing an exported emitter weapon carried the hook
+back as foreign code and the export shipped two emitters fighting over one ring.
+
+**Rainbow is a colour, not a shader.** PX's `SetRainbowMode` walks the hue round
+the clock; the SDK does the same through `HueToRGBLocal` (centred at 180 so the
+colour never passes through black), and the clock is the simulation's frame
+counter. The trap was the sines: `trail.lua`'s hue helper had used `math.sin`,
+which wfcheck bans and which can differ between machines. It runs through
+`wa.math.sin` now, and the ribbon can also run the hue *along* its length rather
+than only with time, which is what makes a rainbow look like a rainbow instead of
+a flashing ribbon.
+
+**Noise is a fixed table, not a random.** A crackling trail has to wobble the same
+way on every peer, so `noise` displaces each point along the ribbon's normal from a
+257-entry table built once at load and indexed by the point, never a call made
+while drawing: same table, same look, no lockstep risk, and it costs nothing per
+frame. The arcs and bursts in `px_effects` do use a generator, but one seeded once
+from `wa.random` (the engine's synced generator) and drawn from afterwards, so the
+sequence is still identical on both machines.
+
+Two things the UI had to get right and one it does not: the emitter's own
+`rainbow` reaches every part that does not set one (PX has a single switch, and an
+author who ticks it means all of it), an emission is only written when a panel
+value differs from the default so an untouched card emits nothing, and the ring's
+`ellipse` is stored as plain multipliers rather than the SDK's two circumferences,
+because that is the number a person can reason about.
+
+`python tools/lua/harness_effects.py` is the dev harness (lupa, so it is not part
+of `bun run lint`): 20 checks over the SDK with a fake `wa`, including the ring
+following a moved anchor, the ellipse being wider than it is tall, both bursts, the
+thunder bolt, the death cascade and the trail's noise bending off the chord. Two of
+them failed on the first run, which is the point: the ring did not follow, and the
+"one driver" assertion was counting the trail's own driver as a second emitter.
+
+## A preview has to play the library, not draw a picture of it
+
+The emitter card shipped with a still SVG "sketch": a ring polyline, two bowed
+lines for the bolts, a circle for the spark. Every number was in the right place
+and it still told an author nothing, because nothing an effect does is a
+position. A crackle is *timing* (bolts on a cooldown, a spark on its own 10-frame
+cycle), the ring is *spin and jitter*, and the difference between the two presets
+is that thunder is one bolt every 30 to 110 frames that grows in two frames, holds
+three and fades over twenty, while electric is two bolts every 13 to 51 that arc
+out and vanish. None of that is drawable as a still.
+
+So the sketch was replaced by `EmitterPreview`, which is `ExplosionPreview`'s and
+`RibbonTrailPreview`'s pattern applied to the third effects feature: a canvas, a
+50 Hz interval, the SDK's own maths and sheets, and a scene that shows the thing
+in the situation the card describes. The scene is the interesting part. A muzzle
+emitter lives on a worm's fire angle, so the preview draws WA's own aim strip
+(`assets/worm/aim.png`, 32 frames from straight down to straight up, the same
+sheet the hold preview draws) and sweeps it, places the emitter at the generator's
+own muzzle formula (`dx * offsetX + dy * offsetY`, so the preview and the Lua
+cannot drift apart), and then fires the round and hands the emitter over. The
+round is a plain ballistic arc that ends on the ground, which is where the emitter
+dies, ring and all, and where the ribbon starts shedding.
+
+Three things came out of building it, all of them real:
+
+- **A ring with no anchor of its own did not follow its emitter.** `fx.emitter`
+  passes `o.follow` down to `fx.ring`, and the muzzle emitter has no `follow`
+  (it is moved by `move_to`), so the ring sat where it was created while the
+  emitter walked away. The harness caught it and the fix is the obvious one: a
+  ring with no `follow` gets a closure over its emitter that returns its position
+  and returns `nil` once it is dead, so the ring follows *and* dies with it.
+- **`carry` on a family that never fires a missile left an emitter behind.**
+  `emitterCarries` only asked whether `carry` was on, not whether the record
+  produces a round, so a placed mine wrote the hand-off, and `emitter_round`
+  then returned the launch point for the rest of the match because no missile of
+  the weapon would ever appear. The generator now requires `emitterRoundOk`, the
+  card disables the switch, and `check_generator_edges.ts` pins it.
+- **A tinted sheet cannot be rebuilt per frame.** The explosion and trail
+  previews tint one copy per colour, which is fine when the colour is a panel
+  value. Rainbow changes it every frame, and a tinted canvas per frame is a
+  garbage churn the render loop cannot afford. The emitter preview caches tint
+  by sheet and colour in a `Map` with a cap, so a rainbow pass reuses the copies
+  it already made as the hue comes back around.
+
+The preview is also how the panel's own numbers were sanity checked: `Fit` is the
+default because a 30 px ring is a dot on a desktop canvas, `1x` is one canvas
+pixel per game pixel, and the readout names the ring's radius in game pixels, so
+"26 px" in the card and "26 px" in the game are the same claim.
+
+## The emitter that drew nothing: a boolean where a table belonged
+
+The first in-game run of WF 56 drew nothing at all, and the log said why in one
+line:
+
+```
+ERROR on_fire: runtime error: [string "libs/px_effects.lua"]:71:
+  attempt to index a boolean value (local 'src')
+  [string "libs/px_effects.lua"]:787: in field 'emitter'
+  [string "weapons/56_emitter_ring.lua"]:57: in upvalue 'emitter_start'
+```
+
+`fx.emitter` reads `spark`, `glow`, `reach`, `trail` and `ring` as *override*
+tables, so `copy(spark, o.spark, SPARK_KEYS)` handed the boolean `true` to
+`merge`, which indexed it. The generator writes `spark = true` because that is
+what the flag means, and the library is the wrong place to insist otherwise: a
+non-table override is "no overrides, use the preset". `merge` now returns the
+destination unchanged for anything that is not a table. Two lessons, both
+cheap to state and expensive to learn:
+
+- **A preview that fakes the library only proves the fake.** The harness passed
+  because it built its emitter with `lua_table('{ ... }')` and never wrote
+  `spark = true`. The fix is not only the guard but `harness_emitter_weapon.py`,
+  which loads the *generated* weapon file, installs it, moves the worm, fires and
+  checks that a ring pass was drawn, and which fails with the exact in-game
+  message when the guard is reverted.
+- **Two flags can share a name and mean different things.** `fx.install{
+  trail = ... }` gates the *module*, not the round's card: it is what calls
+  `trail.install()`, and that is the hook that draws a ribbon. The generator was
+  writing `trail = usesRibbonTrail`, so an emitter with its own ribbon sampled
+  points and never painted them. It now passes `true` when either card wants a
+  ribbon.
+
+The same run asked for one more thing: the ring's bend should follow the round.
+`ring.track = true` makes the SDK point the ellipse at `wa.math.atan(vy, vx)` of
+whatever the ring rides (the emitter hands its velocity down through the follow
+closure), with the author's `angle` as an offset. The spin is not applied while
+tracking, because the heading is written every frame and the two would fight; the
+card disables the Spin box and says so, and the preview mirrors the rule, so a
+grenade's lens visibly turns through its arc.
+
+### One library, several mods: the draw callback had to belong to each of them
+
+`px_effects` is required once and keeps one set of effect lists, which is what
+lets the hidden driver tick everybody. The first `fx.install` also registered the
+only `wa.on.draw`, so that mod's sprite claim had to resolve every sheet any
+other mod's effect drew. A burst-only weapon drew the all-features weapon's
+spark under its own claim and the engine refused the quad: `sprite
+'wf-lib/effects/sprites/px_effects/spark' is not installed`. The fix has two
+halves, because either one alone still leaves a hole:
+
+- `effects.sdk` 0.4.2 tags each created effect with `wa._mod`, registers a draw
+  callback per installing mod, and draws only its own. A mod without a spark
+  sheet can no longer be asked to draw one.
+- Every generated weapon that installs `fx` claims the entire shared sheet set
+  (`trail.BEAM`, `trail.GLOW`, `fx.SPARK`, `fx.BLOB`, `fx.SMOKE`), not just the
+  features it enabled. The emitter's own spark and glow were never claimed at
+  all, so its first draw failed even alone.
+
+The re-export also exposed a hand-edit in the installed `effects_sdk/mod.toml`:
+`[sprites."sprites/px_effects/spark/]` (a missing quote) made the whole library
+manifest invalid, and the engine reported it as `library dependency effects.sdk
+is not installed` for every bundle that used it. The spec copy was already
+correct; the installed one is now the same 0.4.2 file.
+
+### The emitter's hand-off was eating the shot
+
+The emitter used to arm its hand-off from the claim's `on_fire`: the tube stayed
+on the aim until Space, then the handler was supposed to retarget it to the round
+WA built. It never did, because a claim `on_fire` is not a notification. The
+engine hooks `CreateWeaponProjectile` and, when the slot has an `on_fire`, calls
+it and returns **before** WA makes the missile (`actor::create_proj_hook`), so
+the weapon fired nothing and the emitter had nothing to follow. It stayed at the
+muzzle for the rest of the match. PX's own railgun does not have this problem:
+its `FireFinal` calls `super` first and then reads the last object.
+
+Two rules now:
+
+- **The emitter writes no `on_fire`.** The round WA builds is discovered from
+  `wa.on.missile_frame`: the first missile with `m.weapon == ctx.id` is the
+  round, its `m.id` is latched, and the emitter either moves there (a muzzle
+  emitter with `carry`) or is created there (`round`). The follower answers from
+  the cached position (`EMITTER_AT`) and returns nil once the cache is stale, so
+  the SDK ends the emitter. The SDK marks it dead, and the next round's first
+  frame re-arms the latch.
+- **The aiming effect runs on `FRAME_FINISH`, not `body_move`.** `body_move`
+  only runs for a body WA is stepping, so a worm standing still to aim never
+  moved the effect; the firing recoil was the first frame that did, which is why
+  it looked like Space created it. The `FRAME_FINISH` worm message runs for every
+  worm every frame, and the gate is the weapon being out: `w.aiming` (ready,
+  charging, pre-firing) or the firing/fired states.
+
+The harness now asserts the claim has no `on_fire` and that the effect ends with
+the round, because either half alone regresses silently: a hand-off in `on_fire`
+looks right in the file and fires nothing in the game.
+
+The same trap is latent in the launch WAV role: when no other feature writes
+`on_fire`, the generator writes a handler that only plays the sound, which also
+suppresses WA's shot. It has not bitten the test pack yet (no generated weapon
+there uses a launch WAV), and the fix is the same shape: play it from a filtered
+`worm_message` on `wa.msg.WEAPON_RELEASED`, not from `on_fire`.

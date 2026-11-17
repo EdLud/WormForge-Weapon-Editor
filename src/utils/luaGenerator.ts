@@ -3,6 +3,7 @@ import {
   BehaviorArtKey,
   ClustletConfig,
   DigActionConfig,
+  EmitterConfig,
   FlightRoleArt,
   HoldConfig,
   MeleeSound,
@@ -17,6 +18,7 @@ import { supportsFireSequence } from '../data/fireSequence';
 import { STAMP_FRAMES, stampFrameForAngle, supportsTerrainStamp } from '../data/terrainStamp';
 import { COLLISION_FLAGS } from '../data/recordSchema';
 import { meleeStrikes } from '../data/melee';
+import { maskLuaCode, NOT_GENERATED_CLOSE, NOT_GENERATED_OPEN } from './luaText';
 import { recordField } from './recordField';
 import { defaultArtFor } from './defaultArt';
 import {
@@ -48,6 +50,13 @@ function digSpriteRow(
   if (native) return value !== undefined && value > 0 ? value : undefined;
   return value;
 }
+
+/**
+ * The claim hooks whose key is a single function the editor also emits a part of,
+ * so a carried one has to be inlined into that function rather than written as a
+ * second key: `on_explode` (burst + stamp) and `on_fire` (launch WAV + burst).
+ */
+const MERGEABLE_HOOKS = new Set(['on_explode', 'on_fire']);
 
 export function sanitizeModFolder(id: string): string {
   const parts = id.trim().split('.');
@@ -219,6 +228,237 @@ function formatNumber(value: number, digits = 4): string {
 }
 
 /** `#rrggbb` (or `rrggbb`) to the 0-255 components the trail module takes. */
+/** Degrees to radians, for the ring's spin and start angle. */
+function radians(degrees: number): string {
+  return formatNumber((Number(degrees) || 0) * (Math.PI / 180));
+}
+
+interface EmitterEmitOptions {
+  /** Where the emitter sits: the fired round, or the worm's muzzle. */
+  anchor: 'round' | 'muzzle';
+  /** Muzzle only: hand the emitter to the round the trigger creates. */
+  carries: boolean;
+  /** The family has a missile to follow. */
+  roundOk: boolean;
+}
+
+/**
+ * PX's effect manager as a live emitter (`fx.emitter`, `effects.sdk`). The
+ * library already exists and PX's ports call it by hand, so this only writes
+ * the table: the preset, which of sparks / glow / reach / ribbon / ring are on,
+ * and the two closers that make it live.
+ *
+ * The point is `emitter_for`'s `(x, y, owner, follow)`. Everything is
+ * turn-based (`AGENTS.md` §0): one emitter per weapon, a `FRAME_FINISH` worm
+ * message keeps it at the muzzle while the turn's worm aims with the weapon,
+ * and the first `missile_frame` of a round WA built hands it over. Both are
+ * simulation callbacks, so a replay draws the same emitter on the same frame.
+ * The claim writes no `on_fire`: that key replaces WA's shot, so a hand-off
+ * from it fired nothing at all.
+ */
+function emitEmitterBlock(
+  lines: string[],
+  em: EmitterConfig,
+  o: EmitterEmitOptions,
+): void {
+  const { r, g, b } = hexToRgb(em.color);
+  const ringRgb = hexToRgb(em.ring.color);
+  const trailRgb = hexToRgb(em.trail.color);
+  const offsetX = formatNumber(em.offsetX);
+  const offsetY = formatNumber(em.offsetY);
+  const sideOffset = Number(em.offsetY) || 0;
+  // PX's reach speed is progress per frame (0.08 = 8%), so the panel's whole
+  // percent is divided once here. The library reads a `{ lo, hi }` pair, and one
+  // number is a fixed speed.
+  const reachSpeed = formatNumber(Math.max(0.001, Math.min(1, em.reachSpeed / 100)));
+  const reachBulge = formatNumber(em.reachBulge);
+  lines.push("    -- PX's effect manager, live (`fx.emitter`): an emitter actor that draws");
+  lines.push('    -- sparks, a glow, short reach bolts, a ring and a ribbon at one point.');
+  lines.push("    -- WA is turn based, so one emitter per weapon is enough: the turn's worm");
+  lines.push('    -- is the only one aiming and firing.');
+  // Only the paths that can hand the emitter to a round need the round latch,
+  // and a mine keeps none of it in its file.
+  const usesRound = o.anchor === 'round' || o.carries;
+  lines.push('    local EMITTER');
+  if (o.anchor === 'muzzle') lines.push('    local EMITTER_OWNER');
+  if (usesRound) {
+    lines.push('    local EMITTER_ROUND');
+    lines.push('    local EMITTER_AT');
+    lines.push('    local EMITTER_CARRIED = false');
+  }
+  lines.push('    local function emitter_for(x, y, owner, follow)');
+  lines.push('      return {');
+  lines.push('        x = x, y = y, owner = owner, follow = follow,');
+  lines.push(`        anchor = ${luaQuote(o.anchor)},`);
+  lines.push(`        carry = ${o.carries ? 'true' : 'false'},`);
+  lines.push(`        preset = ${luaQuote(em.preset)},`);
+  lines.push(`        spark = ${em.spark ? 'true' : 'false'},`);
+  lines.push(`        glow = ${em.glow ? 'true' : 'false'},`);
+  if (em.reach) {
+    lines.push('        reach = {');
+    lines.push(`          count = ${Math.max(0, Math.round(em.reachCount))},`);
+    lines.push(`          distance = ${formatNumber(Math.max(0, em.reachDistance))},`);
+    lines.push(`          speed = { ${reachSpeed}, ${reachSpeed} },`);
+    lines.push(`          bulge = { ${reachBulge}, ${reachBulge} },`);
+    lines.push(`          curve = ${luaQuote(em.reachCurve)},`);
+    lines.push(`          noise = ${formatNumber(Math.max(0, em.reachNoise))},`);
+    lines.push(`          segments = ${Math.max(1, Math.round(em.reachSegments))},`);
+    lines.push(`          core_w = ${formatNumber(Math.max(0, em.reachCoreWidth))},`);
+    lines.push(`          glow_w = ${formatNumber(Math.max(0, em.reachGlowWidth))},`);
+    lines.push(`          r = ${r}, g = ${g}, b = ${b},`);
+    lines.push('        },');
+  } else {
+    lines.push('        reach = false,');
+  }
+  if (em.trail.enabled) {
+    lines.push('        trail = {');
+    lines.push(`          max = ${Math.max(2, Math.round(em.trail.max))},`);
+    lines.push(`          every = ${Math.max(1, Math.round(em.trail.every))},`);
+    lines.push(`          noise = ${formatNumber(Math.max(0, em.trail.noise))},`);
+    lines.push(`          core_w = ${formatNumber(Math.max(0, em.trail.coreWidth))},`);
+    lines.push(`          glow_w = ${formatNumber(Math.max(0, em.trail.glowWidth))},`);
+    if (em.trail.rainbow) lines.push('          rainbow = true,');
+    lines.push(`          r = ${trailRgb.r}, g = ${trailRgb.g}, b = ${trailRgb.b},`);
+    lines.push('        },');
+  } else {
+    lines.push('        trail = false,');
+  }
+  if (em.ring.enabled) {
+    lines.push('        ring = {');
+    lines.push(`          radius = ${formatNumber(Math.max(1, em.ring.radius))},`);
+    lines.push(`          segments = ${Math.max(8, Math.round(em.ring.segments))},`);
+    lines.push(`          noise = ${formatNumber(Math.max(0, em.ring.noise))},`);
+    lines.push(`          speed = ${radians(em.ring.speed)},`);
+    lines.push(`          angle = ${radians(em.ring.angle)},`);
+    lines.push(
+      `          ellipse = { ${formatNumber(em.ring.ellipseX)}, ${formatNumber(
+        em.ring.ellipseY,
+      )} },`,
+    );
+    // 0 asks the library to derive the widths from the radius, which is PX's
+    // own `sizeValue` rule.
+    if (em.ring.coreWidth > 0) {
+      lines.push(`          core_w = ${formatNumber(em.ring.coreWidth)},`);
+    }
+    if (em.ring.glowWidth > 0) {
+      lines.push(`          glow_w = ${formatNumber(em.ring.glowWidth)},`);
+    }
+    if (em.ring.thin) lines.push('          thin = true,');
+    // The bend follows the round instead of a fixed angle. `angle` stays as the
+    // offset the library adds to the heading.
+    if (em.ring.track) lines.push('          track = true,');
+    if (em.ring.rainbow) lines.push('          rainbow = true,');
+    lines.push(`          r = ${ringRgb.r}, g = ${ringRgb.g}, b = ${ringRgb.b},`);
+    lines.push('        },');
+  }
+  if (em.rainbow) lines.push('        rainbow = true,');
+  lines.push('      }');
+  lines.push('    end');
+  if (o.anchor === 'round' || o.carries) {
+    lines.push('    local function emitter_worm()');
+    lines.push('      local first');
+    lines.push('      for _, w in ipairs(wa.worms.all()) do');
+    lines.push('        if w.turn then return w end');
+    lines.push('        if not first and w.hp > 0 then first = w end');
+    lines.push('      end');
+    lines.push('      return first');
+    lines.push('    end');
+    lines.push('    local function emitter_start(x, y, owner, follow)');
+    lines.push('      if EMITTER then EMITTER:remove() end');
+    lines.push('      EMITTER = fx.emitter(emitter_for(x, y, owner, follow))');
+    lines.push('      return EMITTER');
+    lines.push('    end');
+  }
+  if (o.anchor === 'muzzle' || o.carries) {
+    lines.push("    -- The muzzle: a point along the fire angle, PX's `curDist` offset.");
+    lines.push("    -- `worm.aim` is WA's sweep and `worm.facing` the side, the same vector");
+    lines.push('    -- the held art is drawn at.');
+    lines.push('    local function emitter_muzzle(w)');
+    lines.push('      local a = (w.aim or 0.5) * math.pi');
+    lines.push('      local dx, dy = w.facing * wa.math.sin(a), wa.math.cos(a)');
+    // The offset is split along the aim (PX's `curDist`) and across it, so a
+    // zero side adds no `dy * 0` term to the file.
+    const along = `dx * ${offsetX}`;
+    const side = sideOffset !== 0 ? ` + dy * ${offsetY}` : '';
+    const sideY = sideOffset !== 0 ? ` - dx * ${offsetY}` : '';
+    lines.push(`      return w.x + ${along}${side},`);
+    lines.push(`        w.y + dy * ${offsetX}${sideY}`);
+    lines.push('    end');
+  }
+  if (o.anchor === 'round' || o.carries) {
+    lines.push('    -- Which missile of this weapon is ours. `wa.on.missile_frame` is the');
+    lines.push('    -- only place `m.id`, `m.weapon` and the velocity are readable: the body');
+    lines.push('    -- lists only give a position and a kind. `m.id` counts up per match and');
+    lines.push('    -- is never reused, so the first missile of this weapon that appears is');
+    lines.push('    -- the round; the cache lets the follow closure answer from the driver.');
+    lines.push('    local function emitter_round()');
+    lines.push('      local p = EMITTER_AT');
+    lines.push('      if not p or wa.world.frame() - p.seen > 3 then return nil end');
+    lines.push('      return p.x, p.y, p.vx, p.vy');
+    lines.push('    end');
+    lines.push('    wa.on.missile_frame(function(m)');
+    lines.push('      if m.weapon ~= ctx.id then return end');
+    lines.push('      -- The SDK marks the emitter dead when its follower answers nil, so a');
+    lines.push('      -- later round of this weapon is a new one: the latch is free again.');
+    lines.push('      if EMITTER and EMITTER.dead then');
+    lines.push('        EMITTER, EMITTER_ROUND, EMITTER_CARRIED = nil, nil, false');
+    lines.push('      end');
+    lines.push('      if EMITTER_ROUND == nil then');
+    lines.push('        -- Only a shot from the worm holding this weapon starts a round;');
+    lines.push('        -- a cluster bit still alive after the turn is not it.');
+    lines.push('        local w = emitter_worm()');
+    lines.push('        if not (w and w.weapon == ctx.id) then return end');
+    lines.push('        EMITTER_ROUND = m.id');
+    lines.push('      end');
+    lines.push('      if m.id ~= EMITTER_ROUND then return end');
+    lines.push('      EMITTER_AT = { x = m.x, y = m.y, vx = m.vx, vy = m.vy,');
+    lines.push('        seen = wa.world.frame() }');
+    lines.push('      if EMITTER_CARRIED then return end');
+    lines.push('      EMITTER_CARRIED = true');
+    lines.push('      if EMITTER then');
+    lines.push('        EMITTER.follow = emitter_round');
+    lines.push('        EMITTER:move_to(m.x, m.y)');
+    lines.push('      else');
+    const ownerExpr = o.anchor === 'muzzle' ? 'EMITTER_OWNER or emitter_worm()' : 'emitter_worm()';
+    lines.push(`        EMITTER = emitter_start(m.x, m.y, ${ownerExpr},`);
+    lines.push('          emitter_round)');
+    lines.push('      end');
+    lines.push('    end)');
+  }
+  if (o.anchor === 'muzzle') {
+    // `FRAME_FINISH` runs for every worm every game frame. `body_move` only
+    // runs for a body WA is stepping, so a worm standing still to aim never
+    // moved the effect at all; Space appeared to be what created it because
+    // the firing recoil is the first frame that stepped the body.
+    lines.push('    wa.on.worm_message(function(w)');
+    if (o.carries) {
+      lines.push('      if EMITTER and EMITTER.dead then');
+      lines.push('        EMITTER, EMITTER_ROUND, EMITTER_CARRIED = nil, nil, false');
+      lines.push('      end');
+      lines.push('      if EMITTER_CARRIED then return end');
+    } else {
+      lines.push('      if EMITTER and EMITTER.dead then EMITTER = nil end');
+    }
+    lines.push('      -- The weapon is out while WA draws it: aiming (ready, charging the');
+    lines.push('      -- throw, holding the fire key), firing, or on the frame it fired.');
+    lines.push('      local held = w and w.turn and w.weapon == ctx.id');
+    lines.push('        and (w.aiming or w.state == "firing" or w.state == "fired")');
+    lines.push('      if not held then');
+    lines.push('        if EMITTER then EMITTER:remove(); EMITTER = nil end');
+    lines.push('        return');
+    lines.push('      end');
+    lines.push('      local x, y = emitter_muzzle(w)');
+    lines.push('      EMITTER_OWNER = w');
+    lines.push('      if EMITTER then');
+    lines.push('        EMITTER:move_to(x, y)');
+    lines.push('      else');
+    lines.push('        EMITTER = fx.emitter(emitter_for(x, y, w))');
+    lines.push('      end');
+    lines.push('    end, { msgs = { wa.msg.FRAME_FINISH } })');
+  }
+  lines.push('');
+}
+
 function hexToRgb(color: string): { r: number; g: number; b: number } {
   const hex = (color || '').replace('#', '').trim();
   const full = hex.length === 3 ? hex.split('').map((c) => c + c).join('') : hex;
@@ -581,76 +821,6 @@ export interface ParsedCustomLua {
   hasOnExplode: boolean;
 }
 
-/** The same text with Lua comments and string bodies replaced by spaces.
- *
- * `parseCustomLua` finds the end of an `on_explode` body by counting
- * `function`/`if`/`for`/`while` against `end`, so a word inside a comment
- * ("-- the end of it") or a string ("end of file") used to close the body
- * early and leave the rest of the snippet behind as broken Lua. Masking keeps
- * every index where it was (one character out, one character back), so the
- * scan runs on the masked copy and the original is what gets sliced.
- */
-function maskLuaCode(code: string): string {
-  const out: string[] = [];
-  let i = 0;
-  const blank = (n: number) => {
-    for (let k = 0; k < n; k += 1) out.push(code[i + k] === '\n' ? '\n' : ' ');
-  };
-  while (i < code.length) {
-    const ch = code[i];
-    if (ch === '-' && code[i + 1] === '-') {
-      const long = /^--\[(=*)\[/.exec(code.slice(i, i + 12));
-      if (long) {
-        const close = `]${long[1]}]`;
-        const end = code.indexOf(close, i + long[0].length);
-        const stop = end === -1 ? code.length : end + close.length;
-        blank(stop - i);
-        i = stop;
-        continue;
-      }
-      const nl = code.indexOf('\n', i);
-      const stop = nl === -1 ? code.length : nl;
-      blank(stop - i);
-      i = stop;
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      let j = i + 1;
-      while (j < code.length) {
-        const c = code[j];
-        if (c === '\\') {
-          j += 2;
-          continue;
-        }
-        if (c === ch) {
-          j += 1;
-          break;
-        }
-        if (c === '\n') break;
-        j += 1;
-      }
-      const stop = Math.min(j, code.length);
-      blank(stop - i);
-      i = stop;
-      continue;
-    }
-    if (ch === '[') {
-      const long = /^\[(=*)\[/.exec(code.slice(i, i + 12));
-      if (long) {
-        const close = `]${long[1]}]`;
-        const end = code.indexOf(close, i + long[0].length);
-        const stop = end === -1 ? code.length : end + close.length;
-        blank(stop - i);
-        i = stop;
-        continue;
-      }
-    }
-    out.push(ch);
-    i += 1;
-  }
-  return out.join('');
-}
-
 export function parseCustomLua(snippet: string): ParsedCustomLua {
   if (!snippet || !snippet.trim() || snippet.length > 200_000) {
     return { paramName: 'ev', onExplodeBody: '', remainingSnippet: snippet || '', hasOnExplode: false };
@@ -743,6 +913,34 @@ export function parseCustomLua(snippet: string): ParsedCustomLua {
   };
 }
 
+/**
+ * The body of a claim hook literal, and the name the bundle gave its parameter.
+ *
+ * The carried hook is kept as the literal it was (`function(ev) ... end`, or the
+ * `{ on = function(ev) ... end }` table form), because that is what the bundle
+ * wrote and what its declarations agree with. To merge it into the handler the
+ * editor emits, the body is what matters: `on_explode` has one `on` slot, so the
+ * carried statements go between our burst and our stamp rather than becoming a
+ * second key.
+ *
+ * The closing `end` is found on the masked copy, so a body whose last statement
+ * is a comment saying "end" still ends where the block does.
+ */
+export function hookBodyOf(text: string): { param: string; body: string } {
+  const masked = maskLuaCode(text);
+  const at = masked.indexOf('function');
+  if (at < 0) return { param: 'ev', body: '' };
+  const open = masked.indexOf('(', at);
+  const close = open < 0 ? -1 : masked.indexOf(')', open);
+  if (open < 0 || close < 0) return { param: 'ev', body: '' };
+  const param = text.slice(open + 1, close).split(',')[0]?.trim() || 'ev';
+  // `end` is a keyword, so the last one in the masked copy closes the outermost
+  // block: a nested `function`/`if` closes earlier.
+  const end = masked.lastIndexOf('end');
+  if (end <= close) return { param, body: '' };
+  return { param, body: text.slice(close + 1, end).trim() };
+}
+
 export function reindentCode(code: string, targetIndent: string): string[] {
   const lines = code.split('\n');
   if (lines.length === 0) return [];
@@ -778,6 +976,72 @@ export function reindentCode(code: string, targetIndent: string): string[] {
     if (!line.trim()) return '';
     return `${targetIndent}${line.slice(minIndent)}`;
   });
+}
+
+/**
+ * The names an emitted weapon file binds, and what it binds them to.
+ *
+ * M2/M3's carry has to know this before it decides what to copy: a bundle's
+ * `local fx = require("wf-lib/effects/px_effects")` against the file's own `fx`
+ * is one declaration, not two, and the same name bound to a *different* module is
+ * the shadowing case the plan calls out. The answer comes from the generator
+ * itself (`generateLuaCode` on the project without its carried blocks), so the
+ * list cannot drift from what is really emitted.
+ *
+ * A `require` binding maps to its module id; every other local maps to `''`.
+ */
+export function declaredNames(code: string): Map<string, string> {
+  // Line by line, because every one of these is a one-line declaration in the
+  // emitted file, and because `maskLuaCode` blanks a string's contents: the
+  // module id has to be read from the original text at the masked line.
+  const maskedLines = maskLuaCode(code).split('\n');
+  const rawLines = code.split('\n');
+  const out = new Map<string, string>();
+  const bind = (name: string, module: string) => {
+    // A module-level `local zap` followed by an install-time
+    // `zap = require("…")` is one binding: the later assignment is what says
+    // which module the name is, so it upgrades a plain local.
+    if (!out.has(name) || (out.get(name) === '' && module !== '')) out.set(name, module);
+  };
+  const moduleAfter = (raw: string): string => {
+    const at = raw.search(/require\s*\(/);
+    if (at === -1) return '';
+    const quote = raw.indexOf('"', at);
+    const single = raw.indexOf("'", at);
+    const open = quote === -1 ? single : single === -1 ? quote : Math.min(quote, single);
+    if (open === -1) return '';
+    const close = raw.indexOf(raw[open], open + 1);
+    return close === -1 ? '' : raw.slice(open + 1, close);
+  };
+  for (let i = 0; i < maskedLines.length; i += 1) {
+    const masked = maskedLines[i];
+    const raw = rawLines[i] ?? '';
+    // `local x = require("M")`, and `x = require("M")` (a module-level
+    // declaration followed by an install-time assignment, which is how a bundle
+    // whose module reads `wa` at load is written: lesson 21).
+    const requireLocal = /^[ 	]*local[ 	]+([A-Za-z_][A-Za-z0-9_]*)[ 	]*=[ 	]*require[ 	]*\(/.exec(masked);
+    if (requireLocal) {
+      bind(requireLocal[1], moduleAfter(raw));
+      continue;
+    }
+    const requireAssign = /^[ 	]*([A-Za-z_][A-Za-z0-9_]*)[ 	]*=[ 	]*require[ 	]*\(/.exec(masked);
+    if (requireAssign) {
+      bind(requireAssign[1], moduleAfter(raw));
+      continue;
+    }
+    const localFunction = /^[ 	]*local[ 	]+function[ 	]+([A-Za-z_][A-Za-z0-9_]*)/.exec(masked);
+    if (localFunction) {
+      bind(localFunction[1], '');
+      continue;
+    }
+    const local = /^[ \t]*local[ \t]+([^=\n]+)/.exec(masked);
+    if (!local) continue;
+    for (const part of local[1].split(',')) {
+      const name = part.trim().match(/^([A-Za-z_][A-Za-z0-9_]*)/);
+      if (name) bind(name[1], '');
+    }
+  }
+  return out;
 }
 
 /**
@@ -907,6 +1171,16 @@ export function generateLuaCode(project: WeaponProject): string {
     ? parseCustomLua(project.customLuaSnippet)
     : { paramName: 'ev', onExplodeBody: '', remainingSnippet: project.customLuaSnippet || '', hasOnExplode: false };
 
+  // Carried claim hooks (M5): the bundle's own `on_explode` and `on_fire`. The
+  // key is single-valued, so they are inlined into the handler the editor emits
+  // rather than written as a second key, which would replace one of the two.
+  const carriedHooks = new Map(
+    (project.carriedLua?.hooks ?? []).map((hook) => [hook.key, hook]),
+  );
+  const carriedExplode = carriedHooks.has('on_explode')
+    ? hookBodyOf(carriedHooks.get('on_explode')!.text)
+    : null;
+
   // The effects SDK's px_effects burst: the electric ring + lens, an optional
   // PX-style blast replacement, and the smoke and re-buffer passes.
   const explosionEffect = project.explosionEffect;
@@ -966,14 +1240,32 @@ export function generateLuaCode(project: WeaponProject): string {
   const usesIntervalSound =
     !!intervalSoundPath &&
     (project.fireType === 'power' || (project.fireType === 'drop' && !!project.body.fuse));
-  const hasCustomExplodeCode = project.enableCustomLua && !!parsedLua.onExplodeBody.trim();
+  const hasSnippetExplodeCode = project.enableCustomLua && !!parsedLua.onExplodeBody.trim();
+  const hasCarriedExplodeCode = !!carriedExplode?.body.trim();
+  const hasCustomExplodeCode = hasSnippetExplodeCode || hasCarriedExplodeCode;
   // `wf-lib/fire_seq` (px.fire_seq): one `on_fire` fires a burst. A custom
   // `on_fire` in the snippet owns the trigger, so the card is skipped then.
   const fireSequence = project.fireSequence;
   const hasCustomOnFire =
     project.enableCustomLua && /(?:^|\n)[ \t]*on_fire\s*=/.test(project.customLuaSnippet || '');
+  // The bundle's own `on_fire` (M6): a hand-written trigger the editor does not
+  // model. It does not stop the launch WAV, which is one report per trigger and
+  // still belongs first in the handler, but it does stop our `fire_seq` burst:
+  // the bundle's body is the whole trigger then, and two launches from one
+  // trigger is exactly the failure the "a custom on_fire owns the key" rule
+  // exists to avoid.
+  const carriedOnFire = carriedHooks.has('on_fire')
+    ? hookBodyOf(carriedHooks.get('on_fire')!.text)
+    : null;
+  const hasCarriedOnFire = !!carriedOnFire?.body.trim();
   const usesFireSequence =
     !!fireSequence?.enabled && !hasCustomOnFire && supportsFireSequence(project);
+  // Claim keys the engine reads verbatim and the editor does not model: the
+  // bundle's own callbacks, written as the key itself. `on_explode`/`on_fire`
+  // are not here: they are merged into the handler the editor emits.
+  const verbatimHooks = (project.carriedLua?.hooks ?? []).filter(
+    (hook) => !MERGEABLE_HOOKS.has(hook.key),
+  );
   // A sequentially fired round is launched by us (`wa.weapons.launch`), so WA's
   // fuse option never reaches it: the launch writes the record's own
   // `missile.fuse`, and a weapon that relies on the option (every grenade) keeps
@@ -1036,6 +1328,26 @@ export function generateLuaCode(project: WeaponProject): string {
   const usesRibbonTrail =
     !!ribbonTrail?.enabled &&
     (project.fireType === 'power' || (project.fireType === 'drop' && project.body.fuse));
+  // PX's effect manager as a live emitter (`fx.emitter`): a ring, sparks, short
+  // bolts and a ribbon at a point that either rides the fired round or sits at
+  // the muzzle while the turn's worm aims with this weapon. A melee claim eats
+  // the trigger and has no muzzle, so it is excluded.
+  const emitter = project.emitter;
+  const usesEmitter = !!emitter?.enabled && project.fireType !== 'melee';
+  // The round anchor needs a missile WA builds from this record (a placed mine
+  // is a mine entity, a strike's bombs carry no `m.weapon`).
+  const emitterRoundOk =
+    project.fireType === 'power' || (project.fireType === 'drop' && !!project.body.fuse);
+  const emitterAnchor: 'round' | 'muzzle' =
+    emitter?.anchor === 'round' && emitterRoundOk ? 'round' : 'muzzle';
+  // Handing it to the round needs a round, so a placed mine or a strike keeps
+  // its emitter at the muzzle instead of leaving one following a missile that
+  // will never exist.
+  const emitterCarries =
+    emitterAnchor === 'muzzle' && emitter?.carry !== false && emitterRoundOk;
+  // Anything in px_effects needs the module required and installed; the trail
+  // module on its own installs itself.
+  const usesEffectsSdk = usesExplosionEffect || usesEmitter;
 
   if (usesHold) {
     lines.push('local holds = require("wf-lib/holds")');
@@ -1198,7 +1510,7 @@ export function generateLuaCode(project: WeaponProject): string {
   if (usesRibbonTrail) {
     lines.push('local trail = require("wf-lib/effects/trail")');
   }
-  if (usesExplosionEffect) {
+  if (usesEffectsSdk) {
     lines.push('local fx = require("wf-lib/effects/px_effects")');
     if (!usesRibbonTrail) {
       // px_effects falls back to the trail module's beam and glow sheets.
@@ -1208,7 +1520,7 @@ export function generateLuaCode(project: WeaponProject): string {
       lines.push('local blast = require("wf-lib/effects/custom_explosion")');
     }
   }
-  if (usesHold || usesMissileSprite || usesRibbonTrail || usesExplosionEffect || usesFireSequence) {
+  if (usesHold || usesMissileSprite || usesRibbonTrail || usesEffectsSdk || usesFireSequence) {
     lines.push('');
   }
 
@@ -1219,6 +1531,20 @@ export function generateLuaCode(project: WeaponProject): string {
   // order is then fixed in the file, which is what wfcheck's `lockstep-pairs`
   // rule wants, and the result reads like the record it came from.
   const extraAssignments = project.recordExtra ? recordAssignments(project.recordExtra) : [];
+
+  // Carried preamble (M2 of the capture plan): the module-level `require`s,
+  // constants and helpers the carried hooks close over. They belong with the
+  // generated requires, because they are the same kind of thing, a name a
+  // callback reads at run time, and they come after them so a carried unit that
+  // reads `fx` gets the file's own `fx` rather than being shadowed by a second.
+  const carriedLua = project.carriedLua;
+  if (carriedLua?.preamble.length) {
+    lines.push('-- Carried from the source bundle: the declarations its hooks close over.');
+    for (const block of carriedLua.preamble) {
+      lines.push(...reindentCode(block.text, ''));
+    }
+    lines.push('');
+  }
 
   lines.push('return {');
 
@@ -1333,6 +1659,27 @@ export function generateLuaCode(project: WeaponProject): string {
       // 50 Hz clock, so the preview and the game run the same arithmetic.
       const clip = project.aimClip;
       const clipOn = !!clip?.enabled || !!project.melee?.enabled;
+      // A melee strike lands on a tick of the swing and `sb.hold` only builds
+      // the strike when there is a clip (`if melee_spec and clip`), so `melee`
+      // with no keys used to ship a layer that registers and a Space press that
+      // does nothing at all. The panel refuses to delete the last key, but an
+      // imported bundle can carry an empty `swing`, so the export writes the one
+      // key such a strike needs, a pose at its hit frame, and says why.
+      const melee = project.melee;
+      const strikes = melee?.enabled ? meleeStrikes(melee) : [];
+      const keys = clip ? [...clip.keys].sort((a, b) => a.t - b.t) : [];
+      const synthKey = !!melee?.enabled && keys.length === 0;
+      if (synthKey) {
+        keys.push({
+          t: Math.max(0, strikes[0]?.frame ?? 0),
+          angle: 0,
+          dx: 0,
+          dy: 0,
+          scale: 1,
+          alpha: 1,
+          ease: 'out_quad',
+        });
+      }
       // `aim_clamp`: degrees either side of level. The layer clamps the pose it
       // draws and the aim a strike is thrown with, so a swing cannot start from
       // straight up or straight down (and a cut cannot reach there either). It
@@ -1343,11 +1690,18 @@ export function generateLuaCode(project: WeaponProject): string {
           `aim_clamp = { up = ${formatNumber(clamp.up)}, down = ${formatNumber(clamp.down)} },`,
         );
       }
-      if (clipOn && clip && clip.keys.length > 0) {
-        const keys = [...clip.keys].sort((a, b) => a.t - b.t);
+      if (clipOn && keys.length > 0) {
+        if (synthKey) {
+          holdRows.push(
+            '-- no aim clip keys to swing with: one pose at the strike frame, so a',
+          );
+          holdRows.push('-- melee weapon cannot ship a Space press that does nothing.');
+        }
         holdRows.push('swing = {');
-        holdRows.push(`  ticks = ${formatNumber(Math.max(1, clip.ticks))},`);
-        if (clip.finish === 'endTurn') holdRows.push('  finish = "end_turn",');
+        holdRows.push(
+          `  ticks = ${formatNumber(Math.max(1, clip?.ticks ?? (keys[keys.length - 1]?.t ?? 1) + 1))},`,
+        );
+        if (clip?.finish === 'endTurn') holdRows.push('  finish = "end_turn",');
         holdRows.push('  keys = {');
         for (const key of keys) {
           const parts = [
@@ -1370,7 +1724,7 @@ export function generateLuaCode(project: WeaponProject): string {
         holdRows.push('  },');
         // The ghost trail: `sb.hold` evaluates the same clip at earlier ticks,
         // so nothing is recorded and every peer draws the same smear.
-        const echo = clip.echo;
+        const echo = clip?.echo;
         if (echo?.enabled) {
           holdRows.push(
             `  echo = { count = ${Math.round(echo.count)}, every = ${Math.round(
@@ -1384,14 +1738,12 @@ export function generateLuaCode(project: WeaponProject): string {
       // geometry and the timing stay in `sb.hold` (one clock, one formula the
       // panel's red box also uses); the weapon owns what a hit *does*, so the
       // damage, the kind and the taze module stay in this file.
-      const melee = project.melee;
       if (melee?.enabled) {
         // The strikes, in the order they land. One is the shape this file has
         // always written (`hit_frame` / `damage` / `power`), so an untouched
         // weapon's export does not change; two or more also carry a `hits`
         // table, and the first strike is still written the old way so an older
         // installed SDK lands something.
-        const strikes = meleeStrikes(melee);
         const hitFrame = strikes[0].frame;
         const damage = Math.max(0, Math.round(strikes[0].damage));
         holdRows.push('melee = {');
@@ -1415,7 +1767,10 @@ export function generateLuaCode(project: WeaponProject): string {
               `damage = ${formatNumber(Math.max(0, Math.round(hit.damage)))}`,
             ];
             if (melee.pushMode !== 'fixed') parts.push(`power = ${formatNumber(hit.power)}`);
-            if (hit.lift !== 0) parts.push(`lift = ${formatNumber(hit.lift)}`);
+            // Every listed strike writes its own `lift`, zero included: a
+            // missing key inherits the weapon's `lift` in `hold_melee_hits`, so
+            // a strike that throws flat was thrown with the first strike's lift.
+            parts.push(`lift = ${formatNumber(hit.lift ?? 0)}`);
             if (hit.vx !== undefined) parts.push(`vx = ${formatNumber(hit.vx)}`);
             if (hit.vy !== undefined) parts.push(`vy = ${formatNumber(hit.vy)}`);
             return `{ ${parts.join(', ')} },`;
@@ -1627,19 +1982,31 @@ export function generateLuaCode(project: WeaponProject): string {
     // is what the callbacks and `stamp_hit` read.
     lines.push('    zap = require("wf-lib/electric/damage")');
   }
-  if (usesExplosionEffect) {
+  if (usesEffectsSdk) {
     // px_effects draws through a hidden driver actor, so it has to be installed
-    // before a round can explode; `trail = true` also installs the ribbon
-    // module the trail block below samples with.
+    // before a round can explode or an emitter can tick; `trail = true` also
+    // installs the ribbon module the trail block below samples with.
     //
     // The burst goes in front (`wa.depth.FRONT`), not on the SDK's `EFFECTS`
     // band: in `effect` mode WA's own blast animation is drawn over that band,
     // so the ring only surfaced once the boom had played out, a second later,
     // by which time the envelope was nearly gone. Worms and the whole blast are
     // what it should cover; the smoke stays on its own band behind it.
+    // `trail = true` is what makes `fx.install` call `trail.install()`, which is
+    // the hook that *draws* a ribbon. The emitter's own ribbon is a ribbon too,
+    // so it needs the flag even when the round has no trail: with `false` the
+    // emitter's points were sampled and never drawn.
+    const sdkTrail = usesRibbonTrail || (usesEmitter && !!emitter?.trail?.enabled);
     lines.push(
-      `    fx.install{ trail = ${usesRibbonTrail ? 'true' : 'false'}, depth = { burst = wa.depth.FRONT } }`,
+      `    fx.install{ trail = ${sdkTrail ? 'true' : 'false'}, depth = { burst = wa.depth.FRONT } }`,
     );
+  }
+  if (usesEmitter) {
+    emitEmitterBlock(lines, emitter!, {
+      anchor: emitterAnchor,
+      carries: emitterCarries,
+      roundOk: emitterRoundOk,
+    });
   }
   if (usesHoldLocal) {
     // With the aiming manager the table is built by `sb.hold`, which returns the
@@ -1649,6 +2016,19 @@ export function generateLuaCode(project: WeaponProject): string {
     for (const row of holdRows) lines.push(`      ${row}`);
     lines.push(usesAimLayer ? '    })' : '    }');
   }
+  // Carried prologue (M3): the install-time locals and helpers the hooks close
+  // over. They go after every generated install-time statement, so a carried
+  // helper that calls a library the panel installed (`fx.burst`, `zap.hurt`) runs
+  // against an installed library, and before the claim, because the claim's hook
+  // bodies are the only thing that needs them.
+  if (carriedLua?.prologue.length) {
+    lines.push('    -- Carried from the source bundle: the install-time locals its hooks close over.');
+    for (const block of carriedLua.prologue) {
+      lines.push(...reindentCode(block.text, '    '));
+    }
+    lines.push('');
+  }
+
   lines.push(extraAssignments.length > 0 ? '    local rec = {' : '    wa.weapons.replace{');
   lines.push(`      name = ${luaQuote(project.name)},`);
   const wepPath = wepBundlePath(project);
@@ -1758,18 +2138,34 @@ export function generateLuaCode(project: WeaponProject): string {
     }
     if (roamRole) packSprites.push(luaQuote(behaviorStateSheetPath(project, 'roam')));
   }
+  // A shared effects library registers one draw callback per mod, so the claim
+  // that has to resolve a quad need not be the mod that made the effect. List
+  // every sheet `px_effects` can draw whenever this weapon installs it, not
+  // only the ones this weapon switched on: the first mod's `wa.on.draw` used to
+  // draw another mod's spark, and the engine refused the quad (`sprite ... is
+  // not installed`) under a claim that never named the spark sheet.
+  const claimSdkSheet = (name: string) => {
+    if (!packSprites.includes(name)) packSprites.push(name);
+  };
   if (usesRibbonTrail) {
-    packSprites.push('trail.BEAM', 'trail.GLOW');
+    claimSdkSheet('trail.BEAM');
+    claimSdkSheet('trail.GLOW');
   }
-  if (usesExplosionEffect) {
-    // The burst draws with the same beam/glow pair and, when enabled, the
-    // cloud sheet. Listing the module fields registers the pack paths for this
-    // claim, exactly as the electric mine does.
-    if (!usesRibbonTrail) packSprites.push('trail.BEAM', 'trail.GLOW');
-    if (explosionEffect!.smoke) packSprites.push('fx.SMOKE');
+  if (usesExplosionEffect || usesEmitter) {
+    claimSdkSheet('trail.BEAM');
+    claimSdkSheet('trail.GLOW');
+    claimSdkSheet('fx.SPARK');
+    claimSdkSheet('fx.BLOB');
+    claimSdkSheet('fx.SMOKE');
   }
   if (stampSheetPath) {
     packSprites.push(luaQuote(stampSheetPath));
+  }
+  // Sheets the carried code names (M6): a `wa.draw.quad{ sprite = HOLE }` can
+  // only resolve a pack path the claim fills the sprite-key registry with, and
+  // that is this list.
+  for (const sheet of project.carriedLua?.art?.sprites ?? []) {
+    if (!packSprites.includes(luaQuote(sheet))) packSprites.push(luaQuote(sheet));
   }
   if (packSprites.length > 0) {
     lines.push(`      sprites = { ${packSprites.join(', ')} },`);
@@ -1807,6 +2203,12 @@ export function generateLuaCode(project: WeaponProject): string {
   if (usesExplosionSound) packSounds.push(luaQuote(explosionSoundPath!));
   if (usesIntervalSound) packSounds.push(luaQuote(intervalSoundPath!));
   if (shotSoundPath) packSounds.push(luaQuote(shotSoundPath));
+  // WAVs the carried code plays by path: the claim's `sounds` list is the
+  // registry `wa.sound.play(…, path, …)` resolves through, so a carried
+  // `sounds/<mod>/zap.wav` has to be named here or the play is a nil sample.
+  for (const wav of project.carriedLua?.art?.sounds ?? []) {
+    if (!packSounds.includes(luaQuote(wav))) packSounds.push(luaQuote(wav));
+  }
   if (packSounds.length > 0) {
     lines.push(`      sounds = { ${packSounds.join(', ')} },`);
   }
@@ -3288,6 +3690,15 @@ export function generateLuaCode(project: WeaponProject): string {
   // in the firing pose. The pose's animation and sound are the record's own
   // `fires.subtype` (chosen in Flight & Physics); nothing is forced here, so a
   // burst no longer inherits the Minigun's subtype (shells + firing loop).
+  // `on_fire`: one handler per trigger, built from three slots in this order:
+  // the launch WAV (ours, one report per trigger), the `fire_seq` burst (ours),
+  // and the body a bundle carried in (M6, the Conductor's whole weapon). The key
+  // is single-valued, so the three have to share one function or one of them
+  // replaces the others.
+  const onFire: string[] = [];
+  if (launchSoundPlay && !usesFireSequence) {
+    onFire.push('      -- Launch sound: WA fires the weapon, so `on_fire` runs once.');
+  }
   if (usesFireSequence) {
     const f = fireSequence!;
     const count = Math.max(1, Math.round(f.count));
@@ -3312,78 +3723,94 @@ export function generateLuaCode(project: WeaponProject): string {
           priority: Math.max(0, Math.round(customSounds?.shotPriority ?? 8)),
         }
       : null;
-    lines.push('      -- Sequential fire (`wf-lib/fire_seq`): one trigger, a burst.');
-    lines.push('      on_fire = function(ev)');
-    if (launchSoundPlay) {
-      lines.push(`        ${launchSoundPlay} -- the launch WAV, once per trigger`);
-    }
+    onFire.push('      -- Sequential fire (`wf-lib/fire_seq`): one trigger, a burst.');
     if (!live) {
       // Lock the aim to the moment the trigger was pulled.
-      lines.push('        local dx, dy = seq_dir(ev.worm)');
+      onFire.push('        local dx, dy = seq_dir(ev.worm)');
     }
     const call = f.mode === 'actors' ? 'fire_sequential_actor' : 'fire_seq_mis';
-    lines.push(`        seq.${call}{`);
+    onFire.push(`        seq.${call}{`);
     if (f.mode !== 'actors') {
-      lines.push('          weapon = ctx.id,');
+      onFire.push('          weapon = ctx.id,');
     }
-    lines.push('          owner = ev.worm,');
+    onFire.push('          owner = ev.worm,');
     if (f.cancelOnWeaponChange || f.mode === 'actors') {
       // Actors have no default: without it the burst ends on the first tick.
-      lines.push('          cancel_weapon = ctx.id,');
+      onFire.push('          cancel_weapon = ctx.id,');
     }
-    lines.push(`          count = ${count}, delay = ${delay},`);
+    onFire.push(`          count = ${count}, delay = ${delay},`);
     if (f.mode === 'actors') {
       if (f.actorSprite.trim()) {
-        lines.push(`          sprite = ${luaQuote(f.actorSprite.trim())},`);
+        onFire.push(`          sprite = ${luaQuote(f.actorSprite.trim())},`);
       }
-      lines.push(
+      onFire.push(
         `          gravity = ${f.actorGravity ? 'true' : 'false'}, collide = ${
           f.actorCollide ? 'true' : 'false'
         }, persist = ${f.actorPersist ? 'true' : 'false'},`,
       );
     }
     if (f.spreadX > 0 || f.spreadY > 0) {
-      lines.push(`          spread = { x = ${spreadX}, y = ${spreadY} },`);
+      onFire.push(`          spread = { x = ${spreadX}, y = ${spreadY} },`);
     }
     if (f.standoff > 0) {
-      lines.push(`          standoff = ${standoff},`);
+      onFire.push(`          standoff = ${standoff},`);
     }
     if (carriesFuse) {
       // `launch` merges this over the slot's record, so the burst's rounds get
       // the player's fuse instead of the record's (which is 0 for a grenade).
-      lines.push('          missile = { fuse = fuse_of(ev.worm) },');
+      onFire.push('          missile = { fuse = fuse_of(ev.worm) },');
     }
     if (live) {
-      lines.push(`          x = function(i, w) return w.x${offX} end,`);
-      lines.push(`          y = function(i, w) return w.y${offY} end,`);
-      lines.push(`          vx = function(i, w) local dx = seq_dir(w) return dx * ${speed} end,`);
-      lines.push(`          vy = function(i, w) local _, dy = seq_dir(w) return dy * ${speed} end,`);
+      onFire.push(`          x = function(i, w) return w.x${offX} end,`);
+      onFire.push(`          y = function(i, w) return w.y${offY} end,`);
+      onFire.push(`          vx = function(i, w) local dx = seq_dir(w) return dx * ${speed} end,`);
+      onFire.push(`          vy = function(i, w) local _, dy = seq_dir(w) return dy * ${speed} end,`);
     } else {
-      lines.push(`          x = ev.worm.x${offX}, y = ev.worm.y${offY},`);
-      lines.push(`          vx = dx * ${speed}, vy = dy * ${speed},`);
+      onFire.push(`          x = ev.worm.x${offX}, y = ev.worm.y${offY},`);
+      onFire.push(`          vx = dx * ${speed}, vy = dy * ${speed},`);
     }
     if (shotSound) {
       const every = shotSound.every;
       const guard = every > 1 ? `if i % ${every} == 0 then ` : '';
       const close = every > 1 ? ' end' : '';
-      lines.push(
+      onFire.push(
         `          on_shot = function(i, w) ${guard}wa.sound.play(w, ${luaQuote(
           shotSound.path,
         )}, ${shotSound.priority})${close} end,`,
       );
     }
-    lines.push('        }');
+    onFire.push('        }');
+  }
+  if (hasCarriedOnFire && carriedOnFire) {
+    if (carriedOnFire.param !== 'ev') {
+      onFire.push(`        local ${carriedOnFire.param} = ev`);
+    }
+    onFire.push(`        ${NOT_GENERATED_OPEN}`);
+    onFire.push(...reindentCode(carriedOnFire.body, '        '));
+    onFire.push(`        ${NOT_GENERATED_CLOSE}`);
+  }
+  // The emitter is never written here on purpose: a claim `on_fire` replaces
+  // WA's shot (the engine's CreateWeaponProjectile hook returns before WA builds
+  // the missile), so an emitter that only handed itself to a round from this
+  // handler fired nothing at all. The round latch is the `missile_frame`
+  // registration above, which runs on the round WA did build.
+  if (onFire.length > 0) {
+    lines.push('      on_fire = function(ev)');
+    if (launchSoundPlay) {
+      lines.push(`        ${launchSoundPlay} -- the launch WAV, once per trigger`);
+    }
+    lines.push(...onFire);
     lines.push('      end,');
   }
 
-  // The launch WAV on its own: WA fires the weapon, the claim reports it. This
-  // is the file counterpart of the record's `missile.launch_sound`, which stays
-  // the author's native id (WA plays that one itself).
-  if (launchSoundPlay && !usesFireSequence) {
-    lines.push('      -- Launch sound: WA fires the weapon, so `on_fire` runs once.');
-    lines.push('      on_fire = function(ev)');
-    lines.push(`        ${launchSoundPlay}`);
-    lines.push('      end,');
+  // Claim hooks the editor does not model: the value is written as the key it
+  // was (`on_click`, `on_done`, `on_place`, `on_transport`, `on_select`), because
+  // nothing here merges into them.
+  for (const hook of verbatimHooks) {
+    const hookLines = hook.text.split('\n');
+    lines.push(`      ${hook.key} = ${hookLines[0]}`);
+    for (const line of hookLines.slice(1)) lines.push(`      ${line}`);
+    lines.push('      ,');
   }
 
   // Unified explosion hook: merges effects-SDK burst, custom WAV, and custom Lua logic.
@@ -3401,7 +3828,8 @@ export function generateLuaCode(project: WeaponProject): string {
     const parts = [
       usesExplosionEffect ? 'effects-SDK burst' : '',
       usesExplosionSound ? 'custom WAV' : '',
-      hasCustomExplodeCode ? 'custom Lua logic' : '',
+      hasCarriedExplodeCode ? "the bundle's on_explode" : '',
+      hasSnippetExplodeCode ? 'custom Lua logic' : '',
       usesImpactDamage ? 'impact damage' : '',
       usesTerrainStamp ? 'terrain stamp' : '',
     ].filter(Boolean).join(' + ');
@@ -3477,6 +3905,9 @@ export function generateLuaCode(project: WeaponProject): string {
             ? `${indent}smoke = { count = 7, kinds = 2, r = ${r}, g = ${g}, b = ${b} },`
             : `${indent}smoke = false,`,
         );
+        // PX's SetRainbowMode on the manager (`CalculateRainbow`): one clock
+        // colour for every pass of the burst.
+        if (e.rainbow) rows.push(`${indent}rainbow = true,`);
         // PX's BufferChange re-noise and recolour at frame 16 (fade -0.85).
         rows.push(
           e.rebuffer
@@ -3542,13 +3973,31 @@ export function generateLuaCode(project: WeaponProject): string {
         lines.push('        }');
       }
     }
-    if (hasCustomExplodeCode) {
+    // The bundle's own body goes first and the author's snippet after it: both
+    // run inside the one handler, and both can still `return` early to skip the
+    // stamp below. Each keeps its own parameter name.
+    if (hasCarriedExplodeCode && carriedExplode) {
+      if (carriedExplode.param !== 'ev') {
+        lines.push(`        local ${carriedExplode.param} = ev`);
+      }
+      lines.push(`        ${NOT_GENERATED_OPEN}`);
+      for (const line of reindentCode(carriedExplode.body, '        ')) lines.push(line);
+      lines.push(`        ${NOT_GENERATED_CLOSE}`);
+    }
+    if (hasSnippetExplodeCode) {
       if (parsedLua.paramName !== 'ev') {
         lines.push(`        local ${parsedLua.paramName} = ev`);
       }
+      // The markers are not decoration: `checkLua` reads them to say that a
+      // finding below is in a block the editor did not generate, which is the
+      // difference between "a name nothing declares fails at load" and a snippet
+      // that may define it elsewhere. `customExplodeBody` drops them again on a
+      // re-import, so they never nest.
+      lines.push(`        ${NOT_GENERATED_OPEN}`);
       for (const line of reindentCode(parsedLua.onExplodeBody, '        ')) {
         lines.push(line);
       }
+      lines.push(`        ${NOT_GENERATED_CLOSE}`);
     }
     if (usesImpactDamage) {
       // A hit is the whole point of a pierce, so the stamp is skipped when the
@@ -3642,6 +4091,11 @@ export function generateLuaCode(project: WeaponProject): string {
     lines.push(`      max = ${max}, every = ${every}, vanish = ${vanish},`);
     lines.push(`      core_w = ${formatNumber(Math.max(0, t.coreWidth))},`);
     lines.push(`      glow_w = ${formatNumber(Math.max(0, t.glowWidth))},`);
+    // PX's own lateral jitter (`noise`, a reach arc's crackle) and its hue
+    // cycle. A zero jitter and no rainbow is the straight ribbon it always was,
+    // so an old project emits the keys it needs and nothing else.
+    if (t.noise > 0) lines.push(`      noise = ${formatNumber(Math.max(0, t.noise))},`);
+    if (t.rainbow) lines.push('      rainbow = true,');
     lines.push(`      r = ${r}, g = ${g}, b = ${b},`);
     lines.push('    }');
     lines.push('    -- The driver needs an owner: whose turn it is, else any living worm.');
@@ -3917,6 +4371,22 @@ export function generateLuaCode(project: WeaponProject): string {
     lines.push('    })');
   }
 
+  // `wa.on.*` registrations a bundle carried (M6). Additive by construction
+  // (`dispatch::hook_list` runs every handler), so they are written verbatim and
+  // in the bundle's own order, after everything this editor installs: a carried
+  // `draw` that reads a table the claim built, or a `worm_message` whose filter
+  // is part of the call, has to find the install done. Their filters come with
+  // them, because `bind_on` accepts options for `worm_message` and a dropped
+  // filter would run the handler on every message.
+  const carriedRegistrations = project.carriedLua?.registrations ?? [];
+  if (carriedRegistrations.length > 0) {
+    lines.push('    -- Carried from the source bundle: its own `wa.on` hooks.');
+    for (const registration of carriedRegistrations) {
+      for (const line of reindentCode(registration.text, '    ')) lines.push(line);
+    }
+    lines.push('');
+  }
+
   lines.push('  end,');
   lines.push('}');
   lines.push('');
@@ -3956,6 +4426,9 @@ export function generateModToml(project: WeaponProject): string {
   const explodesNatively = project.fireType === 'power' || project.fireType === 'drop';
   const usesExplosionEffect =
     !!project.explosionEffect?.enabled && explodesNatively;
+  // PX's effect manager as a live emitter (`fx.emitter`), the same library as
+  // the burst. A melee claim eats WA's fire and has no muzzle to sit at.
+  const usesEmitter = !!project.emitter?.enabled && project.fireType !== 'melee';
   // An electric burst (or an electric pierce) tazes through `px.electric`'s
   // damage module, which the weapon requires as `zap`. Keep the dependency in
   // step with the code the weapon Lua actually requires.
@@ -3975,6 +4448,9 @@ export function generateModToml(project: WeaponProject): string {
     !!project.fireSequence?.enabled &&
     !(project.enableCustomLua && /(?:^|\n)[ \t]*on_fire\s*=/.test(project.customLuaSnippet || '')) &&
     supportsFireSequence(project);
+  // Anything in px_effects (`fx.burst`, `fx.emitter`) needs the effects SDK; the
+  // trail module alone ships in the same bundle, so it declares it too.
+  const usesEffectsSdk = usesExplosionEffect || usesEmitter;
   const lines: string[] = [
     `id = ${luaQuote(project.id)}`,
     `name = ${luaQuote(project.name)}`,
@@ -3987,7 +4463,7 @@ export function generateModToml(project: WeaponProject): string {
   const dependencies: string[] = [];
   if (usesHold) dependencies.push('wf.sdk');
   if (usesWfws) dependencies.push('wfws.sdk');
-  if (usesRibbonTrail || usesExplosionEffect) dependencies.push('effects.sdk');
+  if (usesRibbonTrail || usesEffectsSdk) dependencies.push('effects.sdk');
   if (usesElectricBlast || usesElectricImpact || usesElectricMelee) {
     dependencies.push('px.electric');
   }

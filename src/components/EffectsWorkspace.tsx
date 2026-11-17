@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Blocks, ListOrdered, Sparkles, Stamp, Volume2, Zap } from 'lucide-react';
+import { Blocks, ListOrdered, Orbit, Sparkles, Stamp, Volume2, Zap } from 'lucide-react';
 import type { WeaponProject } from '../types/weapon';
 import {
   CustomSoundsCard,
@@ -11,7 +11,9 @@ import {
   supportsLaunchSound,
   supportsRibbonTrail,
 } from './EffectsCards';
+import { EmitterCard } from './EmitterCard';
 import { FireSequenceCard } from './FireSequenceCard';
+import { supportsEmitter } from '../data/emitter';
 import { TerrainStampCard } from './TerrainStampCard';
 import { supportsFireSequence } from '../data/fireSequence';
 import { supportsTerrainStamp } from '../data/terrainStamp';
@@ -21,7 +23,7 @@ interface Props {
   onChange: (updated: Partial<WeaponProject>) => void;
 }
 
-type EffectTabId = 'trail' | 'explosion' | 'sounds' | 'sequence' | 'stamp';
+type EffectTabId = 'trail' | 'explosion' | 'emitter' | 'sounds' | 'sequence' | 'stamp';
 
 interface EffectTabDef {
   id: EffectTabId;
@@ -55,6 +57,16 @@ export const EffectsWorkspace: React.FC<Props> = ({ project, onChange }) => {
         icon: Sparkles,
         active: !!project.explosionEffect?.enabled,
         tone: 'amber',
+      });
+    }
+    if (supportsEmitter(project)) {
+      list.push({
+        id: 'emitter',
+        label: 'Emitter',
+        hint: 'PX effect manager that rides the muzzle or the fired round: ring, bolts, sparks, ribbon',
+        icon: Orbit,
+        active: !!project.emitter?.enabled,
+        tone: 'sky',
       });
     }
     if (
@@ -119,7 +131,8 @@ export const EffectsWorkspace: React.FC<Props> = ({ project, onChange }) => {
           </div>
           <p className="mx-auto max-w-lg text-xs text-stone-500 dark:text-stone-400">
             Air strike bombs spawn directly from the flyover aircraft rather than a worm slot, so
-            ribbon trails, explosion bursts, custom WAV triggers, and sequential fire do not attach to them.
+            ribbon trails, explosion bursts, emitters, custom WAV triggers, and sequential fire do not
+            attach to them.
           </p>
         </div>
       ) : (
@@ -180,6 +193,7 @@ export const EffectsWorkspace: React.FC<Props> = ({ project, onChange }) => {
           <div className="p-4 sm:p-5">
             {currentTab === 'trail' && <RibbonTrailCard project={project} onChange={onChange} />}
             {currentTab === 'explosion' && <ExplosionEffectCard project={project} onChange={onChange} />}
+            {currentTab === 'emitter' && <EmitterCard project={project} onChange={onChange} />}
             {currentTab === 'sounds' && <CustomSoundsCard project={project} onChange={onChange} />}
             {currentTab === 'sequence' && <FireSequenceCard project={project} onChange={onChange} />}
             {currentTab === 'stamp' && <TerrainStampCard project={project} onChange={onChange} />}

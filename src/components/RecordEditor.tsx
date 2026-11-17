@@ -32,6 +32,8 @@ import { FIRE_SUBTYPES, fireSubtypeLabel } from '../data/fireSubtypes';
 import { PackSpriteUpload } from './PackSpriteUpload';
 import { NumberInput, useNumberDraft } from './NumberInput';
 import { MeleeCard } from './MeleeCard';
+import { LuaFindings } from './LuaFindings';
+import { checkLua, fixLockstepRng } from '../utils/luaCheck';
 
 type CollisionTargetKey = Exclude<keyof CollisionMask, 'extra_bits'>;
 
@@ -2852,6 +2854,17 @@ end,`,
                 onChange={(e) => onChange({ customLuaSnippet: e.target.value })}
                 className="w-full resize-y select-text rounded-xl border border-stone-300 bg-stone-950 p-4 font-mono text-xs leading-relaxed text-forge-400 focus:ring-1 focus:ring-forge-500 dark:border-stone-700"
                 placeholder="on_explode = function(ev) ... end,"
+              />
+
+              {/* The rules the engine and the compiler both enforce, read off
+                  the text as written. `wa` and the generated helpers count as
+                  declared, so a body that talks to them is not flagged. */}
+              <LuaFindings
+                findings={checkLua(project.customLuaSnippet || '', { mode: 'fragment' })}
+                onFix={(finding) => {
+                  if (!finding.fix) return;
+                  onChange({ customLuaSnippet: fixLockstepRng(project.customLuaSnippet || '') });
+                }}
               />
             </div>
           )}

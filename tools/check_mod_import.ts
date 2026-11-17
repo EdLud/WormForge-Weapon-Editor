@@ -70,17 +70,19 @@ check(
   bundles.some((bundle) => bundle.id === 'wfws.sdk'),
   bundles.map((bundle) => bundle.id).join(', '),
 );
-check('test pack has 55 weapons', weapons.length === 55, String(weapons.length));
+check('test pack has 56 weapons', weapons.length === 56, String(weapons.length));
 
 const byName = new Map(weapons.map((weapon) => [weapon.name, weapon]));
 const projects = new Map<string, WeaponProject>();
+const notesByName = new Map<string, string[]>();
 for (const weapon of weapons) {
   if (!weapon.record) {
     check(`${weapon.name} has a record`, false, weapon.error ?? 'no record');
     continue;
   }
-  const { project } = await importBundleWeapon(weapon, files);
+  const { project, notes } = await importBundleWeapon(weapon, files);
   projects.set(weapon.name, project as WeaponProject);
+  notesByName.set(weapon.name, notes);
 }
 
 const project = (name: string): WeaponProject | undefined => projects.get(name);
@@ -328,6 +330,8 @@ const RIBBON_OFF = {
   vanish: 2,
   coreWidth: 8,
   glowWidth: 13,
+  noise: 0,
+  rainbow: false,
   color: '#ffffff',
   target: 'main' as const,
 };
@@ -363,6 +367,7 @@ function fullProject(p: WeaponProject, name: string): WeaponProject {
     ribbonTrail: p.ribbonTrail ?? RIBBON_OFF,
     explosionEffect: p.explosionEffect ?? DEFAULT_EXPLOSION_EFFECT,
     terrainStamp: p.terrainStamp,
+    emitter: p.emitter,
     fireSequence: p.fireSequence ?? DEFAULT_FIRE_SEQUENCE,
     customSounds: p.customSounds ?? DEFAULT_CUSTOM_SOUNDS,
     extraDependencies: p.extraDependencies ?? [],
@@ -373,6 +378,7 @@ function fullProject(p: WeaponProject, name: string): WeaponProject {
     customSprites: {},
     recordOverrides: p.recordOverrides ?? {},
     recordExtra: p.recordExtra,
+    carriedLua: p.carriedLua,
     enableCustomLua: p.enableCustomLua ?? false,
     customLuaSnippet: p.customLuaSnippet ?? '',
     useWepFile: false,
@@ -484,13 +490,16 @@ return {
     mappedPackArt: {},
     digging: false,
   });
-  const snippet = features.project.customLuaSnippet ?? '';
-  check('custom on_explode is carried', features.project.enableCustomLua === true);
-  check('custom on_explode keeps its own lines', snippet.includes('local x = ev.x'));
-  check('custom on_explode drops the generated burst', !snippet.includes('blast.explode'));
+  // M5: the bundle's hook is carried code, not the author's snippet. The snippet
+  // box is the user's, so an import must leave it untouched.
+  const carried = features.carriedHooks.find((hook) => hook.key === 'on_explode')?.text ?? '';
+  check('custom on_explode is carried', carried.length > 0);
+  check("custom on_explode is not the author's snippet", !features.project.customLuaSnippet);
+  check('custom on_explode keeps its own lines', carried.includes('local x = ev.x'));
+  check('custom on_explode drops the generated burst', !carried.includes('blast.explode'));
   check(
     'custom on_explode drops the generated WAV line',
-    !snippet.includes('wa.sound.play(ev.worm'),
+    !carried.includes('wa.sound.play(ev.worm'),
   );
   check(
     'unmodelled callback is reported',
@@ -505,6 +514,12 @@ return {
       action: 'none',
       burst: 'nothing',
       recordOverrides: {},
+      carriedLua: {
+        preamble: [],
+        prologue: [],
+        hooks: features.carriedHooks,
+        unresolved: [],
+      },
     } as WeaponProject,
     'Callback sample',
   );
@@ -1141,7 +1156,10 @@ return {
   const comboLua = generateLuaCode(fullProject(combo, 'WF 55 Melee Combo'));
   check(
     'WF 55: the combo is emitted again',
-    /hits = \{\s*\{ frame = 8, damage = 10, power = 2 \}/.test(comboLua),
+    // Every listed strike writes its own `lift` now, zero included: a missing
+    // key inherits the weapon's `lift`, which threw the flat strike with the
+    // first one's.
+    /hits = \{\s*\{ frame = 8, damage = 10, power = 2, lift = 0 \}/.test(comboLua),
     'the `hits` table is missing from the regenerated Lua',
   );
   check(
@@ -1155,6 +1173,56 @@ return {
       comboLua,
     ),
     'the hit callback does not take the strike',
+  );
+
+  // The emitter: the ring, its bend, the anchors and the rainbow, read back out
+  // of the table `emitter_for` returns rather than guessed from a call.
+  const emitterWeapon = project('WF 56 Emitter Ring')!;
+  const em = emitterWeapon.emitter;
+  near('WF 56: the emitter imports enabled', em?.enabled, true);
+  check('WF 56: its anchor', em?.anchor === 'muzzle', String(em?.anchor));
+  check('WF 56: it hands over to the round', em?.carry === true, String(em?.carry));
+  near('WF 56: the muzzle offset', em?.offsetX, 25);
+  check(
+    'WF 56: the ring comes back',
+    em?.ring.enabled === true && Math.round(em.ring.radius) === 26,
+    JSON.stringify(em?.ring),
+  );
+  // The file stores radians; the panel stores degrees.
+  near('WF 56: the ring spin', em?.ring.speed, 4);
+  near('WF 56: the ring bend', em?.ring.ellipseX, 1.2);
+  near('WF 56: the ring bend the other way', em?.ring.ellipseY, 0.45);
+  check(
+    'WF 56: the ring tracks the heading',
+    em?.ring.track === true,
+    String(em?.ring.track),
+  );
+  check('WF 56: the emitter ribbon', em?.trail.enabled === true, String(em?.trail.enabled));
+  near('WF 56: its noise', em?.trail.noise, 1.5);
+  const emitterLua = generateLuaCode(fullProject(emitterWeapon, 'WF 56 Emitter Ring'));
+  check(
+    'WF 56: the emitter is emitted again',
+    emitterLua.includes('local function emitter_for(') &&
+      emitterLua.includes('ellipse = { 1.2, 0.45 }') &&
+      emitterLua.includes('track = true,') &&
+      emitterLua.includes('wa.on.missile_frame(function(m)') &&
+      emitterLua.includes('EMITTER.follow = emitter_round') &&
+      !emitterLua.includes('on_fire = function'),
+    'the emitter block is missing from the regenerated Lua, or it claimed on_fire (which replaces WA\'s shot)',
+  );
+  check(
+    'WF 56: the emitter carries effects.sdk',
+    /dependencies = \[[^\]]*"effects\.sdk"/.test(
+      generateModToml(fullProject(emitterWeapon, 'WF 56 Emitter Ring')),
+    ),
+    'effects.sdk is not in the manifest',
+  );
+  check(
+    'WF 56: its own handlers are not carried back',
+    !emitterWeapon.carriedLua?.registrations?.some(
+      (r) => r.event === 'worm_message' || r.event === 'missile_frame',
+    ) && !emitterWeapon.carriedLua?.hooks?.some((h) => h.key === 'on_fire'),
+    'a re-import carried our own emitter registrations or on_fire, which would ship two emitters',
   );
 
   // The aim clamp: degrees either side of level, read back out of `aim_clamp`.
@@ -1298,6 +1366,75 @@ for (const [name, p] of projects) {
     `${name}: no auto dependency leaked`,
     (p.extraDependencies ?? []).length === 0,
     (p.extraDependencies ?? []).join(', '),
+  );
+}
+
+// ---- what the import says it could not carry ----------------------------
+// The three real bundles this was built against: the Conductor's hand-written
+// `on_fire` (its whole weapon), a `shot` WAV with no sequential-fire burst to
+// play it, and a module whose `copy_from` is built at load (PX's `px.ports`).
+{
+  // `on_fire` is reported unless the `fire_seq` burst inside it was rebuilt, so
+  // the editor's own weapons stay quiet while an author's own handler does not.
+  const claim = {
+    name: 'X',
+    copy_from: 'stock.grenade',
+    on_fire: null,
+    on_explode: null,
+    on_click: null,
+  } as unknown as Parameters<typeof unmodelledClaimKeys>[0];
+  check(
+    'a hand-written on_fire is reported as not carried',
+    unmodelledClaimKeys(claim).join(',') === 'on_fire,on_click',
+    unmodelledClaimKeys(claim).join(','),
+  );
+  check(
+    'and an absorbed on_fire (the fire_seq burst) is not',
+    unmodelledClaimKeys(claim, ['on_fire']).join(',') === 'on_click',
+    unmodelledClaimKeys(claim, ['on_fire']).join(','),
+  );
+  check(
+    'on_explode is carried into the snippet, so it is never "not carried"',
+    !unmodelledClaimKeys(claim).includes('on_explode'),
+  );
+
+  // The editor's own `on_fire` is a `fire_seq` burst, so it is carried as the
+  // fire-sequence feature and must not be reported. If the burst stopped being
+  // read, this is the check that notices: `on_fire` would then be "not carried".
+  const seqWeapon = weapons.find((w) => w.modulePath.includes('29_fire_seq'));
+  const seqProject = seqWeapon ? projects.get(seqWeapon.name) : undefined;
+  check('the pack has the sequential-fire weapon', !!seqWeapon && !!seqProject);
+  check(
+    "its on_fire is carried as the fire_seq feature",
+    !!seqProject?.fireSequence?.enabled,
+    String(seqProject?.fireSequence?.enabled),
+  );
+  check(
+    'so the import does not report it as lost',
+    !!seqWeapon &&
+      unmodelledClaimKeys(seqWeapon.source, ['on_fire']).length === 0 &&
+      unmodelledClaimKeys(seqWeapon.source).includes('on_fire'),
+    seqWeapon ? unmodelledClaimKeys(seqWeapon.source).join(',') : 'no weapon',
+  );
+}
+
+// ---- this editor's own wa.on handlers are recognised ---------------------
+// M1.5: the ribbon trail, the interval sound and the fuse sampler are the
+// editor's own emission, so an import must say a panel writes them again rather
+// than reporting them as code nothing models. If this regresses, a re-import
+// would carry them as foreign code on top of the features (two ribbons).
+{
+  const withHandlers: string[] = [];
+  for (const [name, notes] of notesByName) {
+    const line = notes.find((note) => note.startsWith('wa.on handlers:'));
+    if (!line) continue;
+    withHandlers.push(name);
+    check(`${name}: its wa.on handlers are rebuilt from the panels`, !/not modelled/.test(line), line);
+  }
+  check(
+    'the pack has weapons whose own handlers were recognised',
+    withHandlers.length >= 5,
+    String(withHandlers.length),
   );
 }
 

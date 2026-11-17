@@ -33,6 +33,8 @@ import type {
   WeaponProject,
 } from '../../types/weapon';
 import { DEFAULT_MELEE } from '../../data/melee';
+import { CLAIM_KEYS_CARRIED, CLAIM_KEYS_MODELLED } from '../../data/luaHooks';
+import { NOT_GENERATED_MARKER, maskLuaCode } from '../luaText';
 import type { MeleeHit, MeleeSound } from '../../types/weapon';
 import {
   CLIP_EASES,
@@ -47,6 +49,7 @@ import {
   DEFAULT_ROLE_ART,
 } from '../../data/spriteBuilder';
 import { DEFAULT_EXPLOSION_EFFECT, EXPLOSION_PRESETS } from '../../data/explosionPresets';
+import { DEFAULT_EMITTER } from '../../data/emitter';
 import { DEFAULT_FIRE_SEQUENCE } from '../../data/fireSequence';
 import { DEFAULT_CUSTOM_SOUNDS } from '../../data/soundPresets';
 import {
@@ -59,6 +62,7 @@ import {
   firstTable,
   isTable,
   readCallTable,
+  readReturnedTable,
   scanLua,
   type LuaTable,
   type LuaValue,
@@ -70,6 +74,12 @@ export interface BundleFeatures {
   /** Fields to merge over the imported record. */
   project: Partial<WeaponProject>;
   notes: string[];
+  /**
+   * The bundle's own claim hooks, as the literals they were (M5). They are not
+   * the author's snippet: that box is the user's, and a hook that came out of a
+   * bundle has to be able to say so (round trip, markers, the panel).
+   */
+  carriedHooks: { key: string; text: string; line: number }[];
 }
 
 const num = (value: LuaValue | undefined): number | undefined =>
@@ -182,7 +192,7 @@ function objectUrl(file: File): string {
  * path assembled at runtime; the base name is the fallback, which is how the
  * scanner already matches `.wep` files.
  */
-async function readAsset(
+export async function readAsset(
   files: ModFile[],
   bundleDir: string,
   rawPath: string | undefined,
@@ -398,6 +408,8 @@ function readBurstRows(table: LuaTable, config: ExplosionEffectConfig): Explosio
     ellipseY: num(ellipse?.['2']) ?? num(ellipse?.y) ?? config.ellipseY,
     smoke: isTable(smoke) ? true : bool(smoke) ?? false,
     rebuffer: isTable(rebuffer) ? true : bool(rebuffer) ?? false,
+    // `rainbow = true` (or PX's `{ speed, offset }`) on the manager.
+    rainbow: isTable(table.rainbow) || table.rainbow === true,
   };
   return { ...next, preset: presetFor(next) };
 }
@@ -422,12 +434,17 @@ function customExplodeBody(moduleText: string, stripStamp = false): string {
   const start = match.index + match[0].length;
   const rest = moduleText.slice(start);
   // Same bounded block scan `parseCustomLua` uses: every opener needs one `end`.
+  // It runs on the masked copy, because a comment must not close the block: the
+  // carried-region markers are comments and the close marker contains the word
+  // "end", which cut a re-imported body short and left a dangling `--` in the
+  // author's snippet. Masking keeps every offset, so the slice stays raw text.
+  const maskedRest = maskLuaCode(rest);
   const token = /\b(function|if|for|while|end)\b/g;
   let depth = 1;
   let end = -1;
   let iterations = 0;
   let found: RegExpExecArray | null;
-  while ((found = token.exec(rest)) !== null && iterations < 5000) {
+  while ((found = token.exec(maskedRest)) !== null && iterations < 5000) {
     iterations += 1;
     if (found[1] === 'end') {
       depth -= 1;
@@ -479,6 +496,10 @@ function customExplodeBody(moduleText: string, stripStamp = false): string {
       continue;
     }
     if (/^if\s+ev\.worm\s+then\s+wa\.sound\.play\(/.test(trimmed)) continue;
+    // The editor's own not-generated markers (a re-import of an export whose
+    // custom body was already marked). Dropping them here keeps them from
+    // nesting, which `checkLua` reads to tell generated from custom code.
+    if (NOT_GENERATED_MARKER.test(trimmed)) continue;
     // The electric burst's arm (`px.electric`'s set_message_electric`, or its
     // `_missile` form for WA's own blast) is generated from the Damage Type
     // toggle, so it is one of ours too. Left in, it would be re-emitted as the
@@ -513,6 +534,7 @@ export async function readBundleFeatures(args: {
   const soundBase = args.soundBase ?? DEFAULT_CUSTOM_SOUNDS;
   const fireBase = args.fireBase ?? DEFAULT_FIRE_SEQUENCE;
   const explosionBase = args.explosionBase ?? DEFAULT_EXPLOSION_EFFECT;
+  const emitterBase = DEFAULT_EMITTER;
 
   // ---- hold ---------------------------------------------------------------
   // Two emission shapes: the inline `hold = { ... }` the engine reads, and the
@@ -1048,6 +1070,8 @@ export async function readBundleFeatures(args: {
       vanish: num(trailTable.vanish) ?? 2,
       coreWidth: num(trailTable.core_w) ?? 8,
       glowWidth: num(trailTable.glow_w) ?? 13,
+      noise: num(trailTable.noise) ?? 0,
+      rainbow: trailTable.rainbow === true || isTable(trailTable.rainbow),
       color: hexColor(rgb.r, rgb.g, rgb.b),
       // The target is read off the guard the generator emits: `trail_is_bit`
       // says "not the round" or "not a bit", and `trail_live` on its own is the
@@ -1062,6 +1086,109 @@ export async function readBundleFeatures(args: {
             : 'all',
     } satisfies RibbonTrailConfig;
     notes.push('ribbon trail');
+  }
+
+  // ---- emitter ------------------------------------------------------------
+  // PX's effect manager as a live emitter. The generator writes its options as
+  // the table `emitter_for` returns, so the reader is named rather than guessed:
+  // a hand-written bundle that calls `fx.emitter{ … }` directly is not one of
+  // ours and is carried as code instead (M6 of the import plan).
+  const emitterArgs = readReturnedTable(moduleText, 'emitter_for');
+  if (emitterArgs && moduleText.includes('fx.emitter')) {
+    const t = emitterArgs.table;
+    const ring = isTable(t.ring) ? t.ring : undefined;
+    const trailTable2 = isTable(t.trail) ? t.trail : undefined;
+    const reach = isTable(t.reach) ? t.reach : undefined;
+    const ellipse = isTable(ring?.ellipse) ? ring.ellipse : undefined;
+    const base = project.emitter ?? emitterBase;
+    const rgb = rgbOf(t) ?? { r: 130, g: 180, b: 255 };
+    const ringRgb = ring ? rgbOf(ring) : undefined;
+    const emTrailRgb = trailTable2 ? rgbOf(trailTable2) : undefined;
+    // The ring's spin and start angle are radians in the file and degrees in
+    // the panel, which is what an author sets.
+    const degrees = (value: number | undefined): number | undefined =>
+      value === undefined ? undefined : Math.round((value * 180) / Math.PI * 100) / 100;
+    // `emitter_muzzle`'s two products hold the offset: `dx * X + dy * Y` is the
+    // along/ahead term and `dy * X - dx * Y` the across one.
+    const muzzle =
+      /return\s+w\.x\s*\+\s*dx\s*\*\s*(-?[\d.]+)\s*\+\s*dy\s*\*\s*(-?[\d.]+)[\s\S]*?w\.y\s*\+\s*dy\s*\*\s*(-?[\d.]+)\s*-\s*dx\s*\*\s*(-?[\d.]+)/
+        .exec(emitterArgs ? moduleText : '');
+    const anchor: 'round' | 'muzzle' =
+      str(t.anchor) === 'round' || /emitter_start\(ev\.worm\.x/.test(moduleText)
+        ? 'round'
+        : 'muzzle';
+    const speed = isTable(reach?.speed) ? num(reach.speed['1']) : undefined;
+    project.emitter = {
+      ...base,
+      enabled: true,
+      anchor,
+      // `carry` is written into the table; older exports only set the flag in
+      // the hand-off.
+      carry:
+        t.carry === true || (t.carry === undefined && /EMITTER_CARRIED\s*=\s*true/.test(moduleText)),
+      offsetX: muzzle ? Number(muzzle[1]) : base.offsetX,
+      offsetY: muzzle ? Number(muzzle[2]) : base.offsetY,
+      preset: str(t.preset) === 'thunder' ? 'thunder' : 'electric',
+      spark: t.spark !== false,
+      glow: t.glow !== false,
+      reach: !!reach,
+      reachCount: num(reach?.count) ?? base.reachCount,
+      reachDistance: num(reach?.distance) ?? base.reachDistance,
+      reachSpeed: speed === undefined ? base.reachSpeed : Math.round(speed * 100),
+      reachCurve:
+        str(reach?.curve) === 'line' ||
+        str(reach?.curve) === 'bezier' ||
+        str(reach?.curve) === 'px'
+          ? (str(reach?.curve) as 'line' | 'bezier' | 'px')
+          : 'arc',
+      reachBulge: isTable(reach?.bulge)
+        ? (num(reach.bulge['1']) ?? base.reachBulge)
+        : base.reachBulge,
+      reachNoise: num(reach?.noise) ?? base.reachNoise,
+      reachSegments: num(reach?.segments) ?? base.reachSegments,
+      reachCoreWidth: num(reach?.core_w) ?? base.reachCoreWidth,
+      reachGlowWidth: num(reach?.glow_w) ?? base.reachGlowWidth,
+      color: hexColor(rgb.r, rgb.g, rgb.b),
+      ring: ring
+        ? {
+            ...base.ring,
+            enabled: true,
+            radius: num(ring.radius) ?? base.ring.radius,
+            segments: num(ring.segments) ?? base.ring.segments,
+            noise: num(ring.noise) ?? base.ring.noise,
+            speed: degrees(num(ring.speed)) ?? base.ring.speed,
+            angle: degrees(num(ring.angle)) ?? base.ring.angle,
+            // An absent width is the library's own derivation from the radius.
+            coreWidth: num(ring.core_w) ?? 0,
+            glowWidth: num(ring.glow_w) ?? 0,
+            thin: ring.thin === true,
+            ellipseX: num(ellipse?.['1']) ?? num(ellipse?.x) ?? base.ring.ellipseX,
+            ellipseY: num(ellipse?.['2']) ?? num(ellipse?.y) ?? base.ring.ellipseY,
+            track: ring.track === true,
+            color: ringRgb
+              ? hexColor(ringRgb.r, ringRgb.g, ringRgb.b)
+              : base.ring.color,
+            rainbow: ring.rainbow === true || isTable(ring.rainbow),
+          }
+        : { ...base.ring, enabled: false },
+      trail: trailTable2
+        ? {
+            ...base.trail,
+            enabled: true,
+            max: num(trailTable2.max) ?? base.trail.max,
+            every: num(trailTable2.every) ?? base.trail.every,
+            noise: num(trailTable2.noise) ?? base.trail.noise,
+            coreWidth: num(trailTable2.core_w) ?? base.trail.coreWidth,
+            glowWidth: num(trailTable2.glow_w) ?? base.trail.glowWidth,
+            color: emTrailRgb
+              ? hexColor(emTrailRgb.r, emTrailRgb.g, emTrailRgb.b)
+              : base.trail.color,
+            rainbow: trailTable2.rainbow === true || isTable(trailTable2.rainbow),
+          }
+        : { ...base.trail, enabled: false },
+      rainbow: t.rainbow === true || isTable(t.rainbow),
+    };
+    notes.push('emitter');
   }
 
   // ---- explosion burst ----------------------------------------------------
@@ -1454,14 +1581,23 @@ export async function readBundleFeatures(args: {
     };
   }
 
-  // ---- custom on_explode body --------------------------------------------
+  // ---- the bundle's own on_explode ----------------------------------------
+  // M5: a carried hook, not the author's snippet. The two used to share
+  // `customLuaSnippet`, so an import silently filled the box the user types in
+  // and a hook could not be told apart from a snippet. The literal is kept, not
+  // just the body, so the generator can inline it between its own `before` and
+  // `after` parts and a re-import finds the same text again.
+  const carriedHooks: { key: string; text: string; line: number }[] = [];
   const custom = customExplodeBody(moduleText, !!generatedStamp || pierces);
   if (custom) {
-    project.enableCustomLua = true;
-    project.customLuaSnippet = `on_explode = { on = function(ev)\n${custom
-      .split('\n')
-      .map((line) => (line ? `  ${line}` : ''))
-      .join('\n')}\nend }`;
+    carriedHooks.push({
+      key: 'on_explode',
+      text: `function(ev)\n${custom
+        .split('\n')
+        .map((line) => (line ? `  ${line}` : ''))
+        .join('\n')}\nend`,
+      line: 0,
+    });
     notes.push('custom on_explode');
   }
 
@@ -1493,32 +1629,27 @@ export async function readBundleFeatures(args: {
     }
   }
 
-  return { project, notes };
+  return { project, notes, carriedHooks };
 }
 
 /**
- * Claim keys that hold a function and that the reader does not model, so the
- * import can say what it could not carry instead of silently dropping it.
+ * Claim keys that hold a value the reader cannot read as a literal (a function,
+ * an expression) and that nothing in the import accounts for, so the summary can
+ * say what it could not carry instead of silently dropping it.
+ *
+ * `absorbed` is how a caller says "this key is handled after all": the
+ * sequential-fire reader passes `on_fire` once it has reconstructed the burst
+ * that lives inside it, so the editor's own weapons stay quiet while a bundle
+ * with a hand-written `on_fire` (the Conductor's whole weapon) is reported.
+ * `on_explode` is carried unconditionally: `customExplodeBody` keeps the part of
+ * the body that is not ours.
  */
-export function unmodelledClaimKeys(source: LuaTable | undefined): string[] {
+export function unmodelledClaimKeys(
+  source: LuaTable | undefined,
+  absorbed: readonly string[] = [],
+): string[] {
   if (!source) return [];
-  const handled = new Set([
-    'name',
-    'copy_from',
-    'wep',
-    'panel_icon',
-    'sprites',
-    'sounds',
-    'params',
-    'cluster',
-    'sprite',
-    'sheep_sprites',
-    'worm_sprites',
-    'hold',
-    'fires',
-    'on_fire',
-    'on_explode',
-  ]);
+  const handled = new Set<string>([...CLAIM_KEYS_MODELLED, ...CLAIM_KEYS_CARRIED, ...absorbed]);
   return Object.entries(source)
     .filter(([key, value]) => !handled.has(key) && value === null)
     .map(([key]) => key);

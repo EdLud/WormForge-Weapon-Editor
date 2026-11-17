@@ -28,6 +28,8 @@ const RIBBON_DEFAULT: RibbonTrailConfig = {
   vanish: 2,
   coreWidth: 8,
   glowWidth: 13,
+  noise: 0,
+  rainbow: false,
   color: '#ffffff',
   target: 'main',
 };
@@ -264,7 +266,40 @@ export function RibbonTrailCard({ project, onChange }: CardProps) {
                 unit="f"
               />
             </div>
+
+            <div>
+              <TooltipLabel
+                label="Crackle Noise"
+                code="noise"
+                desc="Lateral jitter in pixels: each point is pushed along the trail's normal by a fixed noise table, so the ribbon crackles like PX's reach arcs. 0 is a straight trail, 4 to 9 reads as electricity."
+                htmlFor="ribbon-noise"
+              />
+              <UnitNumberInput
+                id="ribbon-noise"
+                min={0}
+                max={24}
+                step={0.5}
+                value={ribbon.noise ?? 0}
+                onChange={(e) => update({ noise: Number(e.target.value) })}
+                unit="px"
+              />
+            </div>
           </div>
+
+          {/* PX's hue cycle, one clock for the whole ribbon. */}
+          <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-sky-200 bg-sky-50/70 px-3 py-2 dark:border-sky-800/70 dark:bg-sky-950/30">
+            <input
+              id="ribbon-rainbow"
+              type="checkbox"
+              checked={!!ribbon.rainbow}
+              onChange={(e) => update({ rainbow: e.target.checked })}
+              className="h-3.5 w-3.5 cursor-pointer rounded text-forge-600 focus:ring-forge-500"
+            />
+            <span className="text-xs font-semibold text-sky-900 dark:text-sky-200">Rainbow</span>
+            <span className="text-[11px] text-sky-700/80 dark:text-sky-300/80">
+              cycle the hue along the ribbon and with the clock (PX SetRainbowMode)
+            </span>
+          </label>
 
           <div>
             <TooltipLabel
@@ -479,6 +514,20 @@ export function ExplosionEffectCard({ project, onChange }: CardProps) {
               </button>
             ))}
           </div>
+
+          <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-amber-200 bg-amber-50/70 px-3 py-2 dark:border-amber-800/70 dark:bg-amber-950/30">
+            <input
+              id="explosion-rainbow"
+              type="checkbox"
+              checked={!!fx.rainbow}
+              onChange={(e) => update({ rainbow: e.target.checked, preset: 'custom' })}
+              className="h-3.5 w-3.5 cursor-pointer rounded text-forge-600 focus:ring-forge-500"
+            />
+            <span className="text-xs font-semibold text-amber-900 dark:text-amber-200">Rainbow</span>
+            <span className="text-[11px] text-amber-800/80 dark:text-amber-300/80">
+              cycle every pass through the spectrum for the burst's life (PX CreateRainbowExplosion)
+            </span>
+          </label>
 
           {/* Core Burst Geometry & Timing */}
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">

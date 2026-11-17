@@ -220,6 +220,14 @@ export async function exportModZip(project: WeaponProject): Promise<Blob> {
     }
   }
 
+  // WAVs a carried block plays by path (M6). The four roles above are the
+  // editor's own; a bundle's sample that is neither is written where its code
+  // names it, because the claim's `sounds` list and this file are one contract.
+  for (const carriedSound of project.carriedLua?.art?.soundFiles ?? []) {
+    const safe = safeBundlePath(carriedSound.path);
+    if (safe && carriedSound.file) zip.file(`${modFolder}/${safe}`, carriedSound.file);
+  }
+
   // Any other custom sprite assets
   for (const cs of Object.values(project.customSprites)) {
     // `customSprites` is free-form data, so its path is the one place a `..`

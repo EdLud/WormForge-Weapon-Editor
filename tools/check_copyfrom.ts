@@ -55,7 +55,7 @@ function projectFor(slot: string): WeaponProject {
     bitFlight: { ...DEFAULT_ROLE_ART },
     behaviorArt: {},
     roamSheets: { flight1: {}, flight2: {} },
-    ribbonTrail: { enabled: false, max: 12, every: 2, vanish: 2, coreWidth: 8, glowWidth: 13, color: '#ffffff', target: 'main' },
+    ribbonTrail: { enabled: false, max: 12, every: 2, vanish: 2, coreWidth: 8, glowWidth: 13, noise: 0, rainbow: false, color: '#ffffff', target: 'main' },
     explosionEffect: { ...DEFAULT_EXPLOSION_EFFECT },
     customSounds: { ...DEFAULT_CUSTOM_SOUNDS },
     fireSequence: undefined,

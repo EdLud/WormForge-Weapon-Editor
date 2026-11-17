@@ -11,11 +11,22 @@
  * mapping into the panels is the next step; until then the panels show the
  * `.wep`/donor values and the export still writes what the bundle declared.
  */
-import type { WeaponProject } from '../../types/weapon';
+import type { CarriedLua, CarriedLuaArt, WeaponProject } from '../../types/weapon';
+import { checkLua } from '../luaCheck';
 import { parseWepBinary } from '../wepParser';
 import { withWfwsPrefix } from '../weaponId';
 import { mapRecord } from './mapRecord';
-import { readBundleFeatures, unmodelledClaimKeys } from './importFeatures';
+import { splitModule } from './splitModule';
+import { ownOutputOf } from './ownOutput';
+import { carryClosure, dependencyForModule } from './carryClosure';
+import {
+  customSoundPath,
+  declaredNames,
+  generateLuaCode,
+  hookBodyOf,
+  sanitizeModFolder,
+} from '../luaGenerator';
+import { readAsset, readBundleFeatures, unmodelledClaimKeys } from './importFeatures';
 import { DEFAULT_BODY, DEFAULT_DIG, DEFAULT_FIRE, DEFAULT_ROAM } from '../../data/defaults';
 import { stockDonor, stockDonorBaseline } from '../../data/stockDonors';
 import type { LuaTable } from './luaTable';
@@ -83,6 +94,12 @@ export async function importBundleWeapon(
   const notes: string[] = [];
   const name = weapon.name || weapon.componentId;
   const id = withWfwsPrefix(name);
+  // A module whose `copy_from` is not a literal (PX builds its claim table at
+  // load: `require("lib/weapon").merge(record, {...})`) leaves the reader with no
+  // donor, and the record then starts from the editor's Grenade values. Saying
+  // so is the difference between a weapon the author can correct and a weapon
+  // that silently claims a donor it never had.
+  const donorReadable = !!weapon.copyFrom;
   const donor = weapon.copyFrom?.replace(/^stock\./, '') ?? 'grenade';
 
   const wepFile = weapon.wepPath ? files.find((file) => file.path === weapon.wepPath) : undefined;
@@ -138,9 +155,11 @@ export async function importBundleWeapon(
       donorBaseline,
     };
     notes.push(
-      donorRecord.body
-        ? `base record: stock.${donor}`
-        : `base record: stock.${donor} (no decoded donor, editor defaults)`,
+      !donorReadable
+        ? `no copy_from readable: this module builds its claim table at load, so the record starts from stock.${donor} and the export will name it. Pick the real base in Weapon Loadout.`
+        : donorRecord.body
+          ? `base record: stock.${donor}`
+          : `base record: stock.${donor} (no decoded donor, editor defaults)`,
     );
   }
 
@@ -184,21 +203,136 @@ export async function importBundleWeapon(
       mapped.action === 'dig' || (mapped.burst === 'clusters' && bitAction === 'dig'),
   });
   notes.push(...features.notes);
+  // A sound role is a *place* as well as a file. `shot` rides the sequential-fire
+  // burst's `on_shot` and a launch WAV rides `on_fire`, so a bundle whose WAV has
+  // nowhere to play (a single-shot handgun with a `shot` sample, the Conductor)
+  // was being dropped without a word.
+  const importedSounds = features.project.customSounds;
+  if (importedSounds?.shotEnabled && importedSounds.shot && !features.project.fireSequence?.enabled) {
+    notes.push(
+      'shot WAV has nowhere to play: the shot role is the sequential-fire burst\'s on_shot, and this weapon has no burst (the launch role plays from on_fire)',
+    );
+  }
   // A melee weapon is a custom claim, not a WA fire type: its record is an
   // ordinary power one (the Sheep Launcher), so nothing in the record tables says
   // "melee" and `fireTypeOf` answers `power`. The claim's own `melee` table is the
   // signal, and without this an imported swing came back as a projectile.
   const isMelee = !!features.project.melee?.enabled;
-  const unmodelled = unmodelledClaimKeys(weapon.source);
+  // Which of the module's claim hooks are carried (M5/M6), decided before the
+  // "not carried" note so that note stays honest: a key we carry is absorbed,
+  // one we cannot place is reported.
+  const split = splitModule(moduleText);
+  const carriedHookList = [...features.carriedHooks];
+  const claimAbsorbed = ['on_explode', 'on_fire'];
+  if (split.hooks.on_fire && !features.project.fireSequence?.enabled) {
+    const body = hookBodyOf(split.hooks.on_fire);
+    // Our own launch-WAV `on_fire` is one `wa.sound.play` of the launch sheet:
+    // the launch role writes that call back on export, so carrying it would play
+    // the sample twice from one trigger.
+    const ourLaunchPlay =
+      !!features.project.customSounds?.launch?.file &&
+      /^wa\.sound\.play\([^)]*\)$/.test(body.body.replace(/\s+/g, ' ').trim()) &&
+      body.body.includes('/launch.wav');
+    // The emitter's hand-off is the same kind of thing: `emitter_start` /
+    // `EMITTER.follow = emitter_round` is what the emitter card writes again.
+    const ourEmitterHandOff =
+      !!features.project.emitter?.enabled &&
+      (body.body.includes('emitter_start(') || body.body.includes('EMITTER.follow ='));
+    if (ourLaunchPlay) {
+      notes.push('on_fire is the launch WAV this editor emits: rebuilt from the card');
+    } else if (ourEmitterHandOff) {
+      notes.push('on_fire is the emitter hand-off this editor emits: rebuilt from the card');
+    } else {
+      carriedHookList.push({
+        key: 'on_fire',
+        text: split.hooks.on_fire,
+        line: split.hookLines?.on_fire ?? 0,
+      });
+    }
+  }
+  for (const [key, text] of Object.entries(split.hooks) as [string, string | undefined][]) {
+    if (key === 'on_explode' || key === 'on_fire' || !text) continue;
+    if (key === 'on_shot' && features.project.fireSequence?.enabled) {
+      // `fire_seq` writes its own `on_shot` inside the burst; a second one would
+      // replace it in the claim table.
+      notes.push('not carried: on_shot (the sequential-fire burst owns that key)');
+      continue;
+    }
+    carriedHookList.push({ key, text, line: split.hookLines?.[key as keyof typeof split.hookLines] ?? 0 });
+  }
+  // `wa.on.*` registrations (M6): additive, so they are carried verbatim and in
+  // the bundle's own order, except the ones this editor wrote (M1.5). A
+  // registration is also a *scope*: vortex's `wa.on.draw` reads `cell`, `HOLE`
+  // and `vortices`, so its handler is a seed for the closure like a hook body.
+  const ownCode = ownOutputOf(split);
+  const carriedRegistrations = ownCode.foreign.map((registration) => ({
+    event: registration.event,
+    text: registration.text,
+    line: registration.line,
+  }));
+  // Read the module itself before anything is carried out of it: a bundle whose
+  // own code would desync a match or fail at load is worth saying out loud at
+  // import, not discovering in game. The rules are `wfcheck`'s.
+  const luaFindings = checkLua(moduleText, { mode: 'module' });
+  if (luaFindings.length > 0) {
+    const blocking = luaFindings.filter((finding) => finding.severity === 'error').length;
+    const kinds = [...new Set(luaFindings.map((finding) => finding.rule))].join(', ');
+    // `error` only: `pairs()` is an advisory and trig in a draw callback is a
+    // warning, the compiler's own levels. Calling an advisory "blocking" made a
+    // paint-only draw file read as broken at import.
+    notes.push(
+      `lua: ${luaFindings.length} finding${luaFindings.length === 1 ? '' : 's'}, ${
+        blocking > 0 ? `${blocking} blocking` : 'nothing blocking'
+      } (${kinds})`,
+    );
+  }
+  const unmodelled = unmodelledClaimKeys(weapon.source, [
+    // The sequential-fire reader reconstructs the burst inside `on_fire`, and
+    // M5/M6 carry the hooks themselves: a key either travels with the weapon or
+    // is named here.
+    ...(features.project.fireSequence?.enabled ? ['on_fire'] : []),
+    ...claimAbsorbed,
+    ...carriedHookList.map((hook) => hook.key),
+  ]);
   if (unmodelled.length > 0) {
     notes.push(`not carried: ${unmodelled.join(', ')}`);
   }
+  // What the module is made of, so "the record came across, the code did not"
+  // has a size instead of being a suspicion, and so the part that is *not* lost
+  // is named: the ribbon trail, interval sound and fuse sampler below are this
+  // editor's own emission, and a panel writes them again on export (M1.5 of the
+  // plan). Carrying them as foreign code would ship two of each.
+  const moduleParts = [
+    split.preamble.length > 0 ? `${split.preamble.length} module-level declaration(s)` : '',
+    split.install ? `${split.install.statements.length} install statement(s)` : '',
+  ].filter(Boolean);
+  const hookCount = Object.keys(split.hooks).length;
+  if (moduleParts.length > 0 || hookCount > 0) {
+    notes.push(
+      `module code: ${moduleParts.join(', ')}${hookCount > 0 ? `${moduleParts.length > 0 ? ', ' : ''}${hookCount} claim hook(s)` : ''}`,
+    );
+  }
+  const own = ownOutputOf(split);
+  if (split.registrations.length > 0) {
+    const panels = [...new Set(own.own.map(({ emission }) => emission.panel))];
+    const parts: string[] = [];
+    if (own.own.length > 0) {
+      parts.push(`${own.own.length} rebuilt from the panels (${panels.join(', ')})`);
+    }
+    if (own.foreign.length > 0) {
+      const events = [...new Set(own.foreign.map((registration) => registration.event))];
+      parts.push(`${own.foreign.length} not modelled (${events.join(', ')})`);
+    }
+    notes.push(`wa.on handlers: ${parts.join('; ')}`);
+  }
 
-  return {
-    replaceProject: true,
-    project: {
-      ...project,
-      ...features.project,
+  const nextProject: Partial<WeaponProject> = {
+    ...project,
+    ...features.project,
+    // Carried art lands here (`customSprites` is what the exporter writes and
+    // `mod.toml` declares), so the map has to exist even when the project this
+    // import started from did not carry one.
+    customSprites: { ...(project.customSprites ?? {}) },
       fireType: isMelee ? 'melee' : (project.fireType ?? 'power'),
       id,
       name,
@@ -232,9 +366,173 @@ export async function importBundleWeapon(
       // The module's own callbacks are not carried (`features.project` only
       // extracts the custom part of `on_explode`); anything else would need
       // that bundle's libraries to run.
-      enableCustomLua: features.project.enableCustomLua ?? false,
-      customLuaSnippet: features.project.customLuaSnippet ?? '',
-    },
-    notes,
+    enableCustomLua: features.project.enableCustomLua ?? false,
+    customLuaSnippet: features.project.customLuaSnippet ?? '',
   };
+
+  // ---- the code the carried hooks close over (M2 and M3) -------------------
+  // Carrying the hook body alone was the plan's first defect: pulsar's
+  // `on_explode` writes `aura[ev.missile] = nil` and vector's calls
+  // `start_vortex`, and neither name existed in the export. The closure is
+  // resolved against the module, the names the emitted file already binds come
+  // from the generator itself, and each hook body is rewritten the same way its
+  // declarations are, so the two always agree.
+  //
+  // The hooks themselves are M5's: they are the bundle's, not the author's
+  // snippet, so they travel in `carriedLua` and the custom Lua box stays what
+  // the user typed into it.
+  // Art paths the carried text names, each with the path it came from, so the
+  // file can be read out of the bundle it was in.
+  const carriedPaths: { source: string; target: string }[] = [];
+  if (carriedHookList.length > 0) {
+    const seeds = [
+      ...carriedHookList.map((hook) => ({ label: hook.key, text: hook.text })),
+      ...carriedRegistrations.map((registration) => ({
+        label: `wa.on.${registration.event}`,
+        text: registration.text,
+      })),
+    ];
+    let reserved = new Map<string, string>();
+    let emitted = '';
+    try {
+      // The generator on the project *without* its carried blocks: the names it
+      // binds do not depend on them, so this is what the export will declare.
+      emitted = generateLuaCode(nextProject as WeaponProject);
+      reserved = declaredNames(emitted);
+    } catch {
+      // A project too incomplete to generate is already reported elsewhere; the
+      // carry then keeps every block, which `checkLua` on the export will show.
+      reserved = new Map();
+    }
+    const carried = carryClosure(
+      seeds,
+      split,
+      reserved,
+      sanitizeModFolder(id),
+      emitted,
+    );
+    carriedPaths.push(...carried.paths);
+    nextProject.carriedLua = {
+      preamble: carried.preamble,
+      prologue: carried.prologue,
+      hooks: carriedHookList.map((hook) => ({
+        ...hook,
+        text: carried.transform(hook.text).text,
+      })),
+      registrations: carriedRegistrations.map((registration) => ({
+        ...registration,
+        text: carried.transform(registration.text).text,
+      })),
+      unresolved: carried.unresolved,
+      origin: weapon.bundleId,
+    };
+    const requires = carried.preamble.reduce((sum, block) => sum + block.requires.length, 0);
+    const helpers = carried.preamble.length + carried.prologue.length - requires;
+    if (helpers > 0 || requires > 0) {
+      notes.push(
+        `carried: ${helpers} declaration(s)${requires > 0 ? `, ${requires} require(s)` : ''} the hook closes over`,
+      );
+    }
+    if (carried.renames.length > 0) {
+      notes.push(
+        `renamed in carried code: ${carried.renames
+          .map((rename) => `${rename.from} -> ${rename.to} (the file binds ${rename.from} to ${rename.kept})`)
+          .join(', ')}`,
+      );
+    }
+    if (carried.rewrites.length > 0) {
+      notes.push(`lockstep: ${[...new Set(carried.rewrites)].join(', ')} in carried code`);
+    }
+    if (carried.pathRewrites > 0) {
+      notes.push(
+        `carried code names the bundle's own art: ${carried.pathRewrites} path(s) moved to sprites/${sanitizeModFolder(id)}/ and sounds/${sanitizeModFolder(id)}/`,
+      );
+    }
+    if (carried.floatRandom) {
+      notes.push(
+        'lockstep: `math.random()` with no arguments has no `wa.random` equivalent (that form is the raw draw), so it is left as it is',
+      );
+    }
+    if (carried.unresolved.length > 0) {
+      notes.push(
+        `carried code reads ${carried.unresolved.join(', ')}, which the bundle does not declare: those are nils when the hook runs`,
+      );
+    }
+    for (const refused of carried.refused) notes.push(`not carried: ${refused}`);
+    notes.push(...carried.notes);
+    // A carried `require` needs its own dependency in `mod.toml`: the export
+    // ships our SDK folders, but the engine resolves `wf-lib/effects/*` through
+    // `effects.sdk` and `wf-lib/electric/*` through `px.electric`.
+    if (carried.dependencies.length > 0) {
+      const existing = new Set(nextProject.extraDependencies ?? []);
+      const added = carried.dependencies.filter((dependency) => !existing.has(dependency));
+      if (added.length > 0) {
+        nextProject.extraDependencies = [...(nextProject.extraDependencies ?? []), ...added];
+        notes.push(`dependencies: ${added.join(', ')} (a carried require needs it)`);
+      }
+    }
+  }
+
+  // ---- the art the carried code names ------------------------------------
+  // A carried `sprite = "sprites/<mod>/blackhole.png"` is only half the story:
+  // `wa.draw.quad{ sprite = path }` resolves a pack path through the claim's
+  // `sprites` list, the engine slices a declared strip by `frames`, and the zip
+  // has to carry the file. All three come from the bundle's own
+  // `[sprites."…"]` declaration, so nothing here invents a frame count.
+  const artPaths = [...new Map(carriedPaths.map((path) => [path.target, path])).values()];
+  if (artPaths.length > 0) {
+    const art: CarriedLuaArt = { sprites: [], sounds: [] };
+    const soundFiles: { path: string; file: File }[] = [];
+    for (const { source, target } of artPaths) {
+      const isSprite = target.startsWith('sprites/');
+      const asset = await readAsset(files, weapon.bundleDir, source);
+      if (isSprite) {
+        art.sprites.push(target);
+        if (!asset) {
+          notes.push(`carried code names ${target}, which is not in the bundle: the sprite will not load`);
+          continue;
+        }
+        if (nextProject.customSprites![target]) continue;
+        // The declaration is the source bundle's `[sprites."…"]` table, matched
+        // by file name: the carried text has already been moved to the export's
+        // folder, so the key it came from is the old one.
+        const base = target.split('/').pop() ?? target;
+        const decl =
+          Object.entries(weapon.spriteDecls).find(([key]) => key.split('/').pop() === base)?.[1] ?? {};
+        const frames = typeof decl.frames === 'number' ? decl.frames : 1;
+        const fps = typeof decl.fps === 'number' ? decl.fps : 15;
+        const play = decl.play === 'pingpong' ? 'pingpong' : 'loop';
+        nextProject.customSprites![target] = {
+          purpose: 'trail',
+          name: target.split('/').pop() ?? target,
+          path: target,
+          file: asset.file,
+          previewUrl: asset.preview,
+          frames,
+          fps,
+          play,
+        };
+        continue;
+      }
+      art.sounds.push(target);
+      // A sound the export already writes under one of the four roles needs no
+      // second copy: `customSoundPath` names exactly that file.
+      const rolePaths = (['launch', 'explosion', 'interval', 'shot'] as const)
+        .map((role) => customSoundPath(nextProject as WeaponProject, role))
+        .filter((path): path is string => !!path);
+      if (rolePaths.includes(target)) continue;
+      if (asset) soundFiles.push({ path: target, file: asset.file });
+      else notes.push(`carried code plays ${target}, which is not in the bundle: the sample will not load`);
+    }
+    if (soundFiles.length > 0) art.soundFiles = soundFiles;
+    nextProject.carriedLua = { ...nextProject.carriedLua!, art };
+    if (art.sprites.length > 0 || art.sounds.length > 0) {
+      notes.push(
+        `carried art: ${art.sprites.length} sheet(s), ${art.sounds.length} sound(s) declared for the claim`,
+      );
+    }
+  }
+
+  return { replaceProject: true, project: nextProject, notes };
 }
+

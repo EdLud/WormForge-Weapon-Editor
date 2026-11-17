@@ -507,6 +507,14 @@ export interface RibbonTrailConfig {
   coreWidth: number;
   /** Glow pass width in pixels (`glow_w`); 0 draws the core only. */
   glowWidth: number;
+  /**
+   * Lateral jitter in pixels (`noise`). The ribbon is displaced along the
+   * local normal by a fixed noise table, which is how PX's arcs crackle; 0 is
+   * a straight trail.
+   */
+  noise: number;
+  /** Cycle the hue along the ribbon (`rainbow`), PX's SetRainbowMode. */
+  rainbow: boolean;
   /** Hex colour, e.g. `#ff8800` (`r`, `g`, `b`). */
   color: string;
   /**
@@ -645,6 +653,8 @@ export interface ExplosionEffectConfig {
   /** Ring radius in game pixels. */
   radius: number;
   color: string;
+  /** Cycle the hue while the burst lives (`rainbow`). */
+  rainbow: boolean;
   /** Beam half-width of both passes (`thickness`). */
   thickness: number;
   /**
@@ -669,6 +679,90 @@ export interface ExplosionEffectConfig {
   /** Re-noise and recolour halfway through, as the electric explosion does. */
   rebuffer: boolean;
   smoke: boolean;
+}
+
+/**
+ * A ring the emitter draws (`fx.ring`): PX's type 2 effect manager. It can be
+ * squashed into an ellipse ("bent") and spun, so a railgun's ring reads as a
+ * projectile travelling with the round rather than a flat blast.
+ */
+export interface EmitterRingConfig {
+  enabled: boolean;
+  radius: number;
+  segments: number;
+  /** Radial jitter in pixels. */
+  noise: number;
+  /** Spin per game frame, in degrees (the generator converts to radians). */
+  speed: number;
+  /** Start angle in degrees, clockwise. */
+  angle: number;
+  coreWidth: number;
+  glowWidth: number;
+  /** Taper the pass to a point at both ends (PX's thin spin). */
+  thin: boolean;
+  /** Ellipse radii multipliers; 1, 1 is a circle. */
+  ellipseX: number;
+  ellipseY: number;
+  /**
+   * Point the bend along the owner's heading (`atan2(vy, vx)`) instead of a fixed
+   * start angle, so a lens ring faces where the round is going. `angle` becomes
+   * an offset from that heading and `speed` is not applied while tracking.
+   */
+  track: boolean;
+  color: string;
+  rainbow: boolean;
+}
+
+/** The emitter's own ribbon (`fx.emitter{ trail = ... }`). */
+export interface EmitterTrailConfig {
+  enabled: boolean;
+  max: number;
+  every: number;
+  noise: number;
+  coreWidth: number;
+  glowWidth: number;
+  color: string;
+  rainbow: boolean;
+}
+
+/**
+ * PX's effect manager as a live emitter (`fx.emitter`). It is a hidden actor
+ * that draws sparks, a glow and short reach bolts, optionally a ring and a
+ * ribbon, at a point that follows the fired round or the worm's aim.
+ */
+export interface EmitterConfig {
+  enabled: boolean;
+  /** `round` rides the fired projectile; `muzzle` sits at the worm's aim. */
+  anchor: 'round' | 'muzzle';
+  /**
+   * Muzzle only: once the round exists, the emitter follows it instead of the
+   * worm, which is how PX hands its aiming effect to the spawned missile.
+   */
+  carry: boolean;
+  /** Offset along the anchor's direction, in pixels. */
+  offsetX: number;
+  /** Offset across the anchor's direction, in pixels. */
+  offsetY: number;
+  /** Which reach preset the numbers below started from. */
+  preset: 'electric' | 'thunder';
+  spark: boolean;
+  glow: boolean;
+  /** Short bolts that jump out every cooldown (`reach`). */
+  reach: boolean;
+  reachCount: number;
+  reachDistance: number;
+  reachSpeed: number;
+  reachCurve: 'px' | 'arc' | 'bezier' | 'line';
+  reachBulge: number;
+  reachNoise: number;
+  reachSegments: number;
+  reachCoreWidth: number;
+  reachGlowWidth: number;
+  color: string;
+  ring: EmitterRingConfig;
+  trail: EmitterTrailConfig;
+  /** Colour every part from the hue clock, PX's SetRainbowMode. */
+  rainbow: boolean;
 }
 
 /**
@@ -946,6 +1040,12 @@ export interface WeaponProject {
   ribbonTrail: RibbonTrailConfig;
   /** Effects-SDK explosion burst, added to or replacing WA's own blast. */
   explosionEffect: ExplosionEffectConfig;
+  /**
+   * PX's effect manager as a live emitter: a ring, sparks, bolts and a ribbon
+   * at a point that follows the muzzle or the fired round (`fx.emitter`).
+   * Optional, so an older saved project needs no migration.
+   */
+  emitter?: EmitterConfig;
   /** `wa.land.stamp`: the round's picture burned into the terrain. Optional for
    *  older projects, which need no migration. */
   terrainStamp?: TerrainStampConfig;
@@ -964,6 +1064,15 @@ export interface WeaponProject {
   // Custom Lua toggle and code additions (e.g. on_explode callback)
   enableCustomLua: boolean;
   customLuaSnippet?: string;
+  /**
+   * Declarations carried from an imported bundle: the module-level preamble
+   * (requires, constants, helpers, M2 of `reqs/custom_code_import_plan.md`) and
+   * the install-time locals (M3) that the carried hooks close over. Emitted
+   * verbatim: the preamble before `return {`, the prologue at the end of
+   * `install` and before the claim, so a hook body that calls `start_vortex`
+   * finds it. Optional, so an older saved project needs no migration.
+   */
+  carriedLua?: CarriedLua;
   // Imported Project X `.wep`. `wep` and `copy_from` are mutually exclusive;
   // when `useWepFile` is true the generator emits `wep = "weps/<file>.wep"`
   // and the exporter copies the original file into the bundle.
@@ -983,6 +1092,70 @@ export interface WeaponProject {
    * are left to it and only real edits are written.
    */
   donorBaseline?: WepBaseline;
+}
+
+/** A `wa.on.*` call carried verbatim, filter included. */
+export interface CarriedLuaRegistration {
+  /** The event, without the `wa.on.` prefix. */
+  event: string;
+  /** The whole call, `wa.on.draw(function() ... end)` and its options table. */
+  text: string;
+  /** 1-based line in the source module. */
+  line: number;
+}
+
+export interface CarriedLuaArt {
+  /** Sprite paths the carried code names, already moved to the export's folder. */
+  sprites: string[];
+  /** Sound paths the carried code plays, already moved to the export's folder. */
+  sounds: string[];
+  /** A sound the export does not write under a role, carried as its own file. */
+  soundFiles?: { path: string; file: File }[];
+}
+
+/** One declaration carried out of a bundle, verbatim apart from its rewrites. */
+export interface CarriedLuaBlock {
+  /** `preamble` sits at module level, `prologue` at the top of the install body. */
+  origin: 'preamble' | 'prologue';
+  text: string;
+  /** Names it declares, so a re-import can rebuild the closure without guessing. */
+  declares: string[];
+  /** Bundle module ids it requires. */
+  requires: string[];
+  /** 1-based line in the source module, for the panel and the notes. */
+  line: number;
+  /** The names that pulled it into the closure. */
+  neededBy: string[];
+}
+
+/** A claim hook carried from a bundle, as the function literal it was. */
+export interface CarriedLuaHook {
+  /** The engine's claim key: `on_explode`, `on_fire`, `on_click`, ... */
+  key: string;
+  /** The literal, verbatim (`function(ev) ... end` or `{ on = function(ev) ... end }`). */
+  text: string;
+  /** 1-based line in the source module, for the notes and the panel. */
+  line: number;
+}
+
+export interface CarriedLua {
+  preamble: CarriedLuaBlock[];
+  prologue: CarriedLuaBlock[];
+  /**
+   * Claim hooks the bundle has and the editor does not model (M5/M6). The
+   * mergeable ones (`on_explode`, `on_fire`) are inlined into the handler the
+   * editor emits, between its `before` and `after` parts; the rest are written as
+   * the claim key itself.
+   */
+  hooks?: CarriedLuaHook[];
+  /** `wa.on.*` calls carried verbatim, in the bundle's order (M6). */
+  registrations?: CarriedLuaRegistration[];
+  /** Bundle art the carried code names, so the claim lists and the zip carry it. */
+  art?: CarriedLuaArt;
+  /** Names a carried block reads that nothing in the bundle declares. */
+  unresolved: string[];
+  /** The bundle it came from, for the import summary. */
+  origin?: string;
 }
 
 export interface SimulationWorm {

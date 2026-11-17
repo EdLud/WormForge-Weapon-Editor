@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Play, Pause, RotateCcw } from 'lucide-react';
 import type { RibbonTrailConfig } from '../types/weapon';
 import { assetUrl } from '../utils/assetUrl';
+import { tintedSheet } from '../utils/sheetTint';
 import frozenWormSrc from '../../spec/wicestnd.png';
 
 const TICK_MS = 20; // 50 Hz WormForge simulation tick
@@ -10,19 +11,6 @@ const TRAIL_SHEETS = {
   beam: assetUrl('assets/effects/beam.png'),
   glow: assetUrl('assets/effects/beam_glow.png'),
 };
-
-function tintedSheet(image: HTMLImageElement, color: string): HTMLCanvasElement {
-  const canvas = document.createElement('canvas');
-  canvas.width = image.naturalWidth || image.width;
-  canvas.height = image.naturalHeight || image.height;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return canvas;
-  ctx.drawImage(image, 0, 0);
-  ctx.globalCompositeOperation = 'multiply';
-  ctx.fillStyle = /^#[0-9a-f]{6}$/i.test(color.trim()) ? color : '#ffffff';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  return canvas;
-}
 
 interface RibbonTrailPreviewProps {
   config: RibbonTrailConfig;

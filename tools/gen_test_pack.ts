@@ -60,6 +60,7 @@ import { stockDonor } from '../src/data/stockDonors';
 import { DEFAULT_CUSTOM_SOUNDS } from '../src/data/soundPresets';
 import { DEFAULT_FIRE_SEQUENCE } from '../src/data/fireSequence';
 import { DEFAULT_TERRAIN_STAMP, STAMP_FRAMES } from '../src/data/terrainStamp';
+import { DEFAULT_EMITTER, DEFAULT_EMITTER_RING, DEFAULT_EMITTER_TRAIL } from '../src/data/emitter';
 import { DEFAULT_AIM_CLIP } from '../src/data/aimClip';
 import { DEFAULT_MELEE } from '../src/data/melee';
 import {
@@ -497,6 +498,8 @@ const DEFAULTS = {
     vanish: 2,
     coreWidth: 8,
     glowWidth: 13,
+    noise: 0,
+    rainbow: false,
     color: '#ffffff',
     target: 'main' as RibbonTrailConfig['target'],
   },
@@ -544,6 +547,8 @@ function makeOp(partial: {
   melee?: Partial<NonNullable<WeaponProject['melee']>>;
   /** `wa.land.stamp` picture burned into the terrain (`terrainStamp`). */
   terrainStamp?: Partial<WeaponProject['terrainStamp']>;
+  /** PX's effect manager as a live emitter (`fx.emitter`). */
+  emitter?: Partial<NonNullable<WeaponProject['emitter']>>;
   defaults?: Partial<WeaponProject['defaults']>;
 }): WeaponProject {
   return {
@@ -618,6 +623,7 @@ function makeOp(partial: {
     ribbonTrail: { ...DEFAULTS.ribbon, ...partial.trailer },
     explosionEffect: { ...DEFAULT_EXPLOSION_EFFECT, ...partial.explosion },
     terrainStamp: { ...DEFAULT_TERRAIN_STAMP, ...partial.terrainStamp },
+    emitter: { ...DEFAULT_EMITTER, ...partial.emitter },
     customSounds: { ...DEFAULT_CUSTOM_SOUNDS, ...partial.customSounds },
     fireSequence: { ...DEFAULT_FIRE_SEQUENCE, ...partial.fireSequence },
     extraDependencies: [],
@@ -2139,6 +2145,81 @@ const TESTS: TestCase[] = [
     expect: 'One orange ring where the bomb bursts; five silent bit blasts, no rings.',
     watch:
       'Six rings (the guard not emitted, or `sb.role` returning nil for the bits), no ring at all (the guard reading the round as a bit: `sb.role` must answer "main"), or the bits` own blast silenced (the burst in `blast` mode, where the record is zeroed for every missile).',
+  },
+  {
+    project: makeOp({
+      id: 'wftest.56_emitter_ring',
+      name: 'WF 56 Emitter Ring',
+      slot: 'grenade',
+      // The aim the muzzle offset is measured along: the held art has to be on
+      // for a muzzle emitter to read against anything.
+      hold: {
+        enabled: true,
+        handType: 'mid',
+        handRadius: 10,
+        weapRadius: -6,
+        weapRotation: 0,
+        scale: 1,
+        frames: 1,
+        drawHand: true,
+        thrown: false,
+        putAway: true,
+      },
+      emitter: {
+        enabled: true,
+        // PX's railgun: the ring sits at the muzzle while aiming and then rides
+        // the round it fired (`weaponEffect->targetObj`).
+        anchor: 'muzzle',
+        carry: true,
+        offsetX: 25,
+        offsetY: 0,
+        preset: 'electric',
+        spark: true,
+        glow: true,
+        reach: true,
+        reachCount: 2,
+        reachDistance: 22,
+        reachSpeed: 14,
+        reachCurve: 'arc',
+        reachBulge: 60,
+        reachNoise: 4,
+        reachSegments: 14,
+        reachCoreWidth: 6,
+        reachGlowWidth: 12,
+        color: '#8fc4ff',
+        ring: {
+          ...DEFAULT_EMITTER_RING,
+          enabled: true,
+          radius: 26,
+          segments: 22,
+          noise: 0.9,
+          speed: 4,
+          ellipseX: 1.2,
+          ellipseY: 0.45,
+          // The lens turns with the grenade: the bend follows the round's
+          // velocity, which is the whole reason the switch exists.
+          track: true,
+          color: '#a9d7ff',
+        },
+        trail: {
+          ...DEFAULT_EMITTER_TRAIL,
+          enabled: true,
+          max: 14,
+          every: 2,
+          noise: 1.5,
+          coreWidth: 5,
+          glowWidth: 11,
+          color: '#8fc4ff',
+        },
+        rainbow: false,
+      },
+    }),
+    intent:
+      'PX`s effect manager as a live emitter (`fx.emitter`). It rides the muzzle while the turn`s worm aims with this weapon (a `FRAME_FINISH` worm message, at PX`s 25 px along the fire angle), and when WA writes the grenade`s first missile frame the emitter is handed to it (`emitter_round`, keyed by `m.id`). The claim writes no `on_fire`: that would replace WA`s shot. The ring is bent into PX`s lens (`ellipse = { 1.2, 0.45 }`), spins while aiming, and tracks the round`s heading in flight (`track = true`), so the lens faces the way the grenade is going. The emitter carries its own short ribbon, which needs `fx.install{ trail = true }` even though the round has no trail card.',
+    expect:
+      'Select the weapon: a bent, spinning ring with sparks and two short crackling bolts sits just in front of the held grenade and follows the aim as the mouse moves. Press Space: the grenade leaves the worm (WA fires it) and the ring travels with it, its long axis turning through the arc to stay along the flight, leaving a thin ribbon, and it ends with the grenade`s blast. Aiming away, or another weapon selected, and it is gone.',
+    watch:
+      'Nothing at all, and the log says `attempt to index a boolean value (local `src`)` (an older `effects.sdk` whose `merge` indexes `spark = true` as a table: this is what 0.3.5 does, so the bundle needs 0.4.2), no ring while aiming (the `FRAME_FINISH` registration missing, or `w.weapon == ctx.id` never true: the worm`s selected weapon is the id, not the slot), no grenade at all on Space (the claim has an `on_fire`: it replaces WA`s shot, so the emitter must never write one), the ring stuck at the spot it appeared (the muzzle handler not calling `move_to`, or the SDK`s ring not following its emitter), the ring staying behind after the shot (the `missile_frame` latch did not set `EMITTER.follow`), a ring left on the map after the grenade bursts (the follower returning a stale point instead of nil once the round is gone), a ring drawn flat rather than bent (`ellipse` dropped), a lens that keeps its angle while the grenade arcs (`track` dropped, so `angle + speed * t` is all there is), a ribbon that leaves no trail (`fx.install{ trail = false }` because the round trail card is off: the emitter`s ribbon needs the same install), or two emitters at once (a re-import carrying our own `FRAME_FINISH` or `missile_frame` registration as foreign code).',
   },
 ];
 

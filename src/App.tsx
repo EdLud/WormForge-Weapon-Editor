@@ -11,7 +11,8 @@ import { ModBrowserModal } from './components/ModBrowserModal';
 import { LuaPreviewModal } from './components/LuaPreviewModal';
 import { BundleDependencies } from './components/BundleDependencies';
 import { exportModZip, downloadBlob } from './utils/modExporter';
-import { sanitizeModFolder } from './utils/luaGenerator';
+import { generateLuaCode, sanitizeModFolder } from './utils/luaGenerator';
+import { checkLua } from './utils/luaCheck';
 import { rebaseToDonor } from './utils/donorRebase';
 import { DEFAULT_EXPLOSION_EFFECT } from './data/explosionPresets';
 import { DEFAULT_AIM_CLIP } from './data/aimClip';
@@ -92,6 +93,8 @@ const INITIAL_PROJECT: WeaponProject = {
     vanish: 2,
     coreWidth: 8,
     glowWidth: 13,
+    noise: 0,
+    rainbow: false,
     color: '#ffffff',
     target: 'main',
   },
@@ -308,10 +311,22 @@ export default function App() {
   const handleExportZip = async () => {
     setIsExporting(true);
     try {
+      // A bundle import fills the custom Lua box with a callback body the editor
+      // did not write, and that body can read a name nothing declares (a vortex's
+      // `start_vortex`): the file then fails the moment the hook runs. The export
+      // is not blocked, because the author may know better, but the toast says so
+      // instead of letting it be discovered in game.
+      const unresolved = checkLua(generateLuaCode(project))
+        .filter((finding) => finding.notGenerated)
+        .map((finding) => finding.name ?? `line ${finding.line}`);
       const blob = await exportModZip(project);
       const modFolder = sanitizeModFolder(project.id);
       downloadBlob(blob, `${modFolder}.zip`);
-      showToast(`Exported ${modFolder}.zip with mod.toml & profile.`);
+      showToast(
+        unresolved.length > 0
+          ? `Exported ${modFolder}.zip, but the custom Lua reads ${[...new Set(unresolved)].join(', ')} and nothing declares it: that hook fails at load (Bundle & Export).`
+          : `Exported ${modFolder}.zip with mod.toml & profile.`,
+      );
     } catch (err: any) {
       alert(`Export failed: ${err.message || String(err)}`);
     } finally {
@@ -338,7 +353,7 @@ export default function App() {
     effects: {
       eyebrow: 'Effects & Libraries',
       title: 'Advanced libraries',
-      description: 'Ribbon trail, explosion burst, custom sounds and sequential fire.',
+      description: 'Ribbon trail, explosion burst, emitter, custom sounds and sequential fire.',
     },
     code: {
       eyebrow: 'Bundle Code',
