@@ -462,33 +462,40 @@ The editor ships `spec/lua_sdk/wfws_sdk/` (id `wfws.sdk`), exporting
   (`fx.emitter`), drawn by the SDK's hidden driver: a spark, a glow, short reach
   bolts, an optional ring and an optional ribbon at one point. **`anchor` is
   `muzzle` or `round`.** A *muzzle* emitter is moved from a
-  `wa.on.worm_message` filtered to `FRAME_FINISH` while `w.turn and w.weapon ==
-  ctx.id` and the weapon is out (`w.aiming`, or the firing/fired states), at
-  PX's `curDist` offset along the fire angle (`worm.aim` is WA's 0..1 sweep and
-  `worm.facing` the side, the same vector the held art is drawn at); `carry`
-  hands it to the round once WA writes the missile's first frame, otherwise it
-  is an aiming effect that ends with the aim. A *round* emitter is created on
-  that first `wa.on.missile_frame` of this weapon and follows it, latched by
-  `m.id` (counted up per match, never reused, the same on every peer); the
-  follower returns nothing once the round is gone, which ends the emitter, and
-  the next round's first frame re-arms the latch. `round` needs a missile WA
-  builds from the record, so a placed mine (a mine entity) and a strike (its
-  bombs have no `m.weapon`) fall back to `muzzle`. **The emitter writes no
-  `on_fire`**: a claim `on_fire` replaces WA's shot (the engine's
-  `CreateWeaponProjectile` hook returns before WA builds the missile), so the
-  hand-off that used to live there left the worm firing nothing at all. The
-  round latch is the `missile_frame` registration, which runs on the missile WA
-  did build. The ring can be
+  `wa.on.worm_message` filtered to `FRAME_FINISH` (deduplicated once per 50 Hz
+  tick via `EMITTER_FRAME = wa.world.frame()` and scanning `wa.worms.all()` for
+  the living turn worm rather than reading the callback parameter or using
+  `body_move`, since `body_move` only fires when WA steps a moving body and
+  made standing-still aim wait for Space recoil, while `worm_message` does not
+  reliably pass a worm table with `.turn`), at PX's `curDist` offset along the
+  fire angle (`worm.aim` is WA's 0..1 sweep and `worm.facing` the side, the same
+  vector the held art is drawn at). Its visibility gate follows Hold's **Keep
+  While Firing** (`project.hold.keepWhileFiring`): `w.aiming` only when off (so
+  thrown grenades drop the muzzle emitter as soon as they enter firing/throw),
+  or `w.aiming or w.state == "firing" or w.state == "fired"` when on.
+  Round emitters are tracked independently from the muzzle aim emitter:
+  when `anchor == "round"` or `carry` is on, `wa.on.missile_frame` tracks each
+  fired round by `m.id` in `EMITTER_ROUNDS[m.id]` with its own `emitter_round(id)`
+  closure (`wa.world.frame() - p.seen > 3` cleans up `EMITTER_ROUNDS[id]` and
+  returns `nil`), so firing multiple grenades in flight (e.g. `fire_seq` or
+  multi-shot) spawns one emitter per round without removing or stealing the
+  muzzle aim emitter. `round` needs a missile WA builds from the record, so a
+  placed mine (a mine entity) and a strike (its bombs have no `m.weapon`) fall
+  back to `muzzle`. **The emitter writes no `on_fire`**: a claim `on_fire`
+  replaces WA's shot (the engine's `CreateWeaponProjectile` hook returns before
+  WA builds the missile), so the hand-off that used to live there left the worm
+  firing nothing at all. The round tracker is the `missile_frame` registration,
+  which runs on every missile WA did build. The ring can be
   bent (`ellipse = { x, y }`, PX's `circumference`/`circumferenceSin`), spun and
   tapered (`thin`), and it rides the emitter when it has no `follow` of its own.
   `rainbow` on the emitter reaches every part that does not set one, as PX's
-  single manager switch does. One emitter per weapon: the turn's worm is the only
-  one aiming or firing (§0). `carry` needs a round to be handed to, so the
+  single manager switch does. `carry` needs a round to be spawned for, so the
   generator also requires `emitterRoundOk`: a placed mine with `carry` on used to
-  write the hand-off, and its emitter then followed a missile that never existed
-  for the rest of the match. **The generated `FRAME_FINISH` and `missile_frame`
-  registrations are this editor's own output**: `ownOutput.ts` recognises them,
-  or a re-import would carry them as foreign code and ship two emitters.
+  write the round tracker, and its emitter could never follow a mine entity.
+  **The generated `FRAME_FINISH` (and legacy `body_move`) and `missile_frame`
+  registrations are this editor's own output**: `ownOutput.ts` recognises them
+  (both `EMITTER_ROUNDS` and legacy `EMITTER_ROUND`), or a re-import would carry
+  them as foreign code and ship duplicate emitters.
   **The emitter's ribbon needs `fx.install{ trail = true }`**, which is what calls
   `trail.install()` and so registers the hook that *draws* a ribbon; the
   generator sets that flag when either the round's trail card or the emitter's own

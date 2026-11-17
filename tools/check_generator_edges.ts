@@ -399,8 +399,19 @@ const makeProject = (patch: Partial<WeaponProject> = {}): WeaponProject => {
       muzzle.includes('EMITTER:move_to(x, y)'),
   );
   check(
-    'it is active while the turn worm has the weapon selected',
-    muzzle.includes('not (w and w.weapon == ctx.id)'),
+    'by default it only shows while the worm is aiming',
+    muzzle.includes('local held = w and w.weapon == ctx.id and (w.aiming)') &&
+      !muzzle.includes('w.state == "firing"'),
+  );
+  const keepFiringMuzzle = generateLuaCode(
+    makeProject({
+      hold: { ...makeProject().hold, keepWhileFiring: true },
+      emitter: { ...DEFAULT_EMITTER, enabled: true, anchor: 'muzzle' },
+    }),
+  );
+  check(
+    'with keepWhileFiring on it also stays through firing/fired frames',
+    keepFiringMuzzle.includes('w.aiming or w.state == "firing" or w.state == "fired"'),
   );
   check(
     'and it spawns an independent emitter per round without dropping the aim emitter',

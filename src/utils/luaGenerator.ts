@@ -240,6 +240,8 @@ interface EmitterEmitOptions {
   carries: boolean;
   /** The family has a missile to follow. */
   roundOk: boolean;
+  /** Muzzle only: keep the emitter visible on firing/fired worm states too. */
+  keepWhileFiring: boolean;
 }
 
 /**
@@ -253,7 +255,8 @@ interface EmitterEmitOptions {
  * `wa.msg.FRAME_FINISH` (scanning `wa.worms.all()` for the turn worm, since
  * `body_move` only fires when a body moves and `worm_message` callbacks do not
  * reliably receive a worm table) keeps one aim emitter at the muzzle while the
- * turn's worm holds the weapon, and `wa.on.missile_frame` spawns an independent
+ * turn's worm aims with the weapon (and through firing frames when
+ * `keepWhileFiring` is on), and `wa.on.missile_frame` spawns an independent
  * emitter per fired round (`EMITTER_ROUNDS[m.id]`). Both are simulation
  * callbacks, so a replay draws the same emitters on the same frames. The claim
  * writes no `on_fire`: that key replaces WA's shot, so a hand-off from it
@@ -445,7 +448,11 @@ function emitEmitterBlock(
     lines.push('      for _, c in ipairs(wa.worms.all()) do');
     lines.push('        if c.turn and (c.hp == nil or c.hp > 0) then w = c; break end');
     lines.push('      end');
-    lines.push('      if not (w and w.weapon == ctx.id) then');
+    const heldExpr = o.keepWhileFiring
+      ? 'w.aiming or w.state == "firing" or w.state == "fired"'
+      : 'w.aiming';
+    lines.push(`      local held = w and w.weapon == ctx.id and (${heldExpr})`);
+    lines.push('      if not held then');
     lines.push('        if EMITTER then EMITTER:remove(); EMITTER = nil end');
     lines.push('        return');
     lines.push('      end');
@@ -2008,6 +2015,7 @@ export function generateLuaCode(project: WeaponProject): string {
       anchor: emitterAnchor,
       carries: emitterCarries,
       roundOk: emitterRoundOk,
+      keepWhileFiring: !!project.hold?.keepWhileFiring,
     });
   }
   if (usesHoldLocal) {

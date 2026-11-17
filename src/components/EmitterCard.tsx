@@ -210,7 +210,7 @@ export function EmitterCard({ project, onChange }: CardProps) {
             <TooltipLabel
               label="Anchor"
               code="FRAME_FINISH / missile_frame"
-              desc="Round rides the missile WA fires from this record, adopted on its first missile frame. Muzzle sits on the worm's own fire angle (PX's curDist offset) while the turn's worm has this weapon selected, so the effect follows the aim. No on_fire is written: that key would replace WA's shot."
+              desc="Round rides the missile WA fires from this record, adopted on its first missile frame. Muzzle sits on the worm's own fire angle (PX's curDist offset) while the turn's worm is aiming with this weapon (and through firing frames when Keep While Firing is on in Hold). No on_fire is written: that key would replace WA's shot."
             />
             <div className="grid grid-cols-2 gap-1 rounded-xl border border-stone-200 bg-stone-100 p-1 dark:border-stone-800 dark:bg-stone-950/60">
               {(
