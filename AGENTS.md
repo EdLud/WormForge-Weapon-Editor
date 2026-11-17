@@ -469,15 +469,21 @@ The editor ships `spec/lua_sdk/wfws_sdk/` (id `wfws.sdk`), exporting
   made standing-still aim wait for Space recoil, while `worm_message` does not
   reliably pass a worm table with `.turn`),  at PX's `curDist` radial distance (`offsetX`), optional `radialAngle` (degrees
   added to `(w.aim or 0.5) * math.pi` so the muzzle arm sweeps radially around
-  the worm), and facing-symmetric perpendicular `offsetY` (`w.facing * c * Y,
+  the worm), facing-symmetric perpendicular `offsetY` (`w.facing * c * Y,
   -s * Y`) along the fire angle (`worm.aim` is WA's 0..1 sweep and `worm.facing`
-  the side, the same vector the held art is drawn at). Its visibility gate
+  the side, the same vector the held art is drawn at), and pure Cartesian
+  positional offsets `(posX, posY)` (`w.facing * posX` on the muzzle, `posX` on
+  rounds, and `posY` without aim-angle trig). Setting `projectileExclusive`
+  disables the muzzle aim emitter completely (`wa.on.worm_message` and
+  `emitter_muzzle` are omitted) so the effect only appears on fired projectiles
+  for missile-capable families (placed mines/strikes still fall back to
+  muzzle). Its muzzle visibility gate
   follows Hold's **Keep While Firing** (`project.hold.keepWhileFiring`):
   `w.aiming` only when off (so thrown grenades drop the muzzle emitter as soon
   as they enter firing/throw), or `w.aiming or w.state == "firing" or w.state ==
   "fired"` when on.
   Round emitters are tracked independently from the muzzle aim emitter:
-  when `anchor == "round"` or `carry` is on, `wa.on.missile_frame` tracks each
+  when `anchor == "round"`, `carry`, or `projectileExclusive` is on, `wa.on.missile_frame` tracks each
   fired round by `m.id` in `EMITTER_ROUNDS[m.id]` with its own `emitter_round(id)`
   closure (`wa.world.frame() - p.seen > 3` cleans up `EMITTER_ROUNDS[id]` and
   returns `nil`), so firing multiple grenades in flight (e.g. `fire_seq` or
@@ -491,12 +497,18 @@ The editor ships `spec/lua_sdk/wfws_sdk/` (id `wfws.sdk`), exporting
   which runs on every missile WA did build. The ring can be
   bent (`ellipse = { x, y }`, PX's `circumference`/`circumferenceSin`), spun and
   tapered (`thin`), and it rides the emitter when it has no `follow` of its own.
-  Matching `px_effects.c` (`cosRot = cos(currentAngle)`, `sinRot =
+  By default (**`followFireAngle`**, opt-out via `follow_fire_angle = false`),
+  the ring's angle follows the owner worm's world fire angle
+  `emitter_fire_angle(w)` (`wa.math.atan(wa.math.cos(fa), w.facing * wa.math.sin(fa))`)
+  live on `EMITTER.ring.angle` during aiming (plus accumulated `EMITTER_SPIN`
+  when `ring.speed ~= 0`) and initializes projectile `spec.ring.angle` at
+  spawn when `ring.track` is off (since `ring.track` overrides the angle along
+  velocity every frame). Matching `px_effects.c` (`cosRot = cos(currentAngle)`, `sinRot =
   sin(currentAngle)`), `draw_ring` in both `px_effects.lua` and `EmitterPreview`
   computes `(ux, uy) = (cos(u) * ex, sin(u) * ey)` first and then applies the 2D
   rotation `(ux * cos_rot - uy * sin_rot, ux * sin_rot + uy * cos_rot)` so `angle`
-  / `speed` / `track` spin the entire ring/ellipse rather than sliding sample
-  points around an axis-aligned oval; reach rays (`DrawReachPoint` / `draw_arc`)
+  / `speed` / `track` / `followFireAngle` spin the entire ring/ellipse rather
+  than sliding sample points around an axis-aligned oval; reach rays (`DrawReachPoint` / `draw_arc`)
   remain unrotated in world space.
   `rainbow` on the emitter reaches every part that does not set one, as PX's
   single manager switch does. `carry` needs a round to be spawned for, so the
@@ -528,7 +540,9 @@ The editor ships `spec/lua_sdk/wfws_sdk/` (id `wfws.sdk`), exporting
   offset and `speed` is not applied, because the heading is rewritten every frame.
   The card's **What It Draws** panel is `EmitterPreview`, a 50 Hz playback of the
   SDK's own maths and sheets: the worm's aim strip sweeps the fire angle, the
-  emitter rides the muzzle at `(offsetX, radialAngle, offsetY)`, `on_fire` hands
+  emitter rides the muzzle at `(offsetX, radialAngle, offsetY) + (posX, posY)`,
+  skips aiming frames when `projectileExclusive` is active, rotates the ring by
+  `followFireAngle`, `on_fire` hands
   it to a ballistic round, and the bolts grow on the preset's cooldowns while
   the ring spins and the ribbon samples. It is the only way to see the
   difference between the presets (thunder strikes once from below and holds;

@@ -1111,7 +1111,9 @@ export async function readBundleFeatures(args: {
     // `emitter_muzzle` computes a radial point around the worm's aim angle
     // (`(w.aim or 0.5) * math.pi +/- radialRad`), optionally shifted across the
     // radial arm (`w.facing * c * Y, -s * Y` or legacy `dy * Y, -dx * Y`).
-    const muzzleSource = emitterArgs ? moduleText : '';
+    const muzzleBlockMatch =
+      /local\s+function\s+emitter_muzzle\(w\)([\s\S]*?)\n\s*end\b/.exec(moduleText);
+    const muzzleSource = muzzleBlockMatch?.[1] ?? '';
     const muzzleAngleMatch =
       /local\s+a\s*=\s*\(w\.aim\s+or\s+0\.5\)\s*\*\s*math\.pi(?:\s*([+-])\s*([\d.]+))?/.exec(
         muzzleSource,
@@ -1119,11 +1121,25 @@ export async function readBundleFeatures(args: {
     const radialAngle = muzzleAngleMatch?.[2]
       ? degrees((muzzleAngleMatch[1] === '-' ? -1 : 1) * Number(muzzleAngleMatch[2])) ?? 0
       : 0;
-    const muzzle =
-      /return\s+w\.x\s*\+\s*dx\s*\*\s*(-?[\d.]+)(?:\s*\+\s*w\.facing\s*\*\s*c\s*\*\s*(-?[\d.]+))?[\s\S]*?w\.y\s*\+\s*dy\s*\*\s*(-?[\d.]+)(?:\s*-\s*s\s*\*\s*(-?[\d.]+))?/
-        .exec(muzzleSource) ??
-      /return\s+w\.x\s*\+\s*dx\s*\*\s*(-?[\d.]+)(?:\s*\+\s*dy\s*\*\s*(-?[\d.]+))?[\s\S]*?w\.y\s*\+\s*dy\s*\*\s*(-?[\d.]+)(?:\s*-\s*dx\s*\*\s*(-?[\d.]+))?/
-        .exec(muzzleSource);
+    const muzzleReturnMatch = /return\s+([^\n,]+),\s*\n?\s*([^\n]+)/.exec(muzzleSource);
+    const muzzleXExpr = muzzleReturnMatch?.[1] ?? '';
+    const muzzleYExpr = muzzleReturnMatch?.[2] ?? '';
+    const muzzleOffsetXMatch = /\bdx\s*\*\s*(-?[\d.]+)/.exec(muzzleXExpr);
+    const muzzleOffsetYMatch =
+      /\bw\.facing\s*\*\s*c\s*\*\s*(-?[\d.]+)/.exec(muzzleXExpr) ??
+      /\+\s*dy\s*\*\s*(-?[\d.]+)/.exec(muzzleXExpr);
+    const muzzlePosXMatch = /([+-])\s*w\.facing\s*\*\s*([\d.]+)/.exec(muzzleXExpr);
+    const muzzleYStripped = muzzleYExpr
+      .replace(/w\.y/, '')
+      .replace(/[+-]\s*dy\s*\*\s*-?[\d.]+/, '')
+      .replace(/[+-]\s*(?:s|dx)\s*\*\s*-?[\d.]+/, '');
+    const muzzlePosYMatch = /([+-])\s*([\d.]+)/.exec(muzzleYStripped);
+    const roundReturnMatch =
+      /return\s+p\.x(?:\s*([+-])\s*([\d.]+))?,\s*p\.y(?:\s*([+-])\s*([\d.]+))?,\s*p\.vx,\s*p\.vy/.exec(
+        moduleText,
+      );
+    const signed = (sign?: string, mag?: string): number =>
+      mag === undefined ? 0 : (sign === '-' ? -1 : 1) * Number(mag);
     const anchor: 'round' | 'muzzle' =
       str(t.anchor) === 'round' || /emitter_start\(ev\.worm\.x/.test(moduleText)
         ? 'round'
@@ -1137,9 +1153,25 @@ export async function readBundleFeatures(args: {
       // the hand-off.
       carry:
         t.carry === true || (t.carry === undefined && /EMITTER_CARRIED\s*=\s*true/.test(moduleText)),
-      offsetX: muzzle ? Number(muzzle[1]) : base.offsetX,
-      offsetY: muzzle ? Number(muzzle[2] ?? 0) : base.offsetY,
+      projectileExclusive: t.projectile_exclusive === true,
+      followFireAngle: t.follow_fire_angle !== false,
+      offsetX: muzzleBlockMatch
+        ? muzzleOffsetXMatch
+          ? Number(muzzleOffsetXMatch[1])
+          : 0
+        : base.offsetX,
+      offsetY: muzzleBlockMatch
+        ? muzzleOffsetYMatch
+          ? Number(muzzleOffsetYMatch[1])
+          : 0
+        : base.offsetY,
       radialAngle,
+      posX: muzzleBlockMatch
+        ? signed(muzzlePosXMatch?.[1], muzzlePosXMatch?.[2])
+        : signed(roundReturnMatch?.[1], roundReturnMatch?.[2]),
+      posY: muzzleBlockMatch
+        ? signed(muzzlePosYMatch?.[1], muzzlePosYMatch?.[2])
+        : signed(roundReturnMatch?.[3], roundReturnMatch?.[4]),
       preset: str(t.preset) === 'thunder' ? 'thunder' : 'electric',
       spark: t.spark !== false,
       glow: t.glow !== false,

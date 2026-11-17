@@ -236,8 +236,14 @@ function radians(degrees: number): string {
 interface EmitterEmitOptions {
   /** Where the emitter sits: the fired round, or the worm's muzzle. */
   anchor: 'round' | 'muzzle';
+  /** Muzzle aiming emitter is active (`anchor === 'muzzle' && !projectileExclusive`). */
+  usesAim: boolean;
+  /** Projectile emitter is active (`roundOk && (anchor === 'round' || carry || projectileExclusive)`). */
+  usesRound: boolean;
   /** Muzzle only: hand the emitter to the round the trigger creates. */
   carries: boolean;
+  /** Disable the emitter while aiming so it only appears on fired projectiles. */
+  projectileExclusive: boolean;
   /** The family has a missile to follow. */
   roundOk: boolean;
   /** Muzzle only: keep the emitter visible on firing/fired worm states too. */
@@ -256,11 +262,11 @@ interface EmitterEmitOptions {
  * `body_move` only fires when a body moves and `worm_message` callbacks do not
  * reliably receive a worm table) keeps one aim emitter at the muzzle while the
  * turn's worm aims with the weapon (and through firing frames when
- * `keepWhileFiring` is on), and `wa.on.missile_frame` spawns an independent
- * emitter per fired round (`EMITTER_ROUNDS[m.id]`). Both are simulation
- * callbacks, so a replay draws the same emitters on the same frames. The claim
- * writes no `on_fire`: that key replaces WA's shot, so a hand-off from it
- * fired nothing at all.
+ * `keepWhileFiring` is on) unless `projectileExclusive` is checked, and
+ * `wa.on.missile_frame` spawns an independent emitter per fired round
+ * (`EMITTER_ROUNDS[m.id]`). Both are simulation callbacks, so a replay draws
+ * the same emitters on the same frames. The claim writes no `on_fire`: that key
+ * replaces WA's shot, so a hand-off from it fired nothing at all.
  */
 function emitEmitterBlock(
   lines: string[],
@@ -270,9 +276,36 @@ function emitEmitterBlock(
   const { r, g, b } = hexToRgb(em.color);
   const ringRgb = hexToRgb(em.ring.color);
   const trailRgb = hexToRgb(em.trail.color);
+  const offsetXNum = Number(em.offsetX) || 0;
   const offsetX = formatNumber(em.offsetX);
   const offsetY = formatNumber(em.offsetY);
   const sideOffset = Number(em.offsetY) || 0;
+  const posXNum = Number(em.posX) || 0;
+  const posYNum = Number(em.posY) || 0;
+  const signedTerm = (value: number): string =>
+    value === 0 ? '' : value > 0 ? ` + ${formatNumber(value)}` : ` - ${formatNumber(-value)}`;
+  const muzzlePosXTerm =
+    posXNum === 0
+      ? ''
+      : posXNum > 0
+        ? ` + w.facing * ${formatNumber(posXNum)}`
+        : ` - w.facing * ${formatNumber(-posXNum)}`;
+  const roundPosXTerm = signedTerm(posXNum);
+  const posYTerm = signedTerm(posYNum);
+  const followFireAngle = em.followFireAngle !== false;
+  const hasRing = !!em.ring?.enabled;
+  const ringAngleNum = Number(em.ring?.angle) || 0;
+  const ringSpeedNum = Number(em.ring?.speed) || 0;
+  const ringAngleTerm =
+    ringAngleNum === 0
+      ? ''
+      : ringAngleNum > 0
+        ? ` + ${radians(ringAngleNum)}`
+        : ` - ${radians(-ringAngleNum)}`;
+  const usesFireAngle =
+    followFireAngle && hasRing && (o.usesAim || (o.usesRound && !em.ring.track));
+  const usesSpinAccum =
+    followFireAngle && hasRing && o.usesAim && ringSpeedNum !== 0 && !em.ring.track;
   // PX's reach speed is progress per frame (0.08 = 8%), so the panel's whole
   // percent is divided once here. The library reads a `{ lo, hi }` pair, and one
   // number is a fixed speed.
@@ -282,15 +315,13 @@ function emitEmitterBlock(
   lines.push('    -- sparks, a glow, short reach bolts, a ring and a ribbon at one point.');
   lines.push('    -- The muzzle holds one aim emitter while the weapon is selected, and each');
   lines.push('    -- fired round carries its own emitter keyed by `m.id`.');
-  // Only the paths that spawn emitters on fired rounds need the round map,
-  // and a mine keeps none of it in its file.
-  const usesRound = o.anchor === 'round' || o.carries;
-  if (o.anchor === 'muzzle') {
+  if (o.usesAim) {
     lines.push('    local EMITTER');
     lines.push('    local EMITTER_FRAME');
+    if (usesSpinAccum) lines.push('    local EMITTER_SPIN = 0');
     if (o.carries) lines.push('    local EMITTER_OWNER');
   }
-  if (usesRound) {
+  if (o.usesRound) {
     lines.push('    local EMITTER_ROUNDS = {}');
   }
   lines.push('    local function emitter_for(x, y, owner, follow)');
@@ -298,6 +329,8 @@ function emitEmitterBlock(
   lines.push('        x = x, y = y, owner = owner, follow = follow,');
   lines.push(`        anchor = ${luaQuote(o.anchor)},`);
   lines.push(`        carry = ${o.carries ? 'true' : 'false'},`);
+  if (o.projectileExclusive) lines.push('        projectile_exclusive = true,');
+  if (!followFireAngle) lines.push('        follow_fire_angle = false,');
   lines.push(`        preset = ${luaQuote(em.preset)},`);
   lines.push(`        spark = ${em.spark ? 'true' : 'false'},`);
   lines.push(`        glow = ${em.glow ? 'true' : 'false'},`);
@@ -361,7 +394,14 @@ function emitEmitterBlock(
   if (em.rainbow) lines.push('        rainbow = true,');
   lines.push('      }');
   lines.push('    end');
-  if (o.anchor === 'round' || o.carries) {
+  if (usesFireAngle) {
+    lines.push("    -- Owner's fire angle in world/ring radians (`atan2(dy, dx)`).");
+    lines.push('    local function emitter_fire_angle(w)');
+    lines.push('      local fa = (w.aim or 0.5) * math.pi');
+    lines.push('      return wa.math.atan(wa.math.cos(fa), w.facing * wa.math.sin(fa))');
+    lines.push('    end');
+  }
+  if (o.usesRound) {
     lines.push('    local function emitter_worm()');
     lines.push('      local first');
     lines.push('      for _, w in ipairs(wa.worms.all()) do');
@@ -371,35 +411,49 @@ function emitEmitterBlock(
     lines.push('      return first');
     lines.push('    end');
     lines.push('    local function emitter_start(x, y, owner, follow)');
-    lines.push('      return fx.emitter(emitter_for(x, y, owner, follow))');
+    if (followFireAngle && hasRing && !em.ring.track) {
+      lines.push('      local spec = emitter_for(x, y, owner, follow)');
+      lines.push('      if spec.ring and owner then');
+      lines.push('        spec.ring.angle = emitter_fire_angle(owner) + (spec.ring.angle or 0)');
+      lines.push('      end');
+      lines.push('      return fx.emitter(spec)');
+    } else {
+      lines.push('      return fx.emitter(emitter_for(x, y, owner, follow))');
+    }
     lines.push('    end');
   }
   const radialDeg = Number(em.radialAngle) || 0;
+  const hasRadial = offsetXNum !== 0 || sideOffset !== 0 || radialDeg !== 0;
   const aimAngleExpr =
     radialDeg === 0
       ? '(w.aim or 0.5) * math.pi'
       : radialDeg > 0
         ? `(w.aim or 0.5) * math.pi + ${radians(radialDeg)}`
         : `(w.aim or 0.5) * math.pi - ${radians(-radialDeg)}`;
-  if (o.anchor === 'muzzle' || o.carries) {
+  if (o.usesAim) {
     lines.push("    -- The muzzle: a radial point from the worm along its fire angle (PX's");
-    lines.push("    -- `curDist`), optionally tilted by `radialAngle` and shifted across the");
-    lines.push('    -- radial arm.');
+    lines.push("    -- `curDist`), optionally tilted by `radialAngle`, shifted across the");
+    lines.push('    -- radial arm, and nudged by pure positional `(posX, posY)` offsets.');
     lines.push('    local function emitter_muzzle(w)');
-    lines.push(`      local a = ${aimAngleExpr}`);
-    if (sideOffset !== 0) {
-      lines.push('      local s, c = wa.math.sin(a), wa.math.cos(a)');
-      lines.push('      local dx, dy = w.facing * s, c');
-      lines.push(`      return w.x + dx * ${offsetX} + w.facing * c * ${offsetY},`);
-      lines.push(`        w.y + dy * ${offsetX} - s * ${offsetY}`);
+    if (!hasRadial) {
+      lines.push(`      return w.x${muzzlePosXTerm},`);
+      lines.push(`        w.y${posYTerm}`);
     } else {
-      lines.push('      local dx, dy = w.facing * wa.math.sin(a), wa.math.cos(a)');
-      lines.push(`      return w.x + dx * ${offsetX},`);
-      lines.push(`        w.y + dy * ${offsetX}`);
+      lines.push(`      local a = ${aimAngleExpr}`);
+      if (sideOffset !== 0) {
+        lines.push('      local s, c = wa.math.sin(a), wa.math.cos(a)');
+        lines.push('      local dx, dy = w.facing * s, c');
+        lines.push(`      return w.x + dx * ${offsetX} + w.facing * c * ${offsetY}${muzzlePosXTerm},`);
+        lines.push(`        w.y + dy * ${offsetX} - s * ${offsetY}${posYTerm}`);
+      } else {
+        lines.push('      local dx, dy = w.facing * wa.math.sin(a), wa.math.cos(a)');
+        lines.push(`      return w.x + dx * ${offsetX}${muzzlePosXTerm},`);
+        lines.push(`        w.y + dy * ${offsetX}${posYTerm}`);
+      }
     }
     lines.push('    end');
   }
-  if (o.anchor === 'round' || o.carries) {
+  if (o.usesRound) {
     lines.push('    -- Track every live missile of this weapon by `m.id`: `wa.on.missile_frame`');
     lines.push('    -- is the only place `m.id`, `m.weapon` and the velocity are readable, and');
     lines.push('    -- `m.id` counts up per match without reuse. Each round gets its own');
@@ -411,7 +465,7 @@ function emitEmitterBlock(
     lines.push('          EMITTER_ROUNDS[id] = nil');
     lines.push('          return nil');
     lines.push('        end');
-    lines.push('        return p.x, p.y, p.vx, p.vy');
+    lines.push(`        return p.x${roundPosXTerm}, p.y${posYTerm}, p.vx, p.vy`);
     lines.push('      end');
     lines.push('    end');
     lines.push('    wa.on.missile_frame(function(m)');
@@ -429,8 +483,8 @@ function emitEmitterBlock(
     lines.push('        p = { x = m.x, y = m.y, vx = m.vx, vy = m.vy,');
     lines.push('          seen = wa.world.frame() }');
     lines.push('        EMITTER_ROUNDS[m.id] = p');
-    const ownerExpr = o.anchor === 'muzzle' ? 'EMITTER_OWNER or w' : 'w';
-    lines.push(`        local e = emitter_start(m.x, m.y, ${ownerExpr},`);
+    const ownerExpr = o.carries ? 'EMITTER_OWNER or w' : 'w';
+    lines.push(`        local e = emitter_start(m.x${roundPosXTerm}, m.y${posYTerm}, ${ownerExpr},`);
     lines.push('          emitter_round(m.id))');
     lines.push('        if e then');
     lines.push('          p.emitter = e');
@@ -443,7 +497,7 @@ function emitEmitterBlock(
     lines.push('      p.seen = wa.world.frame()');
     lines.push('    end)');
   }
-  if (o.anchor === 'muzzle') {
+  if (o.usesAim) {
     // `FRAME_FINISH` runs every 50 Hz tick even while the worm stands still to
     // aim (`body_move` only fires when WA steps a moving body, which made the
     // emitter wait for Space recoil or walking). Scan `wa.worms.all()` rather
@@ -469,9 +523,18 @@ function emitEmitterBlock(
     if (o.carries) lines.push('      EMITTER_OWNER = w');
     lines.push('      if EMITTER then');
     lines.push('        EMITTER:move_to(x, y)');
+    if (usesSpinAccum) lines.push(`        EMITTER_SPIN = EMITTER_SPIN + ${radians(ringSpeedNum)}`);
     lines.push('      else');
     lines.push('        EMITTER = fx.emitter(emitter_for(x, y, w))');
+    if (usesSpinAccum) lines.push('        EMITTER_SPIN = 0');
     lines.push('      end');
+    if (followFireAngle && hasRing) {
+      lines.push('      if EMITTER and EMITTER.ring then');
+      lines.push(
+        `        EMITTER.ring.angle = emitter_fire_angle(w)${ringAngleTerm}${usesSpinAccum ? ' + EMITTER_SPIN' : ''}`,
+      );
+      lines.push('      end');
+    }
     lines.push('    end, { msgs = { wa.msg.FRAME_FINISH } })');
   }
   lines.push('');
@@ -1358,11 +1421,15 @@ export function generateLuaCode(project: WeaponProject): string {
     project.fireType === 'power' || (project.fireType === 'drop' && !!project.body.fuse);
   const emitterAnchor: 'round' | 'muzzle' =
     emitter?.anchor === 'round' && emitterRoundOk ? 'round' : 'muzzle';
+  const emitterProjectileExclusive = emitterRoundOk && !!emitter?.projectileExclusive;
+  const emitterUsesAim = emitterAnchor === 'muzzle' && !emitterProjectileExclusive;
   // Handing it to the round needs a round, so a placed mine or a strike keeps
   // its emitter at the muzzle instead of leaving one following a missile that
   // will never exist.
-  const emitterCarries =
-    emitterAnchor === 'muzzle' && emitter?.carry !== false && emitterRoundOk;
+  const emitterUsesRound =
+    emitterRoundOk &&
+    (emitterAnchor === 'round' || emitter?.carry !== false || emitterProjectileExclusive);
+  const emitterCarries = emitterUsesAim && emitterUsesRound;
   // Anything in px_effects needs the module required and installed; the trail
   // module on its own installs itself.
   const usesEffectsSdk = usesExplosionEffect || usesEmitter;
@@ -2022,7 +2089,10 @@ export function generateLuaCode(project: WeaponProject): string {
   if (usesEmitter) {
     emitEmitterBlock(lines, emitter!, {
       anchor: emitterAnchor,
+      usesAim: emitterUsesAim,
+      usesRound: emitterUsesRound,
       carries: emitterCarries,
+      projectileExclusive: emitterProjectileExclusive,
       roundOk: emitterRoundOk,
       keepWhileFiring: !!project.hold?.keepWhileFiring,
     });

@@ -127,11 +127,15 @@ export const DEFAULT_EMITTER: EmitterConfig = {
   enabled: false,
   anchor: 'muzzle',
   carry: true,
+  projectileExclusive: false,
+  followFireAngle: true,
   // PX's `curDist = 25` along the fire angle (`railgun_test.txt`), the point a
   // railgun's ring sits at so it looks like it leaves the barrel.
   offsetX: 25,
   offsetY: 0,
   radialAngle: 0,
+  posX: 0,
+  posY: 0,
   preset: 'electric',
   ...EMITTER_PRESETS.electric.patch,
   spark: true,

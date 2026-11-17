@@ -739,12 +739,26 @@ export interface EmitterConfig {
    * worm, which is how PX hands its aiming effect to the spawned missile.
    */
   carry: boolean;
+  /**
+   * Disable the emitter while aiming so it only spawns on fired projectiles,
+   * even when `anchor` is `muzzle`.
+   */
+  projectileExclusive?: boolean;
+  /**
+   * Opt-out (default true): align the effect's rotation angle (ring/ellipse)
+   * with the owner's fire angle while aiming and at launch.
+   */
+  followFireAngle?: boolean;
   /** Radial distance along the muzzle arm, in pixels (`curDist`). */
   offsetX: number;
   /** Perpendicular offset across the muzzle arm, in pixels (+ sits above barrel). */
   offsetY: number;
   /** Radial angle offset from the worm's fire angle, in degrees (+ tilts up). */
   radialAngle?: number;
+  /** Pure Cartesian X offset in pixels without aim-angle rotation (mirrored by worm facing on muzzle). */
+  posX?: number;
+  /** Pure Cartesian Y offset in pixels without aim-angle rotation (+ is down in world px). */
+  posY?: number;
   /** Which reach preset the numbers below started from. */
   preset: 'electric' | 'thunder';
   spark: boolean;

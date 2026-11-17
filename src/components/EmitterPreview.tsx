@@ -130,6 +130,7 @@ interface Sim {
   t: number;
   clock: number;
   aim: number;
+  launchFireDeg: number;
   x: number;
   y: number;
   vx: number;
@@ -215,12 +216,12 @@ function fireVector(aim: number, radialAngleDeg = 0): { dx: number; dy: number; 
   return { dx: sinA, dy: cosA, sinA, cosA };
 }
 
-/** The generator's own radial muzzle placement, so the preview and the Lua agree. */
+/** The generator's own radial muzzle + pure positional placement, so the preview and the Lua agree. */
 function muzzleOf(cfg: EmitterConfig, aim: number): { x: number; y: number } {
   const fire = fireVector(aim, cfg.radialAngle ?? 0);
   return {
-    x: fire.dx * cfg.offsetX + fire.cosA * cfg.offsetY,
-    y: fire.dy * cfg.offsetX - fire.sinA * cfg.offsetY,
+    x: fire.dx * cfg.offsetX + fire.cosA * cfg.offsetY + (cfg.posX ?? 0),
+    y: fire.dy * cfg.offsetX - fire.sinA * cfg.offsetY + (cfg.posY ?? 0),
   };
 }
 
@@ -254,12 +255,14 @@ function ringWidths(cfg: EmitterConfig): { coreW: number; glowW: number } {
   };
 }
 
-function createSim(cfg: EmitterConfig, flies: boolean, seed: number): Sim {
+function createSim(cfg: EmitterConfig, flies: boolean, seed: number, noAim: boolean): Sim {
   const cos = cosmetics(cfg);
+  const initialFire = fireVector(AIM_START);
   const sim: Sim = {
     t: 0,
     clock: 0,
     aim: AIM_START,
+    launchFireDeg: (Math.atan2(initialFire.dy, initialFire.dx) * 180) / Math.PI,
     x: 0,
     y: 0,
     vx: 0,
@@ -280,13 +283,13 @@ function createSim(cfg: EmitterConfig, flies: boolean, seed: number): Sim {
   }
   const ringSegments = Math.max(8, Math.round(cfg.ring.segments));
   for (let i = 0; i <= ringSegments; i += 1) sim.ringNoise[i] = rand01(seed, i + 500) * 2 - 1;
-  // A round emitter never aims: it starts on the round the trigger fired.
-  if (flies && cfg.anchor === 'round') {
+  // A projectile-exclusive / round emitter never aims: it starts on the round the trigger fired.
+  if (flies && noAim) {
     sim.aim = AIM_START + AIM_SWEEP;
-    const muzzle = muzzleOf(cfg, sim.aim);
     const fire = fireVector(sim.aim);
-    sim.x = muzzle.x;
-    sim.y = muzzle.y;
+    sim.launchFireDeg = (Math.atan2(fire.dy, fire.dx) * 180) / Math.PI;
+    sim.x = cfg.posX ?? 0;
+    sim.y = cfg.posY ?? 0;
     sim.vx = fire.dx * LAUNCH_SPEED;
     sim.vy = fire.dy * LAUNCH_SPEED;
     sim.flying = true;
@@ -304,11 +307,11 @@ function cooldownFor(cos: ReturnType<typeof cosmetics>, seed: number, ray: numbe
 }
 
 /** One 50 Hz step of the emitter and everything it owns. */
-function stepSim(sim: Sim, cfg: EmitterConfig, seed: number, flies: boolean): void {
+function stepSim(sim: Sim, cfg: EmitterConfig, seed: number, flies: boolean, noAim: boolean): void {
   sim.t += 1;
   sim.clock += 1;
   const cos = cosmetics(cfg);
-  const aiming = cfg.anchor === 'muzzle' && !sim.flying && !sim.dead;
+  const aiming = !noAim && !sim.flying && !sim.dead;
 
   if (aiming) {
     sim.aim = AIM_START + AIM_SWEEP * Math.min(1, sim.t / AIM_FRAMES);
@@ -317,6 +320,9 @@ function stepSim(sim: Sim, cfg: EmitterConfig, seed: number, flies: boolean): vo
     sim.y = muzzle.y;
     if (flies && sim.t >= AIM_FRAMES) {
       const fire = fireVector(sim.aim);
+      sim.launchFireDeg = (Math.atan2(fire.dy, fire.dx) * 180) / Math.PI;
+      sim.x = cfg.posX ?? 0;
+      sim.y = cfg.posY ?? 0;
       sim.flying = true;
       sim.vx = fire.dx * LAUNCH_SPEED;
       sim.vy = fire.dy * LAUNCH_SPEED;
@@ -441,13 +447,12 @@ function stepSim(sim: Sim, cfg: EmitterConfig, seed: number, flies: boolean): vo
  * How many ticks the whole scene lasts: the aim sweep, the arc (found by
  * stepping the same physics the sim does), the shed, and a breath.
  */
-function loopLength(cfg: EmitterConfig, flies: boolean): number {
+function loopLength(cfg: EmitterConfig, flies: boolean, noAim: boolean): number {
   if (!flies) return AIM_FRAMES + 120;
   const aim = AIM_START + AIM_SWEEP;
   const fire = fireVector(aim);
-  const muzzle = muzzleOf(cfg, aim);
-  let x = muzzle.x;
-  let y = muzzle.y;
+  let x = cfg.posX ?? 0;
+  let y = cfg.posY ?? 0;
   let vy = fire.dy * LAUNCH_SPEED;
   const vx = fire.dx * LAUNCH_SPEED;
   let flight = 0;
@@ -457,7 +462,7 @@ function loopLength(cfg: EmitterConfig, flies: boolean): number {
     y += vy;
     flight += 1;
   }
-  return AIM_FRAMES + flight + Math.max(2, Math.round(cfg.trail.max)) * 2 + 18;
+  return (noAim ? 0 : AIM_FRAMES) + flight + Math.max(2, Math.round(cfg.trail.max)) * 2 + 18;
 }
 
 interface RibbonPoint {
@@ -489,9 +494,10 @@ export function EmitterPreview({ config, roundOk }: EmitterPreviewProps) {
 
   const configKey = JSON.stringify(config);
   const seed = 1337 + replay * 7919;
+  const noAim = roundOk && (config.anchor === 'round' || !!config.projectileExclusive);
   // A muzzle emitter only hands itself to a round the record can fire.
-  const flies = roundOk && (config.anchor === 'round' || config.carry !== false);
-  const total = loopLength(config, flies);
+  const flies = roundOk && (noAim || config.carry !== false);
+  const total = loopLength(config, flies, noAim);
 
   // The SDK's own art, loaded once.
   useEffect(() => {
@@ -545,14 +551,14 @@ export function EmitterPreview({ config, roundOk }: EmitterPreviewProps) {
 
   // A settings change (or a replay) starts a fresh scene.
   useEffect(() => {
-    simRef.current = createSim(config, flies, seed);
+    simRef.current = createSim(config, flies, seed, noAim);
     tintCache.current.clear();
     setFrame(0);
     // `configKey` and `seed` cover every field and the replay counter.
-  }, [configKey, seed, flies]);
+  }, [configKey, seed, flies, noAim]);
 
   const currentSim = (): Sim => {
-    if (!simRef.current) simRef.current = createSim(config, flies, seed);
+    if (!simRef.current) simRef.current = createSim(config, flies, seed, noAim);
     return simRef.current;
   };
 
@@ -562,17 +568,17 @@ export function EmitterPreview({ config, roundOk }: EmitterPreviewProps) {
       const sim = currentSim();
       const next = sim.t + 1;
       if (next > total) {
-        simRef.current = createSim(config, flies, seed);
+        simRef.current = createSim(config, flies, seed, noAim);
         setFrame(0);
       } else {
-        stepSim(sim, config, seed, flies);
+        stepSim(sim, config, seed, flies, noAim);
         setFrame(next);
       }
     }, TICK_MS);
     return () => window.clearInterval(id);
     // `currentSim` is stable over these dependencies.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playing, total, configKey, seed, flies]);
+  }, [playing, total, configKey, seed, flies, noAim]);
 
   const tint = useMemo(() => {
     const cache = tintCache.current;
@@ -703,7 +709,7 @@ export function EmitterPreview({ config, roundOk }: EmitterPreviewProps) {
     }
 
     // The fire angle and radial arm the muzzle offset is measured along.
-    if (cfg.anchor === 'muzzle' && !state.flying && !state.dead) {
+    if (!noAim && !state.flying && !state.dead) {
       const fire = fireVector(state.aim);
       ctx.save();
       ctx.setLineDash([3, 4]);
@@ -713,7 +719,7 @@ export function EmitterPreview({ config, roundOk }: EmitterPreviewProps) {
       ctx.moveTo(sx(0), sy(0));
       ctx.lineTo(sx(fire.dx * 95), sy(fire.dy * 95));
       ctx.stroke();
-      if ((cfg.radialAngle ?? 0) !== 0 || cfg.offsetY !== 0) {
+      if ((cfg.radialAngle ?? 0) !== 0 || cfg.offsetY !== 0 || (cfg.posX ?? 0) !== 0 || (cfg.posY ?? 0) !== 0) {
         ctx.strokeStyle = 'rgba(56, 189, 248, 0.45)';
         ctx.beginPath();
         ctx.moveTo(sx(0), sy(0));
@@ -836,15 +842,18 @@ export function EmitterPreview({ config, roundOk }: EmitterPreviewProps) {
       const segments = Math.max(8, Math.min(255, Math.round(ring.segments)));
       const ex = Math.max(0.05, ring.ellipseX);
       const ey = Math.max(0.05, ring.ellipseY);
-      // `angle` is the start angle and `speed` the spin per frame, both degrees.
-      // A tracking ring points its bend along the owner's heading, and the SDK
-      // stops applying the spin while it does. The muzzle has no velocity, so it
-      // keeps its own angle and spins.
+      const followFireAngle = cfg.followFireAngle !== false;
       const moving = state.vx !== 0 || state.vy !== 0;
+      const ownerFire = fireVector(state.aim);
+      const ownerFireDeg = state.flying
+        ? state.launchFireDeg
+        : (Math.atan2(ownerFire.dy, ownerFire.dx) * 180) / Math.PI;
       const degrees =
         ring.track && moving
           ? (Math.atan2(state.vy, state.vx) * 180) / Math.PI + ring.angle
-          : ring.angle + ring.speed * state.t;
+          : followFireAngle
+            ? ownerFireDeg + ring.angle + (ring.track ? 0 : ring.speed * state.t)
+            : ring.angle + ring.speed * state.t;
       const angle = (degrees * Math.PI) / 180;
       const cosRot = Math.cos(angle);
       const sinRot = Math.sin(angle);
@@ -892,7 +901,7 @@ export function EmitterPreview({ config, roundOk }: EmitterPreviewProps) {
       ? 'round gone, ribbon shedding'
       : state.flying
         ? 'round in flight'
-        : cfg.anchor === 'muzzle'
+        : !noAim
           ? 'aiming'
           : 'waiting for the round';
     ctx.fillText(label, 10, height - 10);

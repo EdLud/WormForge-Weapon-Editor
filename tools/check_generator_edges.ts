@@ -25,6 +25,8 @@ import { DEFAULT_BODY } from '../src/data/defaults';
 import { DEFAULT_MELEE } from '../src/data/melee';
 import { DEFAULT_EMITTER, DEFAULT_EMITTER_RING, DEFAULT_EMITTER_TRAIL } from '../src/data/emitter';
 import { DEFAULT_EXPLOSION_EFFECT } from '../src/data/explosionPresets';
+import { scanLua } from '../src/utils/modLib/luaTable';
+import { readBundleFeatures } from '../src/utils/modLib/importFeatures';
 import type { WeaponProject } from '../src/types/weapon';
 
 let failed = 0;
@@ -536,6 +538,169 @@ const makeProject = (patch: Partial<WeaponProject> = {}): WeaponProject => {
       radialMuzzle.includes('return w.x + dx * 28 + w.facing * c * 6,') &&
       radialMuzzle.includes('w.y + dy * 28 - s * 6'),
     'emitter_muzzle did not emit radial angle or facing-symmetric side offset',
+  );
+
+  // Projectile Exclusive disables muzzle aiming emission while keeping fired
+  // projectile emission active, unless the family has no projectile at all.
+  const projExcl = generateLuaCode(
+    makeProject({
+      emitter: {
+        ...DEFAULT_EMITTER,
+        enabled: true,
+        anchor: 'muzzle',
+        projectileExclusive: true,
+        posX: 12,
+        posY: -6,
+        ring: { ...DEFAULT_EMITTER_RING, enabled: true, angle: 0, track: false },
+      },
+    }),
+  );
+  check(
+    'projectileExclusive omits muzzle aim handler and emits projectile tracker',
+    projExcl.includes('projectile_exclusive = true,') &&
+      !projExcl.includes('emitter_muzzle(') &&
+      !projExcl.includes('wa.on.worm_message') &&
+      projExcl.includes('EMITTER_ROUNDS') &&
+      projExcl.includes('wa.on.missile_frame') &&
+      projExcl.includes('emitter_start(m.x + 12, m.y - 6, w,'),
+    'projectileExclusive either kept muzzle aim code or dropped projectile tracking',
+  );
+  check(
+    'followFireAngle is enabled by default for ring projectiles when not tracking velocity',
+    projExcl.includes('local function emitter_fire_angle(w)') &&
+      projExcl.includes('spec.ring.angle = emitter_fire_angle(owner) + (spec.ring.angle or 0)') &&
+      !projExcl.includes('follow_fire_angle = false,'),
+    'default followFireAngle did not orient the ring to owner fire angle',
+  );
+
+  const mineProjExcl = generateLuaCode(
+    makeProject({
+      fireType: 'drop',
+      body: { ...DEFAULT_BODY, fuse: false },
+      emitter: { ...DEFAULT_EMITTER, enabled: true, anchor: 'muzzle', projectileExclusive: true },
+    }),
+  );
+  check(
+    'a placed mine falls back to muzzle even when projectileExclusive is checked',
+    mineProjExcl.includes('emitter_muzzle(') && !mineProjExcl.includes('EMITTER_ROUNDS'),
+    'a mine without a missile dropped its emitter completely',
+  );
+
+  // Pure positional offsets without radial offsets emit no aim trig in emitter_muzzle.
+  const purePosMuzzle = generateLuaCode(
+    makeProject({
+      emitter: {
+        ...DEFAULT_EMITTER,
+        enabled: true,
+        anchor: 'muzzle',
+        offsetX: 0,
+        offsetY: 0,
+        radialAngle: 0,
+        posX: 12,
+        posY: -6,
+        followFireAngle: false,
+        ring: { ...DEFAULT_EMITTER_RING, enabled: true, speed: 4, track: false },
+      },
+    }),
+  );
+  check(
+    'pure posX/posY emit direct coordinate offsets without radial trig when radial offsets are zero',
+    purePosMuzzle.includes('return w.x + w.facing * 12,\n        w.y - 6') &&
+      !purePosMuzzle.includes('local a = (w.aim or 0.5) * math.pi') &&
+      purePosMuzzle.includes('return p.x + 12, p.y - 6, p.vx, p.vy'),
+    'pure positional offsets emitted radial trig or dropped round offsets',
+  );
+  check(
+    'followFireAngle opt-out emits follow_fire_angle = false and omits emitter_fire_angle',
+    purePosMuzzle.includes('follow_fire_angle = false,') &&
+      !purePosMuzzle.includes('emitter_fire_angle') &&
+      !purePosMuzzle.includes('EMITTER_SPIN'),
+    'opt-out followFireAngle still emitted fire angle rotation',
+  );
+
+  // Follow owner fire angle with ring spin accumulates EMITTER_SPIN on muzzle ticks.
+  const followSpinLua = generateLuaCode(
+    makeProject({
+      emitter: {
+        ...DEFAULT_EMITTER,
+        enabled: true,
+        anchor: 'muzzle',
+        followFireAngle: true,
+        ring: { ...DEFAULT_EMITTER_RING, enabled: true, speed: 4, angle: 15, track: false },
+      },
+    }),
+  );
+  check(
+    'followFireAngle + nonzero ring speed accumulates EMITTER_SPIN and updates EMITTER.ring.angle',
+    followSpinLua.includes('local EMITTER_SPIN = 0') &&
+      followSpinLua.includes('EMITTER.ring.angle = emitter_fire_angle(w) + 0.2618 + EMITTER_SPIN'),
+    'EMITTER_SPIN accumulation or EMITTER.ring.angle assignment missing',
+  );
+
+  // Combined radial + pure positional offsets, plus round-trip re-import check.
+  const combinedLua = generateLuaCode(
+    makeProject({
+      emitter: {
+        ...DEFAULT_EMITTER,
+        enabled: true,
+        anchor: 'muzzle',
+        projectileExclusive: false,
+        followFireAngle: false,
+        offsetX: 28,
+        offsetY: 6,
+        radialAngle: 15,
+        posX: -10,
+        posY: 4,
+      },
+    }),
+  );
+  check(
+    'radial offsets and pure positional offsets combine cleanly',
+    combinedLua.includes('return w.x + dx * 28 + w.facing * c * 6 - w.facing * 10,') &&
+      combinedLua.includes('w.y + dy * 28 - s * 6 + 4'),
+    'combined radial + pure positional muzzle expression mismatch',
+  );
+
+  const parseFeatures = async (luaText: string) => {
+    const scan = scanLua(luaText);
+    return readBundleFeatures({
+      weapon: {
+        bundleId: 'x',
+        bundleName: 'x',
+        bundleDir: '',
+        dependencies: [],
+        spriteDecls: {},
+        componentId: 'x',
+        name: 'x',
+        modulePath: '',
+        source: scan.calls['wa.weapons.replace'],
+      },
+      files: [],
+      moduleText: luaText,
+      mappedPackArt: {},
+      digging: false,
+    });
+  };
+  const reimportedProjExcl = (await parseFeatures(projExcl)).project.emitter;
+  check(
+    'round-trip re-import preserves projectileExclusive, default followFireAngle, and posX/posY',
+    reimportedProjExcl?.projectileExclusive === true &&
+      reimportedProjExcl?.followFireAngle === true &&
+      reimportedProjExcl?.posX === 12 &&
+      reimportedProjExcl?.posY === -6,
+    JSON.stringify(reimportedProjExcl),
+  );
+  const reimportedCombined = (await parseFeatures(combinedLua)).project.emitter;
+  check(
+    'round-trip re-import preserves followFireAngle = false alongside radial + pure offsets',
+    reimportedCombined?.projectileExclusive === false &&
+      reimportedCombined?.followFireAngle === false &&
+      reimportedCombined?.offsetX === 28 &&
+      reimportedCombined?.offsetY === 6 &&
+      Math.round(reimportedCombined?.radialAngle ?? 0) === 15 &&
+      reimportedCombined?.posX === -10 &&
+      reimportedCombined?.posY === 4,
+    JSON.stringify(reimportedCombined),
   );
 
   const rainbow = generateLuaCode(

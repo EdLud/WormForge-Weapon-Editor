@@ -238,78 +238,143 @@ export function EmitterCard({ project, onChange }: CardProps) {
             </div>
           </div>
 
-          {anchor === 'muzzle' ? (
-            <div className="space-y-3 rounded-xl border border-sky-200/80 bg-sky-50/40 p-3 dark:border-sky-900/60 dark:bg-sky-950/20">
-              <label
-                className={`flex items-start gap-2 ${
-                  roundOk ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'
-                }`}
-              >
-                <input
-                  id="emitter-carry"
-                  type="checkbox"
-                  disabled={!roundOk}
-                  checked={em.carry !== false && roundOk}
-                  onChange={(e) => update({ carry: e.target.checked })}
-                  className="mt-0.5 h-3.5 w-3.5 cursor-pointer rounded text-forge-600 focus:ring-forge-500 disabled:cursor-not-allowed"
-                />
-                <span className="text-[11px] leading-snug text-stone-700 dark:text-stone-300">
-                  <strong className="font-semibold text-stone-900 dark:text-white">
-                    Hand to the round
-                  </strong>{' '}
-                  once the trigger fires, as PX retargets its aiming effect to the spawned missile.
-                  Off keeps it an aiming effect that ends with the aim.
-                  {!roundOk && ' No round to hand it to here, so it stays on the muzzle.'}
-                </span>
-              </label>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <NumField
-                  id="emitter-offset-x"
-                  label="Muzzle Radius"
-                  code="offsetX"
-                  hint="Radial distance along the muzzle arm in pixels (PX's curDist). Railgun puts its ring 25 px out so it sits at the end of the barrel."
-                  value={em.offsetX}
-                  min={-120}
-                  max={120}
-                  unit="px"
-                  onChange={(offsetX) => update({ offsetX })}
-                />
-                <NumField
-                  id="emitter-radial-angle"
-                  label="Radial Angle"
-                  code="radialAngle"
-                  hint="Radial angle offset from the worm's fire angle in degrees (+ tilts above the aim line on both facings). Sweeps radially around the worm."
-                  value={em.radialAngle ?? 0}
-                  min={-180}
-                  max={180}
-                  step={1}
-                  unit="°"
-                  onChange={(radialAngle) => update({ radialAngle })}
-                />
-                <NumField
-                  id="emitter-offset-y"
-                  label="Muzzle Side"
-                  code="offsetY"
-                  hint="Perpendicular offset across the radial arm in pixels (+ sits above the barrel on both facings)."
-                  value={em.offsetY}
-                  min={-120}
-                  max={120}
-                  unit="px"
-                  onChange={(offsetY) => update({ offsetY })}
-                />
-              </div>
-              {!carryBlocked && (
-                <p className="text-[11px] text-sky-800/80 dark:text-sky-300/80">
-                  The muzzle sits on the held art, so the aim offset reads against the drawn weapon.
-                </p>
-              )}
+          <div className="space-y-3 rounded-xl border border-sky-200/80 bg-sky-50/40 p-3 dark:border-sky-900/60 dark:bg-sky-950/20">
+            <label
+              className={`flex items-start gap-2 ${
+                roundOk ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'
+              }`}
+            >
+              <input
+                id="emitter-projectile-exclusive"
+                type="checkbox"
+                disabled={!roundOk}
+                checked={!!em.projectileExclusive && roundOk}
+                onChange={(e) => update({ projectileExclusive: e.target.checked })}
+                className="mt-0.5 h-3.5 w-3.5 cursor-pointer rounded text-forge-600 focus:ring-forge-500 disabled:cursor-not-allowed"
+              />
+              <span className="text-[11px] leading-snug text-stone-700 dark:text-stone-300">
+                <strong className="font-semibold text-stone-900 dark:text-white">
+                  Projectile Exclusive
+                </strong>{' '}
+                — disable the emitter while aiming so it only appears on fired projectiles.
+                {!roundOk && ' No projectile in this weapon family.'}
+              </span>
+            </label>
+
+            <label className="flex cursor-pointer items-start gap-2">
+              <input
+                id="emitter-follow-fire-angle"
+                type="checkbox"
+                checked={em.followFireAngle !== false}
+                onChange={(e) => update({ followFireAngle: e.target.checked })}
+                className="mt-0.5 h-3.5 w-3.5 cursor-pointer rounded text-forge-600 focus:ring-forge-500"
+              />
+              <span className="text-[11px] leading-snug text-stone-700 dark:text-stone-300">
+                <strong className="font-semibold text-stone-900 dark:text-white">
+                  Follow Owner Fire Angle
+                </strong>{' '}
+                — rotate the effect angle (ring/ellipse) with the owner&apos;s fire angle while aiming and at launch (opt-out).
+              </span>
+            </label>
+
+            {anchor === 'muzzle' && !(em.projectileExclusive && roundOk) ? (
+              <>
+                <label
+                  className={`flex items-start gap-2 ${
+                    roundOk ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'
+                  }`}
+                >
+                  <input
+                    id="emitter-carry"
+                    type="checkbox"
+                    disabled={!roundOk}
+                    checked={em.carry !== false && roundOk}
+                    onChange={(e) => update({ carry: e.target.checked })}
+                    className="mt-0.5 h-3.5 w-3.5 cursor-pointer rounded text-forge-600 focus:ring-forge-500 disabled:cursor-not-allowed"
+                  />
+                  <span className="text-[11px] leading-snug text-stone-700 dark:text-stone-300">
+                    <strong className="font-semibold text-stone-900 dark:text-white">
+                      Hand to the round
+                    </strong>{' '}
+                    once the trigger fires, as PX retargets its aiming effect to the spawned missile.
+                    Off keeps it an aiming effect that ends with the aim.
+                    {!roundOk && ' No round to hand it to here, so it stays on the muzzle.'}
+                  </span>
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <NumField
+                    id="emitter-offset-x"
+                    label="Muzzle Radius"
+                    code="offsetX"
+                    hint="Radial distance along the muzzle arm in pixels (PX's curDist). Railgun puts its ring 25 px out so it sits at the end of the barrel."
+                    value={em.offsetX}
+                    min={-120}
+                    max={120}
+                    unit="px"
+                    onChange={(offsetX) => update({ offsetX })}
+                  />
+                  <NumField
+                    id="emitter-radial-angle"
+                    label="Radial Angle"
+                    code="radialAngle"
+                    hint="Radial angle offset from the worm's fire angle in degrees (+ tilts above the aim line on both facings). Sweeps radially around the worm."
+                    value={em.radialAngle ?? 0}
+                    min={-180}
+                    max={180}
+                    step={1}
+                    unit="°"
+                    onChange={(radialAngle) => update({ radialAngle })}
+                  />
+                  <NumField
+                    id="emitter-offset-y"
+                    label="Muzzle Side"
+                    code="offsetY"
+                    hint="Perpendicular offset across the radial arm in pixels (+ sits above the barrel on both facings)."
+                    value={em.offsetY}
+                    min={-120}
+                    max={120}
+                    unit="px"
+                    onChange={(offsetY) => update({ offsetY })}
+                  />
+                </div>
+                {!carryBlocked && (
+                  <p className="text-[11px] text-sky-800/80 dark:text-sky-300/80">
+                    The muzzle sits on the held art, so the aim offset reads against the drawn weapon.
+                  </p>
+                )}
+              </>
+            ) : (
+              <p className="text-[11px] leading-snug text-stone-700 dark:text-stone-300">
+                The emitter spawns only when fired rounds of this weapon are active, tracking each
+                projectile independently by <code className="font-mono">m.id</code> until it is gone.
+              </p>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1 border-t border-sky-200/70 dark:border-sky-900/50">
+              <NumField
+                id="emitter-pos-x"
+                label="Positional Offset X"
+                code="posX"
+                hint="Pure Cartesian horizontal offset in pixels without aim-angle rotation (mirrored by worm facing on the muzzle)."
+                value={em.posX ?? 0}
+                min={-120}
+                max={120}
+                unit="px"
+                onChange={(posX) => update({ posX })}
+              />
+              <NumField
+                id="emitter-pos-y"
+                label="Positional Offset Y"
+                code="posY"
+                hint="Pure Cartesian vertical offset in pixels without aim-angle rotation (+ shifts down in world coordinates, - shifts up)."
+                value={em.posY ?? 0}
+                min={-120}
+                max={120}
+                unit="px"
+                onChange={(posY) => update({ posY })}
+              />
             </div>
-          ) : (
-            <p className="rounded-xl border border-sky-200/80 bg-sky-50/40 p-3 text-[11px] leading-snug text-stone-700 dark:border-sky-900/60 dark:bg-sky-950/20 dark:text-stone-300">
-              The emitter starts where the worm fires and follows the newest missile of this weapon
-              until it is gone, then ends with it. A cluster bit or a mine never becomes one.
-            </p>
-          )}
+          </div>
 
           {/* Presets */}
           <div className="flex flex-wrap items-center gap-1.5">
@@ -568,7 +633,7 @@ export function EmitterCard({ project, onChange }: CardProps) {
                     hint={
                       em.ring.track
                         ? 'Offset from the owner heading, in degrees, while Track Heading is on. Rotates the whole ring/ellipse.'
-                        : 'Rotation of the entire ring/ellipse around its centre, in degrees (matches px_effects.c; reach bolts stay unrotated).'
+                        : 'Rotation offset of the entire ring/ellipse around its centre, in degrees (added on top of owner fire angle when Follow Owner Fire Angle is enabled; reach bolts stay unrotated).'
                     }
                     value={em.ring.angle}
                     min={-180}

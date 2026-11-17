@@ -4024,4 +4024,8 @@ Three live-game findings finished shaking out the emitter hand-off:
   previously added `st.angle` before multiplying by `ex, ey`, which only slid
   points along an axis-aligned ellipse; both now rotate `(ux, uy)` by
   `(cos_rot, sin_rot)` after ellipse scaling.
+- **Projectile Exclusive, Owner Fire-Angle Ring Tracking (`followFireAngle`), and Pure Positional Offsets (`posX`, `posY`).**
+  - `projectileExclusive` (`projectile_exclusive = true` in `emitter_for`) disables muzzle aiming emission completely (`wa.on.worm_message` and `emitter_muzzle` are omitted) while keeping `wa.on.missile_frame` / `EMITTER_ROUNDS` active so the emitter only appears once projectiles are launched (placed mines/strikes without weapon projectiles still fall back to muzzle).
+  - `followFireAngle` (default `true`, opt-out via `follow_fire_angle = false`) rotates the ring/ellipse angle (`EMITTER.ring.angle` during aiming with accumulated `EMITTER_SPIN` when `ring.speed ~= 0`, plus `spec.ring.angle` at projectile spawn when `!ring.track`) along `emitter_fire_angle(w)` (`wa.math.atan(wa.math.cos(fa), w.facing * wa.math.sin(fa))`), using `effects.sdk` 0.4.2's `e.ring.angle` field directly without modifying the SDK bundle.
+  - `posX` and `posY` add pure Cartesian offsets (`+/- w.facing * posX` on muzzle, `+/- posX` on rounds, and `+/- posY` without aim-angle trig), omitting aim trig from `emitter_muzzle` completely when radial offsets (`offsetX`, `offsetY`, `radialAngle`) are zero; `importFeatures` and `EmitterPreview` round-trip and preview all three options.
 
