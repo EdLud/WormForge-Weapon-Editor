@@ -381,29 +381,32 @@ const makeProject = (patch: Partial<WeaponProject> = {}): WeaponProject => {
 
 // ---- the emitter ---------------------------------------------------------
 // PX's effect manager is an actor with a follow closure, so what matters is
-// which closer the generator writes: a muzzle emitter is moved from a
-// per-frame worm message (a worm standing still to aim never stepped a body,
-// so `body_move` never ran), a round emitter latches the missile frame, and a
-// family with no missile must never be given one.
+// which closer the generator writes: a muzzle emitter is moved from
+// `worm_message` filtered to `FRAME_FINISH` (scanning `wa.worms.all()` for the
+// turn worm so standing still to aim still spawns it before Space), a round
+// emitter latches each missile frame, and a family with no missile must never
+// be given one.
 {
   const ring = { ...DEFAULT_EMITTER_RING, enabled: true };
   const muzzle = generateLuaCode(
     makeProject({ emitter: { ...DEFAULT_EMITTER, enabled: true, anchor: 'muzzle', ring } }),
   );
   check(
-    'a muzzle emitter moves on a frame message',
-    muzzle.includes('wa.on.worm_message(function(w)') &&
+    'a muzzle emitter moves on FRAME_FINISH for the turn worm',
+    muzzle.includes('wa.on.worm_message(function()') &&
       muzzle.includes('wa.msg.FRAME_FINISH') &&
+      muzzle.includes('wa.worms.all()') &&
       muzzle.includes('EMITTER:move_to(x, y)'),
   );
   check(
-    'it is active while the weapon is out and aiming',
-    muzzle.includes('w.aiming') && muzzle.includes('"firing"') && muzzle.includes('"fired"'),
+    'it is active while the turn worm has the weapon selected',
+    muzzle.includes('not (w and w.weapon == ctx.id)'),
   );
   check(
-    'and it hands over to the round on fire',
-    muzzle.includes('EMITTER_CARRIED = true') &&
-      muzzle.includes('EMITTER.follow = emitter_round') &&
+    'and it spawns an independent emitter per round without dropping the aim emitter',
+    muzzle.includes('EMITTER_ROUNDS[m.id]') &&
+      muzzle.includes('emitter_round(m.id)') &&
+      !muzzle.includes('EMITTER_CARRIED') &&
       muzzle.includes('wa.on.missile_frame(function(m)'),
   );
   check(
@@ -412,25 +415,25 @@ const makeProject = (patch: Partial<WeaponProject> = {}): WeaponProject => {
     'a claim on_fire replaces WA\'s shot, so the round was never fired',
   );
   check('the ring is emitted bent', muzzle.includes('ellipse = { 1, 1 }'));
-  check('a round follower is written for the hand-off', muzzle.includes('local function emitter_round'));
+  check('a round follower is written per round', muzzle.includes('local function emitter_round(id)'));
 
   const round = generateLuaCode(
     makeProject({ emitter: { ...DEFAULT_EMITTER, enabled: true, anchor: 'round' } }),
   );
   check(
     'a round emitter starts on the missile',
-    round.includes('emitter_start(m.x, m.y, emitter_worm(),') &&
+    round.includes('emitter_start(m.x, m.y, w,') &&
       round.includes('wa.on.missile_frame(function(m)'),
   );
-  check('and needs no muzzle hook', !round.includes('wa.on.worm_message'));
+  check('and needs no muzzle hook', !round.includes('wa.on.body_move') && !round.includes('wa.on.worm_message'));
 
   const noCarry = generateLuaCode(
     makeProject({ emitter: { ...DEFAULT_EMITTER, enabled: true, carry: false } }),
   );
   check(
     'carry off keeps the emitter an aiming effect',
-    !noCarry.includes('EMITTER.follow =') && !noCarry.includes('on_fire = function'),
-    'an on_fire handler was written for an emitter that never leaves the muzzle',
+    !noCarry.includes('EMITTER_ROUNDS') && !noCarry.includes('on_fire = function'),
+    'an on_fire or round tracker was written for an emitter that never leaves the muzzle',
   );
 
   // A placed mine has no missile of the weapon, so a stored `round` anchor has
@@ -443,13 +446,12 @@ const makeProject = (patch: Partial<WeaponProject> = {}): WeaponProject => {
   const mineLua = generateLuaCode(mine);
   check(
     'a mine falls back to the muzzle',
-    mineLua.includes('emitter_muzzle(') && !mineLua.includes('EMITTER_ROUND'),
+    mineLua.includes('emitter_muzzle(') && !mineLua.includes('EMITTER_ROUNDS'),
     'the round anchor was emitted for a family with no missile',
   );
 
-  // The muzzle anchor on that same mine still may not hand itself to a round
-  // that never exists: a stored `carry` with no missile left one emitter at the
-  // throw point for the rest of the match.
+  // The muzzle anchor on that same mine still may not spawn round emitters
+  // for rounds that never exist.
   const mineCarry = makeProject({
     fireType: 'drop',
     body: { ...DEFAULT_BODY, fuse: false },
@@ -458,10 +460,10 @@ const makeProject = (patch: Partial<WeaponProject> = {}): WeaponProject => {
   const mineCarryLua = generateLuaCode(mineCarry);
   check(
     'a mine keeps its carry on the muzzle',
-    !mineCarryLua.includes('EMITTER_ROUND') &&
-      !mineCarryLua.includes('EMITTER_CARRIED = true') &&
+    !mineCarryLua.includes('EMITTER_ROUNDS') &&
+      !mineCarryLua.includes('EMITTER_CARRIED') &&
       !mineCarryLua.includes('on_fire = function'),
-    'the emitter handed itself to a missile a placed mine never fires',
+    'the emitter spawned round trackers for a placed mine that never fires a missile',
   );
 
   // The emitter's own ribbon needs `fx.install{ trail = true }`, which is what

@@ -249,12 +249,15 @@ interface EmitterEmitOptions {
  * and the two closers that make it live.
  *
  * The point is `emitter_for`'s `(x, y, owner, follow)`. Everything is
- * turn-based (`AGENTS.md` §0): one emitter per weapon, a `FRAME_FINISH` worm
- * message keeps it at the muzzle while the turn's worm aims with the weapon,
- * and the first `missile_frame` of a round WA built hands it over. Both are
- * simulation callbacks, so a replay draws the same emitter on the same frame.
- * The claim writes no `on_fire`: that key replaces WA's shot, so a hand-off
- * from it fired nothing at all.
+ * turn-based (`AGENTS.md` §0): `wa.on.worm_message` filtered to
+ * `wa.msg.FRAME_FINISH` (scanning `wa.worms.all()` for the turn worm, since
+ * `body_move` only fires when a body moves and `worm_message` callbacks do not
+ * reliably receive a worm table) keeps one aim emitter at the muzzle while the
+ * turn's worm holds the weapon, and `wa.on.missile_frame` spawns an independent
+ * emitter per fired round (`EMITTER_ROUNDS[m.id]`). Both are simulation
+ * callbacks, so a replay draws the same emitters on the same frames. The claim
+ * writes no `on_fire`: that key replaces WA's shot, so a hand-off from it
+ * fired nothing at all.
  */
 function emitEmitterBlock(
   lines: string[],
@@ -274,17 +277,18 @@ function emitEmitterBlock(
   const reachBulge = formatNumber(em.reachBulge);
   lines.push("    -- PX's effect manager, live (`fx.emitter`): an emitter actor that draws");
   lines.push('    -- sparks, a glow, short reach bolts, a ring and a ribbon at one point.');
-  lines.push("    -- WA is turn based, so one emitter per weapon is enough: the turn's worm");
-  lines.push('    -- is the only one aiming and firing.');
-  // Only the paths that can hand the emitter to a round need the round latch,
+  lines.push('    -- The muzzle holds one aim emitter while the weapon is selected, and each');
+  lines.push('    -- fired round carries its own emitter keyed by `m.id`.');
+  // Only the paths that spawn emitters on fired rounds need the round map,
   // and a mine keeps none of it in its file.
   const usesRound = o.anchor === 'round' || o.carries;
-  lines.push('    local EMITTER');
-  if (o.anchor === 'muzzle') lines.push('    local EMITTER_OWNER');
+  if (o.anchor === 'muzzle') {
+    lines.push('    local EMITTER');
+    lines.push('    local EMITTER_FRAME');
+    if (o.carries) lines.push('    local EMITTER_OWNER');
+  }
   if (usesRound) {
-    lines.push('    local EMITTER_ROUND');
-    lines.push('    local EMITTER_AT');
-    lines.push('    local EMITTER_CARRIED = false');
+    lines.push('    local EMITTER_ROUNDS = {}');
   }
   lines.push('    local function emitter_for(x, y, owner, follow)');
   lines.push('      return {');
@@ -364,9 +368,7 @@ function emitEmitterBlock(
     lines.push('      return first');
     lines.push('    end');
     lines.push('    local function emitter_start(x, y, owner, follow)');
-    lines.push('      if EMITTER then EMITTER:remove() end');
-    lines.push('      EMITTER = fx.emitter(emitter_for(x, y, owner, follow))');
-    lines.push('      return EMITTER');
+    lines.push('      return fx.emitter(emitter_for(x, y, owner, follow))');
     lines.push('    end');
   }
   if (o.anchor === 'muzzle' || o.carries) {
@@ -386,69 +388,69 @@ function emitEmitterBlock(
     lines.push('    end');
   }
   if (o.anchor === 'round' || o.carries) {
-    lines.push('    -- Which missile of this weapon is ours. `wa.on.missile_frame` is the');
-    lines.push('    -- only place `m.id`, `m.weapon` and the velocity are readable: the body');
-    lines.push('    -- lists only give a position and a kind. `m.id` counts up per match and');
-    lines.push('    -- is never reused, so the first missile of this weapon that appears is');
-    lines.push('    -- the round; the cache lets the follow closure answer from the driver.');
-    lines.push('    local function emitter_round()');
-    lines.push('      local p = EMITTER_AT');
-    lines.push('      if not p or wa.world.frame() - p.seen > 3 then return nil end');
-    lines.push('      return p.x, p.y, p.vx, p.vy');
+    lines.push('    -- Track every live missile of this weapon by `m.id`: `wa.on.missile_frame`');
+    lines.push('    -- is the only place `m.id`, `m.weapon` and the velocity are readable, and');
+    lines.push('    -- `m.id` counts up per match without reuse. Each round gets its own');
+    lines.push('    -- follower closure and drops itself once frames stop arriving.');
+    lines.push('    local function emitter_round(id)');
+    lines.push('      return function()');
+    lines.push('        local p = EMITTER_ROUNDS[id]');
+    lines.push('        if not p or wa.world.frame() - p.seen > 3 then');
+    lines.push('          EMITTER_ROUNDS[id] = nil');
+    lines.push('          return nil');
+    lines.push('        end');
+    lines.push('        return p.x, p.y, p.vx, p.vy');
+    lines.push('      end');
     lines.push('    end');
     lines.push('    wa.on.missile_frame(function(m)');
     lines.push('      if m.weapon ~= ctx.id then return end');
-    lines.push('      -- The SDK marks the emitter dead when its follower answers nil, so a');
-    lines.push('      -- later round of this weapon is a new one: the latch is free again.');
-    lines.push('      if EMITTER and EMITTER.dead then');
-    lines.push('        EMITTER, EMITTER_ROUND, EMITTER_CARRIED = nil, nil, false');
+    lines.push('      local p = EMITTER_ROUNDS[m.id]');
+    lines.push('      if p and p.emitter and p.emitter.dead then');
+    lines.push('        EMITTER_ROUNDS[m.id] = nil');
+    lines.push('        p = nil');
     lines.push('      end');
-    lines.push('      if EMITTER_ROUND == nil then');
+    lines.push('      if p == nil then');
     lines.push('        -- Only a shot from the worm holding this weapon starts a round;');
     lines.push('        -- a cluster bit still alive after the turn is not it.');
     lines.push('        local w = emitter_worm()');
     lines.push('        if not (w and w.weapon == ctx.id) then return end');
-    lines.push('        EMITTER_ROUND = m.id');
+    lines.push('        p = { x = m.x, y = m.y, vx = m.vx, vy = m.vy,');
+    lines.push('          seen = wa.world.frame() }');
+    lines.push('        EMITTER_ROUNDS[m.id] = p');
+    const ownerExpr = o.anchor === 'muzzle' ? 'EMITTER_OWNER or w' : 'w';
+    lines.push(`        local e = emitter_start(m.x, m.y, ${ownerExpr},`);
+    lines.push('          emitter_round(m.id))');
+    lines.push('        if e then');
+    lines.push('          p.emitter = e');
+    lines.push('        else');
+    lines.push('          EMITTER_ROUNDS[m.id] = nil');
+    lines.push('        end');
+    lines.push('        return');
     lines.push('      end');
-    lines.push('      if m.id ~= EMITTER_ROUND then return end');
-    lines.push('      EMITTER_AT = { x = m.x, y = m.y, vx = m.vx, vy = m.vy,');
-    lines.push('        seen = wa.world.frame() }');
-    lines.push('      if EMITTER_CARRIED then return end');
-    lines.push('      EMITTER_CARRIED = true');
-    lines.push('      if EMITTER then');
-    lines.push('        EMITTER.follow = emitter_round');
-    lines.push('        EMITTER:move_to(m.x, m.y)');
-    lines.push('      else');
-    const ownerExpr = o.anchor === 'muzzle' ? 'EMITTER_OWNER or emitter_worm()' : 'emitter_worm()';
-    lines.push(`        EMITTER = emitter_start(m.x, m.y, ${ownerExpr},`);
-    lines.push('          emitter_round)');
-    lines.push('      end');
+    lines.push('      p.x, p.y, p.vx, p.vy = m.x, m.y, m.vx, m.vy');
+    lines.push('      p.seen = wa.world.frame()');
     lines.push('    end)');
   }
   if (o.anchor === 'muzzle') {
-    // `FRAME_FINISH` runs for every worm every game frame. `body_move` only
-    // runs for a body WA is stepping, so a worm standing still to aim never
-    // moved the effect at all; Space appeared to be what created it because
-    // the firing recoil is the first frame that stepped the body.
-    lines.push('    wa.on.worm_message(function(w)');
-    if (o.carries) {
-      lines.push('      if EMITTER and EMITTER.dead then');
-      lines.push('        EMITTER, EMITTER_ROUND, EMITTER_CARRIED = nil, nil, false');
-      lines.push('      end');
-      lines.push('      if EMITTER_CARRIED then return end');
-    } else {
-      lines.push('      if EMITTER and EMITTER.dead then EMITTER = nil end');
-    }
-    lines.push('      -- The weapon is out while WA draws it: aiming (ready, charging the');
-    lines.push('      -- throw, holding the fire key), firing, or on the frame it fired.');
-    lines.push('      local held = w and w.turn and w.weapon == ctx.id');
-    lines.push('        and (w.aiming or w.state == "firing" or w.state == "fired")');
-    lines.push('      if not held then');
+    // `FRAME_FINISH` runs every 50 Hz tick even while the worm stands still to
+    // aim (`body_move` only fires when WA steps a moving body, which made the
+    // emitter wait for Space recoil or walking). Scan `wa.worms.all()` rather
+    // than trusting the callback arg, matching the fuse sampler and melee hook.
+    lines.push('    wa.on.worm_message(function()');
+    lines.push('      local now = wa.world.frame() or 0');
+    lines.push('      if now == EMITTER_FRAME then return end');
+    lines.push('      EMITTER_FRAME = now');
+    lines.push('      if EMITTER and EMITTER.dead then EMITTER = nil end');
+    lines.push('      local w');
+    lines.push('      for _, c in ipairs(wa.worms.all()) do');
+    lines.push('        if c.turn and (c.hp == nil or c.hp > 0) then w = c; break end');
+    lines.push('      end');
+    lines.push('      if not (w and w.weapon == ctx.id) then');
     lines.push('        if EMITTER then EMITTER:remove(); EMITTER = nil end');
     lines.push('        return');
     lines.push('      end');
     lines.push('      local x, y = emitter_muzzle(w)');
-    lines.push('      EMITTER_OWNER = w');
+    if (o.carries) lines.push('      EMITTER_OWNER = w');
     lines.push('      if EMITTER then');
     lines.push('        EMITTER:move_to(x, y)');
     lines.push('      else');

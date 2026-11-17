@@ -18,9 +18,10 @@
  *   play of `SOUND.path` at `SOUND.priority`;
  * - **fuse sampler**: a `worm_message` filtered to `FRAME_FINISH` that writes
  *   `fuse_by_worm[w.id]` from the keyboard digit, with `FUSE_DEFAULT` above it;
- * - **emitter**: the `FRAME_FINISH` handler that keeps the effect manager at the
- *   muzzle and the `missile_frame` handler that latches a round's `m.id`, which
- *   only exist alongside the `emitter_for` table the emitter card writes.
+ * - **emitter**: the `body_move` handler (filtered to `"worm"`) or legacy
+ *   `FRAME_FINISH` handler that keeps the effect manager at the muzzle, and the
+ *   `missile_frame` handler that latches a round's `m.id`, which only exist
+ *   alongside the `emitter_for` table the emitter card writes.
  *
  * A near miss (`wa.sound.play(w, "sounds/x/y.wav", 8)` on a timer, a
  * `missile_frame` handler that moves a missile) does not match, and matching on
@@ -77,21 +78,31 @@ const EMISSIONS: Record<OwnFeature, (registration: LuaRegistration, split: Split
   },
   emitter: (registration, split) => {
     if (!declares(split, 'local function emitter_for(')) return null;
-    // The muzzle tracker is a `worm_message` on FRAME_FINISH: it runs for every
-    // worm every game frame, which `body_move` did not (a worm standing still
-    // to aim never stepped its body, so the effect only appeared on the recoil).
+    // The muzzle tracker is a `body_move` handler on `"worm"` (or legacy
+    // `worm_message` on FRAME_FINISH from older exports).
+    if (registration.event === 'body_move') {
+      if (!registration.options?.includes('"worm"')) return null;
+      if (!registration.handler.includes('emitter_muzzle(')) return null;
+      if (!registration.handler.includes('emitter_for(')) return null;
+      return 'body_move on "worm" moving the emitter to the muzzle';
+    }
     if (registration.event === 'worm_message') {
       if (!registration.options?.includes('FRAME_FINISH')) return null;
       if (!registration.handler.includes('emitter_muzzle(')) return null;
       if (!registration.handler.includes('emitter_for(')) return null;
       return 'worm_message on FRAME_FINISH moving the emitter to the muzzle';
     }
-    // The round latch is a `missile_frame` sweep keyed by its own id.
+    // The round latch is a `missile_frame` sweep keyed by `m.id`.
     if (registration.event === 'missile_frame') {
-      if (!registration.handler.includes('EMITTER_ROUND')) return null;
+      if (
+        !registration.handler.includes('EMITTER_ROUNDS') &&
+        !registration.handler.includes('EMITTER_ROUND')
+      ) {
+        return null;
+      }
       if (!registration.handler.includes('emitter_round')) return null;
       if (!declares(split, 'local function emitter_round(')) return null;
-      return 'missile_frame latching the round and updating the emitter cache';
+      return 'missile_frame latching rounds and updating the emitter cache';
     }
     return null;
   },

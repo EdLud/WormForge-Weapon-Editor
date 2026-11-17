@@ -1206,7 +1206,8 @@ return {
       emitterLua.includes('ellipse = { 1.2, 0.45 }') &&
       emitterLua.includes('track = true,') &&
       emitterLua.includes('wa.on.missile_frame(function(m)') &&
-      emitterLua.includes('EMITTER.follow = emitter_round') &&
+      emitterLua.includes('EMITTER_ROUNDS[m.id]') &&
+      emitterLua.includes('emitter_round(m.id)') &&
       !emitterLua.includes('on_fire = function'),
     'the emitter block is missing from the regenerated Lua, or it claimed on_fire (which replaces WA\'s shot)',
   );
@@ -1220,7 +1221,7 @@ return {
   check(
     'WF 56: its own handlers are not carried back',
     !emitterWeapon.carriedLua?.registrations?.some(
-      (r) => r.event === 'worm_message' || r.event === 'missile_frame',
+      (r) => r.event === 'worm_message' || r.event === 'body_move' || r.event === 'missile_frame',
     ) && !emitterWeapon.carriedLua?.hooks?.some((h) => h.key === 'on_fire'),
     'a re-import carried our own emitter registrations or on_fire, which would ship two emitters',
   );

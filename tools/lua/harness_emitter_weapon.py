@@ -92,6 +92,9 @@ end
 function has_fire()
   return wa.hooks.claim ~= nil and wa.hooks.claim.on_fire ~= nil
 end
+function set_turn(on)
+  worm.turn = on and true or false
+end
 function set_aim(on)
   worm.aiming = on and true or false
   worm.state = on and "ready" or "standing"
@@ -100,7 +103,7 @@ function set_weapon(name) worm.weapon = name end
 function draw() if wa.hooks.draw then wa.hooks.draw() end end
 function move()
   state.a = state.a + 1
-  if wa.hooks.worm_message then wa.hooks.worm_message(worm) end
+  if wa.hooks.worm_message then wa.hooks.worm_message({ msg = wa.msg.FRAME_FINISH }) end
 end
 function missile(m)
   if wa.hooks.missile_frame then wa.hooks.missile_frame(m) end
@@ -144,9 +147,8 @@ install(ctx)
 
 check('the weapon installs without raising', True)
 
-# Aiming: the FRAME_FINISH worm message places the emitter at the muzzle. It is
-# a frame message, not `body_move`, because a worm standing still to aim never
-# steps its body.
+# Aiming: FRAME_FINISH runs every tick even while standing still and reads the
+# active turn worm from wa.worms.all().
 for _ in range(4):
     lua.eval('move()')
     lua.eval('step()')
@@ -181,10 +183,9 @@ check('it keeps drawing on the round', lua.eval('stats()')[2] > drawn_after, lua
 
 # The round is gone: the cached position goes stale and the follower returns
 # nothing, so the emitter and its ring end with the round instead of staying on
-# the map. The worm also stops holding the weapon here (the turn is over), so
-# the aiming effect may not respawn.
+# the map. The turn also ends here, so the aiming effect may not respawn.
 lua.eval('setmissiles({})')
-lua.eval('set_aim(false)')
+lua.eval('set_turn(false)')
 for _ in range(120):
     lua.eval('move()')
     lua.eval('step()')
@@ -193,7 +194,7 @@ lua.eval('draw()')
 check('the emitter ends with the round', lua.eval('stats()')[2] == still, lua.eval('stats()')[2] - still)
 
 # A different weapon selected removes the aiming effect too.
-lua.eval('set_aim(true)')
+lua.eval('set_turn(true)')
 lua.eval('set_weapon("stock.grenade")')
 for _ in range(120):
     lua.eval('move()')
