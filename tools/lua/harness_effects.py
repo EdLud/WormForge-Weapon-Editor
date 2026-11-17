@@ -187,7 +187,7 @@ opts = lua_table(
     """{
   x = 500, y = 400,
   preset = "electric",
-  ring = { radius = 26, segments = 22, noise = 0.9, speed = 0.07,
+  ring = { radius = 26, segments = 22, noise = 0.9, speed = 0,
     ellipse = { 1.2, 0.45 }, r = 160, g = 200, b = 255 },
   trail = { max = 12, every = 1, core_w = 5, glow_w = 11, noise = 2,
     r = 160, g = 200, b = 255 },
@@ -291,6 +291,15 @@ check(
     'a downward heading turns the bend a quarter turn',
     abs(tracking['ring']['angle'] - math.pi / 2) < 0.05,
     str(tracking['ring']['angle']),
+)
+draw()
+turned = ring_pass()
+turned_xs = [p['x'] for p in turned['points']]
+turned_ys = [p['y'] for p in turned['points']]
+check(
+    'turning a quarter turn rotates the drawn ellipse vertically',
+    (max(turned_ys) - min(turned_ys)) > (max(turned_xs) - min(turned_xs)) * 1.8,
+    f'{max(turned_xs) - min(turned_xs):.1f} x {max(turned_ys) - min(turned_ys):.1f}',
 )
 angle_after = tracking['ring']['angle']
 for _ in range(3):

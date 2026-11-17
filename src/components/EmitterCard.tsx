@@ -262,12 +262,12 @@ export function EmitterCard({ project, onChange }: CardProps) {
                   {!roundOk && ' No round to hand it to here, so it stays on the muzzle.'}
                 </span>
               </label>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <NumField
                   id="emitter-offset-x"
-                  label="Muzzle Offset"
+                  label="Muzzle Radius"
                   code="offsetX"
-                  hint="Pixels along the fire angle. PX's railgun puts its ring 25 px out so it looks like it leaves the barrel."
+                  hint="Radial distance along the muzzle arm in pixels (PX's curDist). Railgun puts its ring 25 px out so it sits at the end of the barrel."
                   value={em.offsetX}
                   min={-120}
                   max={120}
@@ -275,10 +275,22 @@ export function EmitterCard({ project, onChange }: CardProps) {
                   onChange={(offsetX) => update({ offsetX })}
                 />
                 <NumField
+                  id="emitter-radial-angle"
+                  label="Radial Angle"
+                  code="radialAngle"
+                  hint="Radial angle offset from the worm's fire angle in degrees (+ tilts above the aim line on both facings). Sweeps radially around the worm."
+                  value={em.radialAngle ?? 0}
+                  min={-180}
+                  max={180}
+                  step={1}
+                  unit="°"
+                  onChange={(radialAngle) => update({ radialAngle })}
+                />
+                <NumField
                   id="emitter-offset-y"
                   label="Muzzle Side"
                   code="offsetY"
-                  hint="Pixels across the fire angle, positive up-screen while the aim is level."
+                  hint="Perpendicular offset across the radial arm in pixels (+ sits above the barrel on both facings)."
                   value={em.offsetY}
                   min={-120}
                   max={120}
@@ -551,12 +563,12 @@ export function EmitterCard({ project, onChange }: CardProps) {
                   />
                   <NumField
                     id="emitter-ring-angle"
-                    label="Start Angle"
+                    label="Rotation Angle"
                     code="angle"
                     hint={
                       em.ring.track
-                        ? 'Offset from the owner heading, in degrees, while Track Heading is on.'
-                        : 'Where the first point sits, in degrees.'
+                        ? 'Offset from the owner heading, in degrees, while Track Heading is on. Rotates the whole ring/ellipse.'
+                        : 'Rotation of the entire ring/ellipse around its centre, in degrees (matches px_effects.c; reach bolts stay unrotated).'
                     }
                     value={em.ring.angle}
                     min={-180}

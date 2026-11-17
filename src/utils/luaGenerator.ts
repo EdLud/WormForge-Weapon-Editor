@@ -374,20 +374,29 @@ function emitEmitterBlock(
     lines.push('      return fx.emitter(emitter_for(x, y, owner, follow))');
     lines.push('    end');
   }
+  const radialDeg = Number(em.radialAngle) || 0;
+  const aimAngleExpr =
+    radialDeg === 0
+      ? '(w.aim or 0.5) * math.pi'
+      : radialDeg > 0
+        ? `(w.aim or 0.5) * math.pi + ${radians(radialDeg)}`
+        : `(w.aim or 0.5) * math.pi - ${radians(-radialDeg)}`;
   if (o.anchor === 'muzzle' || o.carries) {
-    lines.push("    -- The muzzle: a point along the fire angle, PX's `curDist` offset.");
-    lines.push("    -- `worm.aim` is WA's sweep and `worm.facing` the side, the same vector");
-    lines.push('    -- the held art is drawn at.');
+    lines.push("    -- The muzzle: a radial point from the worm along its fire angle (PX's");
+    lines.push("    -- `curDist`), optionally tilted by `radialAngle` and shifted across the");
+    lines.push('    -- radial arm.');
     lines.push('    local function emitter_muzzle(w)');
-    lines.push('      local a = (w.aim or 0.5) * math.pi');
-    lines.push('      local dx, dy = w.facing * wa.math.sin(a), wa.math.cos(a)');
-    // The offset is split along the aim (PX's `curDist`) and across it, so a
-    // zero side adds no `dy * 0` term to the file.
-    const along = `dx * ${offsetX}`;
-    const side = sideOffset !== 0 ? ` + dy * ${offsetY}` : '';
-    const sideY = sideOffset !== 0 ? ` - dx * ${offsetY}` : '';
-    lines.push(`      return w.x + ${along}${side},`);
-    lines.push(`        w.y + dy * ${offsetX}${sideY}`);
+    lines.push(`      local a = ${aimAngleExpr}`);
+    if (sideOffset !== 0) {
+      lines.push('      local s, c = wa.math.sin(a), wa.math.cos(a)');
+      lines.push('      local dx, dy = w.facing * s, c');
+      lines.push(`      return w.x + dx * ${offsetX} + w.facing * c * ${offsetY},`);
+      lines.push(`        w.y + dy * ${offsetX} - s * ${offsetY}`);
+    } else {
+      lines.push('      local dx, dy = w.facing * wa.math.sin(a), wa.math.cos(a)');
+      lines.push(`      return w.x + dx * ${offsetX},`);
+      lines.push(`        w.y + dy * ${offsetX}`);
+    }
     lines.push('    end');
   }
   if (o.anchor === 'round' || o.carries) {

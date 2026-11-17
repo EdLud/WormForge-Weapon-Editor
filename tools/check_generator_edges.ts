@@ -518,6 +518,26 @@ const makeProject = (patch: Partial<WeaponProject> = {}): WeaponProject => {
     'the ring table lost its heading tracking',
   );
 
+  const radialMuzzle = generateLuaCode(
+    makeProject({
+      emitter: {
+        ...DEFAULT_EMITTER,
+        enabled: true,
+        anchor: 'muzzle',
+        offsetX: 28,
+        offsetY: 6,
+        radialAngle: 15,
+      },
+    }),
+  );
+  check(
+    'radialAngle and offsetY emit facing-symmetric radial muzzle math',
+    radialMuzzle.includes('local a = (w.aim or 0.5) * math.pi + 0.2618') &&
+      radialMuzzle.includes('return w.x + dx * 28 + w.facing * c * 6,') &&
+      radialMuzzle.includes('w.y + dy * 28 - s * 6'),
+    'emitter_muzzle did not emit radial angle or facing-symmetric side offset',
+  );
+
   const rainbow = generateLuaCode(
     makeProject({
       emitter: {

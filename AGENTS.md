@@ -467,12 +467,15 @@ The editor ships `spec/lua_sdk/wfws_sdk/` (id `wfws.sdk`), exporting
   the living turn worm rather than reading the callback parameter or using
   `body_move`, since `body_move` only fires when WA steps a moving body and
   made standing-still aim wait for Space recoil, while `worm_message` does not
-  reliably pass a worm table with `.turn`), at PX's `curDist` offset along the
-  fire angle (`worm.aim` is WA's 0..1 sweep and `worm.facing` the side, the same
-  vector the held art is drawn at). Its visibility gate follows Hold's **Keep
-  While Firing** (`project.hold.keepWhileFiring`): `w.aiming` only when off (so
-  thrown grenades drop the muzzle emitter as soon as they enter firing/throw),
-  or `w.aiming or w.state == "firing" or w.state == "fired"` when on.
+  reliably pass a worm table with `.turn`),  at PX's `curDist` radial distance (`offsetX`), optional `radialAngle` (degrees
+  added to `(w.aim or 0.5) * math.pi` so the muzzle arm sweeps radially around
+  the worm), and facing-symmetric perpendicular `offsetY` (`w.facing * c * Y,
+  -s * Y`) along the fire angle (`worm.aim` is WA's 0..1 sweep and `worm.facing`
+  the side, the same vector the held art is drawn at). Its visibility gate
+  follows Hold's **Keep While Firing** (`project.hold.keepWhileFiring`):
+  `w.aiming` only when off (so thrown grenades drop the muzzle emitter as soon
+  as they enter firing/throw), or `w.aiming or w.state == "firing" or w.state ==
+  "fired"` when on.
   Round emitters are tracked independently from the muzzle aim emitter:
   when `anchor == "round"` or `carry` is on, `wa.on.missile_frame` tracks each
   fired round by `m.id` in `EMITTER_ROUNDS[m.id]` with its own `emitter_round(id)`
@@ -488,6 +491,13 @@ The editor ships `spec/lua_sdk/wfws_sdk/` (id `wfws.sdk`), exporting
   which runs on every missile WA did build. The ring can be
   bent (`ellipse = { x, y }`, PX's `circumference`/`circumferenceSin`), spun and
   tapered (`thin`), and it rides the emitter when it has no `follow` of its own.
+  Matching `px_effects.c` (`cosRot = cos(currentAngle)`, `sinRot =
+  sin(currentAngle)`), `draw_ring` in both `px_effects.lua` and `EmitterPreview`
+  computes `(ux, uy) = (cos(u) * ex, sin(u) * ey)` first and then applies the 2D
+  rotation `(ux * cos_rot - uy * sin_rot, ux * sin_rot + uy * cos_rot)` so `angle`
+  / `speed` / `track` spin the entire ring/ellipse rather than sliding sample
+  points around an axis-aligned oval; reach rays (`DrawReachPoint` / `draw_arc`)
+  remain unrotated in world space.
   `rainbow` on the emitter reaches every part that does not set one, as PX's
   single manager switch does. `carry` needs a round to be spawned for, so the
   generator also requires `emitterRoundOk`: a placed mine with `carry` on used to
@@ -518,12 +528,12 @@ The editor ships `spec/lua_sdk/wfws_sdk/` (id `wfws.sdk`), exporting
   offset and `speed` is not applied, because the heading is rewritten every frame.
   The card's **What It Draws** panel is `EmitterPreview`, a 50 Hz playback of the
   SDK's own maths and sheets: the worm's aim strip sweeps the fire angle, the
-  emitter rides the muzzle at `offsetX`, `on_fire` hands it to a ballistic round,
-  and the bolts grow on the preset's cooldowns while the ring spins and the
-  ribbon samples. It is the only way to see the difference between the presets
-  (thunder strikes once from below and holds; electric crackles twice), and it
-  lives next to the card rather than in a separate preview page because the
-  numbers being edited are what it plays.
+  emitter rides the muzzle at `(offsetX, radialAngle, offsetY)`, `on_fire` hands
+  it to a ballistic round, and the bolts grow on the preset's cooldowns while
+  the ring spins and the ribbon samples. It is the only way to see the
+  difference between the presets (thunder strikes once from below and holds;
+  electric crackles twice), and it lives next to the card rather than in a
+  separate preview page because the numbers being edited are what it plays.
 - **Damage Type: Electrical** works through `px.electric`, never the SDK. WA has
   no electric hit kind (`kind = "taze"` alone is the Prod), so the generator
   declares `local zap` at module level, assigns it inside `install`, and arms the

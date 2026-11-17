@@ -1108,11 +1108,22 @@ export async function readBundleFeatures(args: {
     // the panel, which is what an author sets.
     const degrees = (value: number | undefined): number | undefined =>
       value === undefined ? undefined : Math.round((value * 180) / Math.PI * 100) / 100;
-    // `emitter_muzzle`'s two products hold the offset: `dx * X + dy * Y` is the
-    // along/ahead term and `dy * X - dx * Y` the across one.
+    // `emitter_muzzle` computes a radial point around the worm's aim angle
+    // (`(w.aim or 0.5) * math.pi +/- radialRad`), optionally shifted across the
+    // radial arm (`w.facing * c * Y, -s * Y` or legacy `dy * Y, -dx * Y`).
+    const muzzleSource = emitterArgs ? moduleText : '';
+    const muzzleAngleMatch =
+      /local\s+a\s*=\s*\(w\.aim\s+or\s+0\.5\)\s*\*\s*math\.pi(?:\s*([+-])\s*([\d.]+))?/.exec(
+        muzzleSource,
+      );
+    const radialAngle = muzzleAngleMatch?.[2]
+      ? degrees((muzzleAngleMatch[1] === '-' ? -1 : 1) * Number(muzzleAngleMatch[2])) ?? 0
+      : 0;
     const muzzle =
-      /return\s+w\.x\s*\+\s*dx\s*\*\s*(-?[\d.]+)\s*\+\s*dy\s*\*\s*(-?[\d.]+)[\s\S]*?w\.y\s*\+\s*dy\s*\*\s*(-?[\d.]+)\s*-\s*dx\s*\*\s*(-?[\d.]+)/
-        .exec(emitterArgs ? moduleText : '');
+      /return\s+w\.x\s*\+\s*dx\s*\*\s*(-?[\d.]+)(?:\s*\+\s*w\.facing\s*\*\s*c\s*\*\s*(-?[\d.]+))?[\s\S]*?w\.y\s*\+\s*dy\s*\*\s*(-?[\d.]+)(?:\s*-\s*s\s*\*\s*(-?[\d.]+))?/
+        .exec(muzzleSource) ??
+      /return\s+w\.x\s*\+\s*dx\s*\*\s*(-?[\d.]+)(?:\s*\+\s*dy\s*\*\s*(-?[\d.]+))?[\s\S]*?w\.y\s*\+\s*dy\s*\*\s*(-?[\d.]+)(?:\s*-\s*dx\s*\*\s*(-?[\d.]+))?/
+        .exec(muzzleSource);
     const anchor: 'round' | 'muzzle' =
       str(t.anchor) === 'round' || /emitter_start\(ev\.worm\.x/.test(moduleText)
         ? 'round'
@@ -1127,7 +1138,8 @@ export async function readBundleFeatures(args: {
       carry:
         t.carry === true || (t.carry === undefined && /EMITTER_CARRIED\s*=\s*true/.test(moduleText)),
       offsetX: muzzle ? Number(muzzle[1]) : base.offsetX,
-      offsetY: muzzle ? Number(muzzle[2]) : base.offsetY,
+      offsetY: muzzle ? Number(muzzle[2] ?? 0) : base.offsetY,
+      radialAngle,
       preset: str(t.preset) === 'thunder' ? 'thunder' : 'electric',
       spark: t.spark !== false,
       glow: t.glow !== false,

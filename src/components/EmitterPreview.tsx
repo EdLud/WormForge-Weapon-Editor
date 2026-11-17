@@ -208,17 +208,19 @@ function boltPoint(bolt: Bolt, t: number): { x: number; y: number } {
 }
 
 /** WA's fire vector for an aim in 0..1 (0 down, 0.5 level, 1 up), facing right. */
-function fireVector(aim: number): { dx: number; dy: number } {
-  const a = aim * Math.PI;
-  return { dx: Math.sin(a), dy: Math.cos(a) };
+function fireVector(aim: number, radialAngleDeg = 0): { dx: number; dy: number; sinA: number; cosA: number } {
+  const a = aim * Math.PI + (radialAngleDeg * Math.PI) / 180;
+  const sinA = Math.sin(a);
+  const cosA = Math.cos(a);
+  return { dx: sinA, dy: cosA, sinA, cosA };
 }
 
-/** The generator's own muzzle placement, so the preview and the Lua agree. */
+/** The generator's own radial muzzle placement, so the preview and the Lua agree. */
 function muzzleOf(cfg: EmitterConfig, aim: number): { x: number; y: number } {
-  const fire = fireVector(aim);
+  const fire = fireVector(aim, cfg.radialAngle ?? 0);
   return {
-    x: fire.dx * cfg.offsetX + fire.dy * cfg.offsetY,
-    y: fire.dy * cfg.offsetX - fire.dx * cfg.offsetY,
+    x: fire.dx * cfg.offsetX + fire.cosA * cfg.offsetY,
+    y: fire.dy * cfg.offsetX - fire.sinA * cfg.offsetY,
   };
 }
 
@@ -700,7 +702,7 @@ export function EmitterPreview({ config, roundOk }: EmitterPreviewProps) {
       ctx.restore();
     }
 
-    // The fire angle the muzzle offset is measured along.
+    // The fire angle and radial arm the muzzle offset is measured along.
     if (cfg.anchor === 'muzzle' && !state.flying && !state.dead) {
       const fire = fireVector(state.aim);
       ctx.save();
@@ -711,6 +713,13 @@ export function EmitterPreview({ config, roundOk }: EmitterPreviewProps) {
       ctx.moveTo(sx(0), sy(0));
       ctx.lineTo(sx(fire.dx * 95), sy(fire.dy * 95));
       ctx.stroke();
+      if ((cfg.radialAngle ?? 0) !== 0 || cfg.offsetY !== 0) {
+        ctx.strokeStyle = 'rgba(56, 189, 248, 0.45)';
+        ctx.beginPath();
+        ctx.moveTo(sx(0), sy(0));
+        ctx.lineTo(sx(state.x), sy(state.y));
+        ctx.stroke();
+      }
       ctx.restore();
     }
 
@@ -837,20 +846,26 @@ export function EmitterPreview({ config, roundOk }: EmitterPreviewProps) {
           ? (Math.atan2(state.vy, state.vx) * 180) / Math.PI + ring.angle
           : ring.angle + ring.speed * state.t;
       const angle = (degrees * Math.PI) / 180;
+      const cosRot = Math.cos(angle);
+      const sinRot = Math.sin(angle);
       const ringRgb = partColour(ring);
       const colour = hexOf(ringRgb.r, ringRgb.g, ringRgb.b);
       const build = (radiusScale: number, styleWidth: (w: number) => number, tintColour: string) => {
         const points: RibbonPoint[] = [];
         for (let i = 0; i <= segments; i += 1) {
           const j = (state.ringNoise[i % Math.max(1, state.ringNoise.length)] ?? 0) * ring.noise;
-          const a = angle + i * ((Math.PI * 2) / segments);
+          const a = i * ((Math.PI * 2) / segments);
+          const ux = Math.cos(a) * ex;
+          const uy = Math.sin(a) * ey;
+          const rx = ux * cosRot - uy * sinRot;
+          const ry = ux * sinRot + uy * cosRot;
           const r = (Math.max(1, ring.radius) + j) * radiusScale;
           const t = i / segments;
           // `thin` tapers to a point at both ends and dims with the width.
           const f = ring.thin ? clamp01(4 * t * (1 - t) + 0.15) : 1;
           points.push({
-            x: sx(state.x + Math.cos(a) * r * ex),
-            y: sy(state.y + Math.sin(a) * r * ey),
+            x: sx(state.x + rx * r),
+            y: sy(state.y + ry * r),
             width: styleWidth(f),
             alpha: f,
             colour: tintColour,

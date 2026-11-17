@@ -739,10 +739,12 @@ export interface EmitterConfig {
    * worm, which is how PX hands its aiming effect to the spawned missile.
    */
   carry: boolean;
-  /** Offset along the anchor's direction, in pixels. */
+  /** Radial distance along the muzzle arm, in pixels (`curDist`). */
   offsetX: number;
-  /** Offset across the anchor's direction, in pixels. */
+  /** Perpendicular offset across the muzzle arm, in pixels (+ sits above barrel). */
   offsetY: number;
+  /** Radial angle offset from the worm's fire angle, in degrees (+ tilts up). */
+  radialAngle?: number;
   /** Which reach preset the numbers below started from. */
   preset: 'electric' | 'thunder';
   spark: boolean;

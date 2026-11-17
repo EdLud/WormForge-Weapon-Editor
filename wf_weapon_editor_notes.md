@@ -3975,3 +3975,53 @@ The same trap is latent in the launch WAV role: when no other feature writes
 suppresses WA's shot. It has not bitten the test pack yet (no generated weapon
 there uses a launch WAV), and the fix is the same shape: play it from a filtered
 `worm_message` on `wa.msg.WEAPON_RELEASED`, not from `on_fire`.
+
+### Emitter follow-up: multi-round tracking, `FRAME_FINISH` scan, and `keepWhileFiring`
+
+Three live-game findings finished shaking out the emitter hand-off:
+
+- **`wa.on.worm_message` must scan `wa.worms.all()` rather than trust its argument.**
+  When the muzzle tracker moved from `body_move` to `FRAME_FINISH`, reading
+  `w.turn` off the callback parameter left `w.turn` nil and the aim emitter
+  never appeared at all. Switching back to `wa.on.body_move` proved why the old
+  comment existed: standing still to aim never steps the worm's body, so the
+  aim emitter only appeared on Space recoil or walking. Deduplicating once per
+  tick with `EMITTER_FRAME = wa.world.frame()` and scanning `wa.worms.all()` for
+  the living turn worm (`c.turn and (c.hp == nil or c.hp > 0)`) — the same
+  pattern `wfws_sprite_builder.lua` and the fuse sampler already use — brings
+  the emitter up immediately while standing still to aim.
+- **One emitter per fired round (`EMITTER_ROUNDS[m.id]`), separate from the muzzle aim emitter.**
+  Keeping a single `EMITTER`, `EMITTER_ROUND`, `EMITTER_AT`, and `EMITTER_CARRIED`
+  per weapon meant firing 10 grenades (e.g. a `fire_seq` burst or multi-shot)
+  only gave the first grenade an emitter, and stealing `EMITTER` + setting
+  `EMITTER_CARRIED` killed the muzzle aim emitter on the first shot.
+  `px_effects` already supports any number of concurrent emitters with unique
+  negative trail keys, so `emitEmitterBlock` now stores per-missile state in
+  `EMITTER_ROUNDS[m.id]` with an individual `emitter_round(id)` follower that
+  clears its slot and returns `nil` when frames stop arriving, while the muzzle
+  aim emitter stays independent.
+- **Muzzle visibility follows Hold's `keepWhileFiring`.**
+  When `project.hold.keepWhileFiring` is false (e.g. a thrown grenade), the
+  muzzle emitter gates on `w.aiming` only so it disappears once the worm enters
+  the throw/firing states; when `keepWhileFiring` is true, it gates on
+  `w.aiming or w.state == "firing" or w.state == "fired"` so it stays through
+  firing frames too. `ownOutput.ts` recognizes both `EMITTER_ROUNDS` and legacy
+  `EMITTER_ROUND`, as well as both `FRAME_FINISH` and `body_move` muzzle handlers.
+- **Radial muzzle offset (`radialAngle`) and facing-symmetric side offset (`offsetY`).**
+  Added `radialAngle` (degrees, added to `(w.aim or 0.5) * math.pi`) to
+  `EmitterConfig`, `EmitterCard`, `EmitterPreview`, `luaGenerator`, and
+  `importFeatures` so muzzle placement sweeps radially around the worm along a
+  tilted aim arm (`Muzzle Radius` + `Radial Angle`) rather than only a flat
+  coordinate offset, and fixed `offsetY` across the radial arm to use
+  `(w.facing * c, -s)` so positive side offsets sit above the barrel on both
+  left and right facings.
+- **Ring rotation spins the entire effect, not the rays (`px_effects.c` angle math).**
+  `px_effects.c` (`UpdateAndDraw`, `DrawSpinFX`, `DrawRingFX`, `DrawThinSpinFX`)
+  computes `(uX, uY) = (cos * circumference, sin * circumferenceSin)` first and
+  rotates the whole shape by `(cosRot, sinRot)` (`px = x + (uX * cosRot - uY *
+  sinRot) * totalRadius`), while leaving `DrawReachPoint` reach rays unrotated
+  in world space. Both `px_effects.lua` (`draw_ring`) and `EmitterPreview.tsx`
+  previously added `st.angle` before multiplying by `ex, ey`, which only slid
+  points along an axis-aligned ellipse; both now rotate `(ux, uy)` by
+  `(cos_rot, sin_rot)` after ellipse scaling.
+
