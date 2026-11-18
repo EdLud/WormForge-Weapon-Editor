@@ -29,6 +29,8 @@ interface SidebarProps {
   isDark: boolean;
   setIsDark: (dark: boolean) => void;
   onCopyId: () => void;
+  /** The bundle's weapon list, rendered under the project card. */
+  rail?: React.ReactNode;
 }
 
 const WORKSPACE: { id: WorkspaceTab; label: string; hint: string; icon: React.ElementType; key: string }[] = [
@@ -125,6 +127,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   isDark,
   setIsDark,
   onCopyId,
+  rail,
 }) => (
   <aside className="fixed inset-y-0 left-0 z-40 hidden w-68 flex-col border-r border-stone-200 bg-white dark:border-stone-800 dark:bg-stone-900 lg:flex">
     <div className="border-b border-stone-100 px-5 pb-4 pt-5 dark:border-stone-800">
@@ -142,6 +145,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
     <div className="px-3 pt-3">
       <ProjectCard project={project} onCopyId={onCopyId} />
+      {rail}
     </div>
 
     <nav className="mt-4 flex-1 overflow-y-auto px-3 pb-4" aria-label="Workspace">
@@ -251,6 +255,8 @@ interface MobileBarProps {
   onExportZip: () => void;
   isDark: boolean;
   setIsDark: (dark: boolean) => void;
+  /** Only rendered when the bundle holds more than one weapon. */
+  weaponSwitcher?: React.ReactNode;
 }
 
 export const MobileBar: React.FC<MobileBarProps> = ({
@@ -262,6 +268,7 @@ export const MobileBar: React.FC<MobileBarProps> = ({
   onExportZip,
   isDark,
   setIsDark,
+  weaponSwitcher,
 }) => (
   <div className="sticky top-0 z-40 border-b border-stone-200 bg-white/95 backdrop-blur dark:border-stone-800 dark:bg-stone-900/95 lg:hidden">
     <div className="flex items-center gap-2.5 px-4 py-2">
@@ -270,6 +277,7 @@ export const MobileBar: React.FC<MobileBarProps> = ({
         <div className="truncate text-xs font-semibold text-stone-900 dark:text-stone-100">{project.name}</div>
         <div className="truncate font-mono text-[10px] text-stone-400">{project.id}</div>
       </div>
+      {weaponSwitcher}
       <button
         type="button"
         onClick={onImportWep}

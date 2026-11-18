@@ -2074,7 +2074,14 @@ function M.hold(ctx, spec)
           rotation = spec.extra_hand.rotation or 1.0,
           radial_rotation = spec.extra_hand.radial_rotation or 1.0,
           scale = spec.extra_hand.scale or 1.0,
-          size = spec.extra_hand.size or HOLD_HAND_CELL,
+          -- The cell is a length in pixels, never a percentage: the hand sheet
+          -- is drawn into `size * scale` game pixels, so `size = 90` is a 90 px
+          -- hand and not "90%". `scale` is the size knob the first hand calls
+          -- `hand_scale`, and an unset cell follows the first hand's, so
+          -- `scale = 1` means "the same size as the first hand". The nudge
+          -- (`ox`/`oy`) is multiplied by `scale` alone, exactly like the first
+          -- hand's, so changing the cell never moves the grip.
+          size = spec.extra_hand.size or spec.hand_size or HOLD_HAND_CELL,
           ox = (type(spec.extra_hand.offset) == "table" and spec.extra_hand.offset.x) or 0,
           oy = (type(spec.extra_hand.offset) == "table" and spec.extra_hand.offset.y) or 0,
           fire_draw = spec.extra_hand.fire_draw,

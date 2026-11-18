@@ -80,6 +80,7 @@ different project. Do not modify it from this repository.
 │  │  ├─ RibbonTrailPreview.tsx # 50 Hz trail.lua playback
 │  │  ├─ BundleDependencies.tsx # extra mod.toml dependencies panel
 │  │  ├─ WepImportModal.tsx    # .wep drop zone and decode summary
+│  │  ├─ CarriedLuaPanel.tsx    # the imported bundle's code, one switch per block
 │  │  ├─ LuaPreviewModal.tsx   # generated Lua / mod.toml / profile
 │  │  └─ ProjectileSimulation.tsx # RETIRED, unused; do not re-enable
 │  ├─ data/
@@ -105,7 +106,7 @@ different project. Do not modify it from this repository.
 │  │  ├─ mapRecord.ts / importFeatures.ts / importWeapon.ts
 │  │  ├─ splitModule.ts        # preamble, install statements, registrations, hooks
 │  │  ├─ ownOutput.ts          # our own emitted registrations, by signature
-│  │  └─ carryClosure.ts       # the declarations a carried hook closes over (M2/M3)
+│  │  └─ carryClosure.ts       # the declarations carried code closes over (M2/M3)
 │  ├─ data/luaHooks.ts         # single-valued claim hooks + wa.on event registry
 │  └─ index.css                # Tailwind v4 theme tokens, focus, scrollbars
 ├─ public/assets/              # logo, mark, worm sheets, default sprites,
@@ -148,8 +149,37 @@ Node 26.x, Vite 8.3.x, React 19.3.x, Tailwind 4.3.x, TypeScript 7.0.x.
 
 ## 4. Application architecture
 
-`App.tsx` owns the single `WeaponProject` and all navigation state:
+`App.tsx` owns one `PackProject` (the bundle), one `activeIndex`, and the active
+weapon as a derived value, so **every panel still takes a single
+`WeaponProject`** and nothing below `App` knows how many weapons there are:
+`project = pack.weapons[activeIndex]`, `updateProject(patch)` applies the patch
+(and the donor re-base) to that weapon and writes it back through
+`withWeapon(pack, index, next)`.
 
+- **A bundle of one weapon is that weapon.** `syncPackToSoleWeapon` keeps the
+  pack's id, name, author and version equal to the weapon's while it is alone, so
+  the export stays `<weapon>.zip` with `<weapon>/mod.toml` and the single-weapon
+  ZIP is byte-identical to what it was before packs existed (measured on two real
+  PX weapons). From the second weapon on the bundle has its own identity, edited
+  in the **Bundle Settings** card, and `mod.toml` carries one `[[components]]`
+  block per weapon.
+- **The pack rail** (`PackRail.tsx`, under the sidebar project card, and
+  `WeaponSwitcher`, a select in the mobile bar) lists the bundle in manifest
+  order: select a weapon, add a blank one, add one from installed mods (the mod
+  browser in append mode, whose button then says *Add to bundle*), duplicate,
+  move up/down, remove. A bundle always keeps one weapon, so remove is disabled at
+  one.
+- **Ids are allocated once** (`src/utils/pack.ts`): `newWeaponId` names a new
+  weapon `<packId>.<slug>` and bumps **inside the folder segment** (`rocket_2`,
+  never `rocket.2`, which would be folder `2` and could collide with another
+  weapon's `2`). `retargetWeaponArt` moves the art a weapon declares by path
+  (`hold.sheet`, `missileSprite.sheet`, `customSprites`, the carried art) into the
+  new folder, so a duplicate cannot end up naming the original's sheet.
+- **The Code tab is per bundle**: one Lua view at a time (the same weapon
+  selector), while `mod.toml` and the profile come from `generatePackToml` /
+  `generatePackProfile` whenever the pack holds more than one weapon. `Export
+  Mod` calls `exportPackZip(pack)`; a pack of one is the same call.
+- Navigation state lives beside it:
 - `activeTab: 'editor' | 'hold' | 'effects' | 'code'` (hotkeys `1` / `2` / `3` /
   `4`, ignored while typing in an input/textarea/select);
 - `activeSubTab: RecordTabId` (the record sections). Since the redesign it is
@@ -222,6 +252,10 @@ A bundle is a folder under `WormForge/Mods/`:
     icon.png               # only when a custom icon was uploaded
     hold.png               # whenever hold art is enabled
     missile.png            # whenever custom flight art is enabled
+
+# and, beside the weapon folder in the exported ZIP (`Mods/wf-lib/`):
+wf-lib/wfws_sdk/           # always, the flight/aim builder the export names
+wf-lib/effects_sdk/        # only when the weapon requires wf-lib/effects/...
 ```
 
 `mod.toml` essentials:
@@ -249,6 +283,30 @@ The weapon Lua is `wa.weapons.replace{ ... }` inside `install = function(ctx)`.
 `copy_from = "stock.<slot>"` and `wep = "weps/<file>.wep"` are **mutually
 exclusive**: a `.wep` supplies the whole native record and the Lua tables are
 only edits.
+
+**`ctx.option` settings** are `[[components.options]]` blocks that belong to the
+component above them (`components.rs`'s `OptionDecl`: `key`, `type` of `bool` /
+`int` / `choice`, `label`, `description`, `default`, `min`, `max`, `choices`,
+`from_bool`, `data`). The **value** is not in the manifest: the profile stores it
+under `[options."<component id>"]`, and a value equal to the declared default is
+stored as *no* value at all. `ctx.option(key)` raises `"<id> has no option
+<key>"` for a key the manifest does not declare, so it is a load contract and the
+generator writes an imported weapon's declarations back in order. `data = true`
+is `int` only and makes the option the weapon data field of the same key (PX's
+`placement_range`). The exporter writes the option table only for values that
+differ from the default:
+
+```toml
+[[components.options]]
+key = "direction"
+type = "choice"
+choices = ["straight", "opposite", "random"]
+default = "straight"
+
+# profiles/<Weapon Name>.toml, only when the player changed it
+[options."author.weapon"]
+"direction" = "opposite"
+```
 
 The `api_version = 4` / `format_version = 2` numbers are required by the engine
 even though the UI must not display the phrase "API 4.0".
@@ -393,7 +451,7 @@ The editor ships `spec/lua_sdk/wfws_sdk/` (id `wfws.sdk`), exporting
   with the drawn angle and mirrored with the side. A role's own `offset` wins. The
   follower is `collide = false`, so the round itself never moves. There is no
   glow: WA glows only the natives whitelisted in `wa.assets.load{ wa_sprites }`.
-- **`bits = "inherit"` keeps the identity** (`wfws.sdk` 0.16.1): a frag drawn
+- **`bits = "inherit"` keeps the identity** (`wfws.sdk` 0.16.2): a frag drawn
   from the primary's sheet is still a `bit`, so `sb.role` answers `"bit"` and an
   effect with `target = "bit"` attaches to a frag rather than to the round too.
   Identity is not the sheet. The generator never writes `inherit`, so this only
@@ -461,7 +519,9 @@ The editor ships `spec/lua_sdk/wfws_sdk/` (id `wfws.sdk`), exporting
 - **Emitter (`project.emitter`)**: PX's `CEffectManager` as a live actor
   (`fx.emitter`), drawn by the SDK's hidden driver: a spark, a glow, short reach
   bolts, an optional ring and an optional ribbon at one point. **`anchor` is
-  `muzzle` or `round`.** A *muzzle* emitter is moved from a
+  `muzzle` or `round`.** Reach bolts accept `direction` in screen degrees (0 right,
+  90 down) and `spread` as a total angular range around it. A top-level emitter
+  `color` tints the spark, glow, reach and ribbon unless rainbow is on. A *muzzle* emitter is moved from a
   `wa.on.worm_message` filtered to `FRAME_FINISH` (deduplicated once per 50 Hz
   tick via `EMITTER_FRAME = wa.world.frame()` and scanning `wa.worms.all()` for
   the living turn worm rather than reading the callback parameter or using
@@ -511,22 +571,33 @@ The editor ships `spec/lua_sdk/wfws_sdk/` (id `wfws.sdk`), exporting
   than sliding sample points around an axis-aligned oval; reach rays (`DrawReachPoint` / `draw_arc`)
   remain unrotated in world space.
   `rainbow` on the emitter reaches every part that does not set one, as PX's
-  single manager switch does. `carry` needs a round to be spawned for, so the
+  single manager switch does. Import/export round-trips reach direction, spread,
+  the emitter RGB, and the distinction between disabled reach and an enabled
+  reach with zero bolts. `carry` needs a round to be spawned for, so the
   generator also requires `emitterRoundOk`: a placed mine with `carry` on used to
   write the round tracker, and its emitter could never follow a mine entity.
   **The generated `FRAME_FINISH` (and legacy `body_move`) and `missile_frame`
   registrations are this editor's own output**: `ownOutput.ts` recognises them
   (both `EMITTER_ROUNDS` and legacy `EMITTER_ROUND`), or a re-import would carry
   them as foreign code and ship duplicate emitters.
-  **The emitter's ribbon needs `fx.install{ trail = true }`**, which is what calls
-  `trail.install()` and so registers the hook that *draws* a ribbon; the
-  generator sets that flag when either the round's trail card or the emitter's own
-  ribbon is on. `spark`/`glow` are written as booleans, so the SDK's `merge` must
+  **Emitter and projectile ribbons are independent**: either needs the SDK's
+  `fx.install{ trail = true }` hook, but only the projectile trail card emits
+  `trail.add` for missiles. The generator sets that one install flag when either
+  trail is enabled and does not separately call `trail.install()`. **The module
+  itself is required whenever the SDK is installed**, not only when a ribbon is
+  on, because the claim names `trail.BEAM`/`trail.GLOW` for every weapon that
+  installs `fx` (the shared sheet set). A burst-only weapon without that local
+  indexed a nil `trail` at install and the whole weapon failed to load
+  (`attempt to index a nil value (global 'trail')`). `trail` is therefore not in
+  `luaCheck`'s editor-ambient list: an emitted file must declare what it reads.
+  `spark`/`glow` are written as booleans, so the SDK's `merge` must
   treat a non-table override as "no overrides": indexing it threw
   (`attempt to index a boolean value (local 'src')`), took the whole `on_fire`
   down and drew nothing at all. That is what `effects.sdk` 0.3.5 does, so an
-  emitter bundle needs **0.4.2** installed; the editor cannot ship it, since it
-  is a shared library other mods own. **0.4.2 also isolates the draw callback
+  emitter bundle needs **0.4.3**; an export ships that copy at
+  `wf-lib/effects_sdk/` (§10) instead of trusting whatever the player has, while
+  a hand-written bundle, or a weapon shipped without the editor, still installs
+  it from the catalogue. **0.4.2 also isolates the draw callback
   per mod**: the library is required once, so one `wa.on.draw` used to draw every
   mod's effects under the mod that installed it first, and the engine refused a
   spark whose sheet that claim never named (`sprite ... is not installed`). Each
@@ -534,6 +605,24 @@ The editor ships `spec/lua_sdk/wfws_sdk/` (id `wfws.sdk`), exporting
   `wa._mod`, and every generated weapon that installs `fx` claims the whole
   shared sheet set (`trail.BEAM`, `trail.GLOW`, `fx.SPARK`, `fx.BLOB`,
   `fx.SMOKE`), not only the features it switched on.
+  **That per-mod key is a component, not a bundle, and 0.4.3 is what a bundle
+  with more than one weapon needed**: `wa._mod` is the *component* (the engine
+  sets it from `ctx.mod_id` = `d.component.id`, and uses it for `[fog]`, the
+  relative sprite paths and the binds), while sheets are claimed and resolved
+  per *bundle* (`plan.sprites.get(&bundle)`, `resolve_key` falling back to the
+  bundle's "mates"). So a bundle that calls `fx.install` once from its first
+  weapon, and makes an effect from its second, registered one callback that
+  painted only the first weapon's effects: PX's `px.saw_place` and
+  `px.saw_random` saws had no aura and `px.marked_for_death` drew no thunder,
+  while `px.saw_grenade` and `px.death_mark` were fine, and nothing logged,
+  because an effect no callback paints is not an error. `fx.install` now keeps
+  the installer list in install order, and an effect made by a component that
+  never installed is assigned to the installer sharing the longest id prefix
+  with it (the same bundle's component for every catalogue naming scheme), once,
+  with one log line; an id with nothing in common is left alone and reported.
+  The editor's own weapons are one component per bundle, so nothing it writes
+  changed, and a bundle can still be exact by calling `fx.install{}` from each
+  component.
   `ring.track` (the card's **Track Heading**) writes `track = true`, and the SDK
   then points the bend along `wa.math.atan(vy, vx)` of the thing it rides, which
   is what makes a lens ring face the direction of travel; `angle` becomes an
@@ -652,13 +741,19 @@ needs any of them is drawn by `wfws.sdk`'s quad layer instead of the engine.
   hands past the limit. The preview clamps the same way (`aimDrawn`) and leaves
   the worm's posture strip on the real aim, exactly as in game.
 - **`extra_hand`** (`hold.extraHand`) is the layer's, since `HoldSpec` has one
-  hand slot: the engine's own maths, a **60 px hand cell** (never the hold
-  sheet's width, which drew the support hand at the size of the gun) and its own
-  art or the first hand's sheet, the
+  hand slot: the engine's own maths, a **60 px hand cell** (never the uploaded
+  PNG canvas size, which could draw a 100 px support hand) and its own art or
+  the first hand's sheet, scaled to that cell in preview and in game, the
   swing's `dx`/`dy` carried with the weapon, no hand on the echo ghosts or the
   firing pass, and its own firing grip (`fire_radius`/`fire_rotation`/
   `fire_scale`/`fire_offset`/`fire_draw`) which falls back per key to the aiming
-  grip.
+  grip. **`extra_hand.size` is that cell in pixels, not a percentage** (a
+  `size = 90` was a 90 px hand, 1.5x the first hand), and `scale` is the only
+  size knob, the first hand's `hand_scale`; since `wfws.sdk` 0.16.2 an unset
+  `size` follows the weapon's `hand_size`, and `offset` is multiplied by
+  `scale` alone, like the first hand's `hand_offset`, so resizing the cell never
+  moves the grip. The editor writes `hand_size = 60` and `size = 60` and has no
+  field for either, so its own output cannot reach a non-60 cell.
 - **`fire` role** (`hold.flashFile`): the sheet WA draws on its two firing frames
   is its own role (`sheet`, `cell_w`/`cell_h`, `scale`, `frames` + `anim_speed`,
   `ticks`, `hide_main`, its own `weap_radius`/`weap_rotation` and hand). The cell
@@ -774,7 +869,7 @@ needs any of them is drawn by `wfws.sdk`'s quad layer instead of the engine.
 ### Record ids and art slots
 
 - **`sb.role(id)` is the one answer to "which part of the missile is this"**
-  (`wfws.sdk` 0.16.1): the classifier's `main` / `bit` / role name, kept past the
+  (`wfws.sdk` 0.16.2): the classifier's `main` / `bit` / role name, kept past the
   despawn like `sb.heading`, so an `on_explode` can ask which part burst. The
   ribbon trail's `target` and the burst's `target` read it instead of guessing
   from `m.sprite` again.
@@ -879,12 +974,33 @@ bundle, its weapon components and the record tables each one keeps in Lua.
   callback the table reader skipped, and returns the literal text too (some of
   the generator's values are expressions, like `vx = function … * 14 end`).
 - `modToml.ts` reads the manifest (scalars, `dependencies`, `[[components]]`,
-  `[sprites."…"]`).
+  `[sprites."…"]`, `[exports]`, the `[[components.options]]` /
+  `[[components.weapon_options]]` / `[components.suggests."<feature>"]` blocks
+  that belong to the component above them, which used to become phantom
+  components and lose every option, and **inline tables**:
+  `default_position = { row = "F2", column = 1 }` is the panel slot a weapon
+  replaces, and reading it as one string is why an imported pack put every weapon
+  on its donor's slot. `splitTopLevel` keeps a comma inside a string or a nested
+  table from splitting a value; `ModWeapon.row`/`column` carry the position and
+  `stockSlotForPosition` turns it back into a stock slot).
 - `scan.ts` finds nested bundles by their own `mod.toml` and resolves each
-  weapon component to its module: its own entry when unique, else
-  `weapons/index.lua`, else `weapons/<id after the dot>.lua`; then one level of
-  `require("lib/…")`. A table is accepted as a record by shape (`missile`,
-  `clusters`, `handling`, `gun`, `mine`, `strike`) when nothing names it.
+  weapon component to its module **the way the engine's loader does** (L1 of
+  `reqs/wflib_weapon_import_plan.md`): the bundle's own `["<id>"] = "<module>"`
+  index first, wherever that file lives, then the component's `entry` (shared or
+  not: it is the module the engine runs, and `px.bunker_buster` /
+  `px.super_bunker_buster` are two components over one module that tells them
+  apart by `ctx.id`), then `weapons/<id after the dot>`, `weapons/<name>`, the
+  same under `wf-lib/<namespace>/` and `lib/`. `resolvedVia` says which one
+  worked and a miss lists every candidate it looked in. A `require` is resolved
+  by the engine's rules and **in the calling module's bundle**: a plain name is
+  bundle-relative, `wf-lib/<name>` is a declared dependency's `[exports]` entry
+  (`lua-host/src/modules.rs`), and a module a library exports resolves its own
+  requires in the library's bundle (what `wf-lib/sdk/parkour.lua` requiring
+  `own_time` needs). The legacy shape (a `wf-lib/` name satisfied by the bundle's
+  own `lib/`, which is what `px_buffalo` ships) is followed for reading and
+  reported in `localLibraryRequires`, because the current engine refuses it. A
+  table is accepted as a record by shape (`missile`, `clusters`, `handling`,
+  `gun`, `mine`, `strike`) when nothing names it.
 - `loadFiles.ts` is the web-safe input: `webkitdirectory`, JSZip, and
   `webkitGetAsEntry` drops; `.lua`/`.toml` as text, `.wep` as bytes. PNG/GIF/WAV
   entries are listed with a **lazy** reader (`bytesOf`), because a whole `Mods/`
@@ -921,6 +1037,18 @@ bundle, its weapon components and the record tables each one keeps in Lua.
   The plan for carrying the rest, and the merge rules for the single-valued
   hooks, is `reqs/custom_code_import_plan.md` (M0, M1 and M1.5 delivered; M2/M3
   and M5 to M7 open).
+- **A claim `sprites` path a role already owns is that role's art**
+  (`importFeatures.ts`). The list holds every sheet the claim needs, and the
+  export's sheet dedupe points identical bytes at **one** file, so a path's name
+  can belong to another weapon's role: a hold sheet shared under `body.png` came
+  back as the weapon's strike art (which then suppressed
+  `params = { gpu_prefix = "sprites/" }`, and the aim layer's `wa.draw.quad`
+  stopped resolving a pack path), and a builder bit sheet named `bit.png` came
+  back as stock cluster art. The owned set is built from the claim itself (the
+  hold and flight sheets, `customSprites`, carried art) **and** from every sheet
+  the `sb.hold` / `sb.flight` / `wa.land.stamp` calls name, and only a path no role
+  claims is classified by file name. Found by
+  `tools/check_pack_fixture.ts`, not by an in-memory case.
 - **The module's structure is read, not guessed** (`splitModule.ts`, M1 of the
   plan): the preamble (module-level requires, constants and helpers), the install
   body's own statements (the install-time locals and the registrations), every
@@ -1006,11 +1134,34 @@ bundle, its weapon components and the record tables each one keeps in Lua.
   (every `wa.on.*` call `ownOutputOf` does not recognise) and `art` (the sheet
   and WAV paths the carried text names). A body is never carried alone; its
   **closure** is (M2 and M3 of the plan). The hook's free names are resolved
-  against the module's install-body declarations first and its preamble second,
-  transitively and in source order, so vortex arrives with `start_vortex`, `tick`,
-  `pull`, `scatter`, `play_at`, `vortices` and the constants they read, pulsar
-  with `aura`, and the Conductor with `bolt_end`, `draw_bolt`, `step_bolts`,
-  `BOLT` and `BEAM_FRAMES`. The emission is two regions: the preamble before
+  against the scopes it sits in, innermost first, transitively and in source
+  order, so vortex arrives with `start_vortex`, `tick`, `pull`, `scatter`,
+  `play_at`, `vortices` and the constants they read, pulsar with `aura`, and the
+  Conductor with `bolt_end`, `draw_bolt`, `step_bolts`, `BOLT` and
+  `BEAM_FRAMES`. **A scope is a block, not a level**: PX declares a weapon's
+  state inside `function weapon.setup() … do … end` and registers its hooks from
+  there (`swim_suit`, `hang_glider`, `portal_gun`, `nuke_rocket`), so
+  `splitModule` records the chain of statement lists containing each registration
+  and each claim hook (`LuaBlock.scope` is the list a block belongs to,
+  `enclosing` the lists outside it), and `bodyRegion` recurses into `function`,
+  `do`, `for`, `while`, a `repeat` and an `if` with one branch but never into a
+  table, because a `return { on_explode = function … end }` would read the hook's
+  own body as a scope of the hook. Before that walk 44 of PX's 89 weapons carried
+  names nothing declares; now none does. A seed's free names also include the
+  ones **inside the function literals it hands to `wa.on.*`**, since the checker
+  reads `wa.on.worm_message(function(w) … end, opts)` as one call and reported
+  nothing inside the callback. One declaration reached twice (a `local shared =
+  require("lib/shared")` in both `weapon.definition` and `weapon.setup`) is one
+  binding and is carried once; only two genuinely different locals of one name
+  clash, and the second is refused with a note. **A hook written inside another
+  hook is not a claim key**: PX's `fire_seq` burst passes `on_shot`/`on_done` in
+  the options table of the call `on_fire` makes, so they read `on_fire`'s locals,
+  and hoisting one to the claim table read them as nils; `split.nestedHooks`
+  marks them, `importWeapon` skips them as seeds and names them in the summary,
+  and they travel inside the parent's text. **A name that is a parameter** of the
+  enclosing function (`function M.install(ctx, spec)` in `lib/cursor.lua`) is
+  reported with the function and its line instead of "nothing declares it",
+  because the caller supplies it and there is nothing to carry. The emission is two regions: the preamble before
   `return {` (with the generated requires, because these are the same kind of
   thing) and the prologue at the end of `install`, before the claim, so a carried
   helper that calls `fx.burst` runs against an installed library.
@@ -1024,11 +1175,28 @@ bundle, its weapon components and the record tables each one keeps in Lua.
     launch WAV, `fire_seq` burst, carried body. A bundle's `on_fire` that is only
     the launch-WAV play is this editor's own output and is not carried.
   - **A hook nothing merges is written verbatim** (`on_click`, `on_done`,
-    `on_select`, `on_place`, `on_transport`): `key = function(…) … end`.
+    `on_select`, `on_place`, `on_transport`): `key = function(…) … end`, re-indented
+    with `reindentCode`, never by prefixing every line: a re-import reads the body
+    back with the indentation the last export gave it, so a blind prefix added six
+    spaces per round trip.
+  - **A round trip is byte-identical** (`tools/check_pack_fixture.ts`), and three
+    rules exist for it alone. A re-import drops this editor's own
+    `not generated` markers before the body is wrapped again
+    (`stripNotGeneratedMarkers`), or a weapon written here gained two comment lines
+    every time. An `on_fire`/`on_explode` parameter alias (`local fire = ev`) is
+    written **inside** the region: `hookBodyOf` cuts from the signature to the last
+    `end`, so a line outside came back as part of the body and the marker drifted
+    below it.
   - **A registration carries its filter**: only `worm_message` takes `msgs` and
     only `body_move` takes `kinds`, so the options table is part of the text, not
     re-derived (the Conductor's `{ msgs = { wa.msg.FIRE_WEAPON } }` survives).
     Registrations are written after everything the editor installs, reindented.
+  - **Every carried region is a `not generated` region**: the preamble, the
+    install locals, the registrations and the merged hook bodies are each written
+    between `NOT_GENERATED_OPEN`/`CLOSE`. They are comments, so the masked copies
+    every scanner uses never see them (and the carry's own same-text comparison
+    is unaffected), and they are what lets `checkLua` tag a finding as being in
+    code no panel produced. The Carried Lua panel reports exactly those.
   - **Art is declared where the export writes it**: `carryClosure` returns
     `paths: { source, target }[]` for every art literal it rewrites, the importer
     loads each from `source` into `customSprites[target]` (with the source
@@ -1066,9 +1234,57 @@ bundle, its weapon components and the record tables each one keeps in Lua.
   a half-copied helper is a nil call with extra steps. What is still *not* carried:
   a `wa.on.*` that `ownOutputOf` recognises as ours, whose panel was switched off
   in the import. The block is reported as rebuilt and the export drops it,
-  because carrying it would double the feature; the Carried Lua panel (M7) is
-  where an author will be able to say otherwise.
-- **Record audit**: `bun run tools/audit_records.ts [ModsFolder]`, coverage of
+  because carrying it would double the feature.
+
+  **The panel** (`src/components/CarriedLuaPanel.tsx`, Bundle & Export) lists every
+  carried block, one row each, with the code read-only behind a disclosure and one
+  switch per row (`disabled` on the block: the text stays in the project, the
+  export stops writing it). The validator's findings inside a carried region sit
+  at the top of the list, so switching a declaration off and leaving the block
+  below it reading a nil is visible in one place rather than in the file.
+
+  **Measured on the installed corpus** (`Mods/`, 280 weapons with a record): the
+  closure is complete for 276 of them. The four left read names a **bundle-local
+  library module** declares (`px.famas` and `px.megashark_hold` in
+  `lib/fire_seq.lua`, `cursors.cursor` in `lib/cursor.lua`), which is L2 of
+  `reqs/wflib_weapon_import_plan.md`: a carried `lib/…` module is a second scope,
+  not a name in the weapon's own module. A carried `require` of a module the
+  export does not ship is named in the import summary (`carried
+  require("lib/shared") is not shipped by the export: add the bundle that
+  provides it to Dependencies, or the export fails at load`), and one of a name
+  `wf.sdk` exports (`wf-lib/own_time`, `wf-lib/shared`, `wf-lib/parkour`,
+  `wf-lib/tooltip`, `wf-lib/lightning`, `wf-lib/px_sprite_builder`) adds `wf.sdk`
+  to the manifest instead.
+- Module discovery and `ctx` configuration (no server, exits 1 on a failure):
+
+```powershell
+bun run tools/check_module_scan.ts
+```
+
+55 cases on `src/utils/modLib/scan.ts` and `modToml.ts`: the shared loader entry
+with an index (`px.ports`), two components over one real module, a record handed
+to a library (`lib/px_bunker.lua`), a weapon module under `lib/`, `wf-lib/`
+resolved through a dependency's `[exports]`, the legacy own-`lib/` shape, a
+cross-bundle plain `require`, option blocks attaching to the component above them
+(and not becoming phantom components), `[exports]` staying out of the scalars,
+`ctx.option` reads, the miss message, an ordinary `["name"] = "value"` table not
+being mistaken for an index, and the **manifest round trip** (the options the
+generator writes read back as the same keys, kinds, ranges, choices, defaults and
+`data` flags, with no option block becoming a phantom component). Then the
+installed corpus when it is mounted:
+`px.ports`' 97 weapon components with 89 records, the index and library routes
+both present, no unresolved `require` anywhere, the two components over one
+module, and the buffalo's `ctx.option("direction")`.
+
+The measurement tool behind it is `bun run tools/scan_mods.ts [ModsFolder]` (L0):
+per bundle, the route each module was found by, the records handed to a library,
+every `require` nothing in the selection provides (a `wf-lib/<name>` only
+resolves inside the selection), the legacy `wf-lib/` -> own `lib/` shape, and
+every `ctx.option` read against the declared options, split into "declared
+nowhere" and "declared on another component" (`ctx.option` raises for a key the
+component does not declare, so the first is a load failure).
+
+**Record audit**: `bun run tools/audit_records.ts [ModsFolder]`, coverage of
   every record group `record.rs` names, engine invariants (mask conflicts, burst
   without its table, sprite fields holding paths), 28 stock-slot behaviour
   expectations against the decoded donors, and the editor's own output
@@ -1085,6 +1301,26 @@ bundle, its weapon components and the record tables each one keeps in Lua.
 - Corpus: `bun run tools/scan_mods.ts [ModsFolder]`, 240 of 262 weapons read
   from the dev machine. Misses are stock-copy examples, templates, and records
   that only exist in a bundled `.wep`.
+- **A whole bundle reads as a pack** (`importPack.ts`, P5 of
+  `reqs/pack_export_plan.md`): `importBundlePack(bundle, weapons, files)` runs every
+  weapon component through `importBundleWeapon` and assembles one `PackProject`.
+  Three rules: a bundle whose weapons already live under its own id is kept
+  verbatim (so a pack the editor wrote re-imports as itself), any other bundle is
+  namespaced under a **copy of its own id** (`copyNamespace`: `px.ports` becomes
+  `px.ports_import`, and its `px.port` becomes `px.ports_import.port`, because the
+  installed bundle already claims `px.port` and two bundles may not claim one
+  weapon id), which keeps the source author's namespace instead of pushing it into
+  one of ours. The component's
+  `default_position` becomes the project's `slot`, so each weapon stays on the
+  panel slot the author chose, and its stock `icon` becomes `panel_icon`. A folder
+  collision bumps the id (`adoptWeaponId`) and `retargetWeaponArt` moves that
+  weapon's declared art with it. The one-weapon rule is applied **once**, at the
+  end: applied per weapon it renamed the bundle to the first weapon's id.
+  Measured on the installed `wf-lib/px` bundle: 89 records read, imported as
+  `px.ports_import.*` in about a second, exported as one `ports/` bundle with 89
+  components, 22 deduped sheet declarations, one profile placing all 89 on their
+  own slots, `wfcheck` 0 errors and 0 warnings (11 informational `pairs()` notes
+  from the carried PX code).
 - **A panel shows the value the record will have, not the editor's default.**
   `recordField(project, 'path', fallback)` (`src/utils/recordField.ts`) returns
   the author's override, else what the donor (or the imported `.wep`) carries,
@@ -1106,8 +1342,21 @@ bundle, its weapon components and the record tables each one keeps in Lua.
   exports three lines). A bundle import sets `replaceProject`, so it starts from
   the default Grenade project instead of inheriting the open weapon's art.
 
-Ids are namespaced: `src/utils/weaponId.ts` fixes `wfws.` and the ID field
-edits the suffix only, so no id can collide with a mod the reader shows.
+**The bundle id is the namespace.** `src/utils/weaponId.ts` fixes nothing: it
+answers "is this id under that bundle" (`isUnderNamespace`) and derives the
+namespace a copy takes (`copyNamespace`), and both id fields edit the **whole**
+id. A weapon in a bundle lives under the bundle's id (`lucia.arsenal.rocket`),
+which is what keeps it off an installed mod (that bundle's id is unique, so its
+namespace is taken), and `validateBundle` refuses an id outside it by name.
+Renaming the bundle id renames its weapons with it (`renamespaceWeapons`), since
+an old prefix would be refused for a reason the card cannot show. The one fixed
+value left is `DEFAULT_ID_NAMESPACE` (`wfws`): a **default** for work with no
+bundle yet (a new project, a decoded `.wep`, a weapon a module leaves unnamed),
+never a rule, and one keystroke away from whatever the author wants. The weapon
+card shows that namespace as a hint rather than a lock: an id outside the bundle's
+gets an amber note (`nothing keeps it from colliding with an installed mod`), and
+the export refuses it by name. The **bundle** id field edits the whole id, and a
+rename moves the weapons that lived under the old prefix with it.
 
 ## 9. UI and design system
 
@@ -1145,7 +1394,14 @@ edits the suffix only, so no id can collide with a mod the reader shows.
   name/id/description, author, fire archetype, donor, slot, position and the five
   defaults live in `WeaponSettings.tsx`, rendered above the workbench on the
   record page. The record sections are chosen by the workbench tab bar, not by
-  the sidebar.
+  the sidebar. A weapon that declares `[[components.options]]` (an import from a
+  bundle, or one an author adds) gets a **Weapon Options** drawer under those
+  fields (`WeaponOptionsPanel.tsx`): one row per option with its label,
+  `ctx.option("key")`, the declared default and kind, and a control by kind
+  (checkbox, number with the declared range, select over `choices`). A `data =
+  true` option carries a `data` chip, because it is the weapon data field of the
+  same key as well as a setting. The header says what will be written:
+  `N changed, written to the profile as [options."<id>"]`.
 - **Tooltips are tappable** (`TooltipTap.tsx`, mounted once in `App` next to the
   toast; it was written but never mounted at one point, which left every help
   icon dead on a phone). Most explanations are `title` attributes, which a phone
@@ -1171,6 +1427,9 @@ edits the suffix only, so no id can collide with a mod the reader shows.
   the roam strips, the pack-art upload (a declared `frames`) and the hold sheet
   (which stores `sheetWidth`/`sheetHeight` on upload, so no measuring is needed).
   Default art is stacked by `defaultArt.ts` and can never trip it.
+- **A `.wep`-backed weapon's record is the file, not a table.** A bundle's claim
+  that only names `wep = "weps/x.wep"` has no record groups to show, so the mod
+  browser prints `record: <that path>` instead of `0 fields`.
 - **A live effect gets a 50 Hz canvas, not a sketch.** `RibbonTrailPreview`,
   `ExplosionPreview` and `EmitterPreview` all play the library's own maths at
   WA's 20 ms tick against its own sheets (`beam.png`, `beam_glow.png`, the glow
@@ -1191,9 +1450,58 @@ edits the suffix only, so no id can collide with a mod the reader shows.
 
 ---
 
-## 10. Export contract (`modExporter.ts`)
+## 10. Export contract (`modExporter.ts`, `packExporter.ts`)
 
+**There is one emitter, and a single-weapon export is a pack of one.**
+`src/utils/packExporter.ts` holds the whole of it: `weaponBundlePart(project)`
+(everything one weapon contributes: its Lua, its plain files, its sheet sources)
+and `emitPackFiles(pack, libraries, fetchBytes)`, which returns the finished file
+map keyed by path inside the ZIP. `modExporter.ts` is the thin app wrapper:
+`exportModZip(project)` is `exportZip(singleWeaponPack(project))` and
+`exportPackZip(pack)` is the same call with N weapons.
+
+- **The two library bundles are arguments, not imports.** `wf-lib/wfws_sdk/` and
+  `wf-lib/effects_sdk/` come in as text (`PackLibraries`), which keeps the emitter
+  free of Vite's `?raw` so `tools/check_pack_roundtrip.ts` can run it. Measured
+  parity: `swim_suit` and `javelin` exported before and after the extraction are
+  the same 9 and 8 entries with zero byte differences.
+- **A pack is one `mod.toml`, N `[[components]]`, one profile.** `generatePackToml`
+  writes the bundle header, the **union** of every weapon's dependencies
+  (first-seen order, once each), `mod_icon` from the pack or the first weapon that
+  has one, and each weapon's own component block (`id`, `entry`, `icon`,
+  `default_position`, `options`). `generatePackProfile` writes one `[weapons]`
+  with every weapon and every stock slot, `ammo = -1` where asked, and
+  `[options."<id>"]` for changed values only.
+- **Art is per weapon already**: every path is
+  `sprites/<sanitizeModFolder(id)>/…`, so a namespaced `<packId>.<slug>` id names
+  its own folder and a pack of one is the layout it always was. `dedupeSheets`
+  runs **once over the whole pack** (the union of every weapon's sheets against the
+  combined manifest), then the alias is applied to each weapon's Lua and once to
+  `mod.toml`, so two weapons on the fallback art are one file.
+- **`weps/` is the one exception** (`WeaponProject.packSlug`): one bundle has one
+  `weps/`, so two weapons built from a `.wep` both called `weapon.wep` used to be
+  one file and one of them loaded the other's record. The emitter sets `packSlug`
+  for a pack of more than one and `wepBundlePath` writes `weps/<slug>/<file>`; a
+  single weapon leaves it unset.
+- **`validateBundle` runs last** and refuses with one error that names every
+  offender, because one bad component fails the whole bundle at load. Structure: a
+  duplicated weapon id, an id outside `wfws.` (it would collide with an installed
+  bundle), an `entry` with no file, a declared `[sprites."…"]` with no file, and a
+  path declared twice (a repeated table is a TOML error, and the engine then loses
+  the declaration and `wa.on.draw` fails with a nil). Code: every weapon's generated
+  module through `checkLua`, where **only `error` findings refuse**
+  (`lockstep-rng`, `undeclared-require`, `module-wa`, `lua-ast`, `lua-nul`,
+  `lua-size`), because only those files raise at load; the message names the
+  weapon, the line and the rule. A warning or an advisory stays a toast: an
+  author's `pairs()` is their call, and gating on it would refuse bundles that load
+  and play today.
 - `mod.toml`, `weapons/<mod>.lua`, `profiles/<Name>.toml` are always written.
+- `wf-lib/wfws_sdk/` (`mod.toml` + `lib/wfws_sprite_builder.lua`) is always
+  written beside the weapon folder: the export names that dependency.
+- `wf-lib/effects_sdk/` (`mod.toml`, three `libs/*.lua` and the sheets its
+  `[sprites]` table names) whenever the generated Lua requires
+  `wf-lib/effects/...`, so the bundle carries the library version it was built
+  against. See the paragraph after this list for what it must contain and why.
 - `weps/<file>.wep` is written only when `useWepFile` is on.
 - `sprites/<mod>/icon.png` when a custom icon exists.
 - `sprites/<mod>/body.png` when the weapon's own sheet (`sprite`) is uploaded
@@ -1278,6 +1586,23 @@ edits the suffix only, so no id can collide with a mod the reader shows.
   unpacked into `Mods/` already has it. Both files are imported from
   `spec/lua_sdk/wfws_sdk/` with Vite's `?raw`, so there is no copy to keep in
   sync.
+- **`effects.sdk` ships too when the weapon requires it** (`src/data/effectsSdk.ts`,
+  `usesEffectsSdk(luaCode)`): a weapon whose ribbon trail, burst, emitter or
+  carried code names `wf-lib/effects/...` gets the whole library bundle at
+  `wf-lib/effects_sdk/` next to the weapon folder in the same ZIP, so unpacking
+  into `Mods/` satisfies the dependency with the version the file was generated
+  against. That is 0.4.3: an older copy threw on a boolean `spark` override or
+  dropped the reach direction, the shared colour and the ring rotation, and the
+  emitter needs those. The manifest, `libs/px_effects.lua`, `libs/trail.lua` and
+  `libs/custom_explosion.lua` are `?raw` from `spec/lua_sdk/effects_sdk/`; the
+  sheets its `[sprites]` table declares (beam, beam glow, glow blob, cloud and
+  the ten-frame spark) are the same `spec/` PNGs the previews load, fetched as
+  bytes at export time, so no art is copied into `public/` and a manifest never
+  names a file the ZIP lacks. The folder is the catalogue's own, so extracting
+  over an installed copy updates it in place rather than leaving a second bundle
+  with the same id, which the engine refuses (`bundle effects.sdk is installed
+  more than once; keep one copy`). A weapon with no effects feature ships no
+  library, which is what keeps a plain export small.
 
 ---
 
@@ -1300,7 +1625,7 @@ The pack ships the editor's own `wf-lib/wfws_sdk/` (copied from `spec/`, like an
 export does), so its weapons run against the version they were generated for
 instead of an older installed copy of the library.
 
-It writes one bundle with 56 components, one profile ("WF Test Pack") and art
+It writes one bundle with 58 components, one profile ("WF Test Pack") and art
 derived from `spec/` sheets, one per role (the sprite builder, cluster bits, the
 homing window, the homing bit, the roaming animal, native trails, the emitter,
 the aim layer, the swing, the melee strike, the aim clamp on a swing and on a
@@ -1340,6 +1665,66 @@ It asserts the grouping (identical bytes and the same frame count share a file, 
 differently sliced strip does not), that aliases rewrite whole quoted paths only,
 and that one declaration survives per file.
 
+Pack emitter and round trip (no server, exits 1 on a failure):
+
+```powershell
+bun run tools/check_pack_roundtrip.ts
+```
+
+66 cases on `src/utils/packExporter.ts`, `src/utils/pack.ts`, `importPack.ts` and the pack generators: a pack of one is
+manifest-for-manifest and profile-for-profile what the single-weapon generator
+writes; a three-weapon pack writes three components with their own entries, the
+unioned dependency list (once each) and one profile placing all three, with the
+changed option under that weapon's id; the emitted file map reads back through
+`readBundles` and `readWeapons` as the pack plus the library bundle it ships,
+with both weapons, their ids, their modules and a record each, every declared
+path present, and `importBundleWeapon` giving both weapons back; two `.wep`
+weapons of one pack write two records and each Lua names its own; a duplicated id
+and a declared path with no file are refused by name. The pack's own rules are
+pinned too: a new id's bump stays in the folder segment, a taken name bumps, one
+weapon gives the bundle its identity while two keep it, a duplicate moves every
+path it declares (hold, flight sheet, `customSprites`, carried art) into its own
+folder, order and removal follow the active row, a bundle never drops below one
+weapon, and `[weapons]` lists a shared stock slot once. It reads the libraries
+from `spec/` the way the app imports them, so the emitter is exercised without a
+browser. The read side is pinned too: an exported pack reads back as a pack with
+the ids its manifest declared and re-exports the same two components, a foreign
+bundle is namespaced under a copy of its own id (`px.ports` becomes
+`px.ports_import`, `px.port` becomes `px.ports_import.port`) and says so, an
+editor-written bundle keeps the ids it declares, and a slug already used in the
+bundle bumps; renaming a bundle re-namespaces its weapons and leaves a foreign id
+alone. Both
+halves of `validateBundle` are pinned: a weapon whose generated code raises at
+load (`math.random` in a custom hook) is refused by name and rule, an id outside
+`wfws.` is refused, and one sheet declared twice is refused.
+
+Pack fixture (no server, exits 1 on a failure; the test pack is generated first):
+
+```powershell
+bun run tools/gen_test_pack.ts
+bun run tools/check_pack_fixture.ts
+```
+
+34 cases that take **art and code off disk** and assert the strongest property
+available: import, export, re-import, export writes **the same bytes**, file by
+file, digest against digest. The fixture is the 58 components of
+`gen_test_pack` (80 files, one instance of every shape the editor emits) plus
+every installed bundle that exports without a browser (`wf-lib/utilities`,
+`px_pyroman_grenades`, `wf-lib/marked_for_death`). Each round trip also runs
+`wfcheck` on the written bundle: **nothing** for the test pack, **no errors** for a
+foreign one, since another author's bundle may carry warnings of its own and only
+an error takes the bundle down at load. Carried block counts are compared before
+and after, so the carry is stable rather than merely present. A bundle whose
+fallback art has to be painted needs the browser's canvas and is reported as
+skipped by name (`wf-lib/px_fire_seq`, `wf-lib/mole_shopper`): Bun has no
+`document`, and silence would hide the day a bundle that exports today starts
+needing one. Three importer defects came out of it, all one root cause
+(the claim `sprites` list classified by **file name** when the export's sheet
+dedupe can point one role's sheet at another weapon's file): a hold sheet shared
+as `body.png` came back as the weapon's strike art, which then suppressed
+`params = { gpu_prefix = "sprites/" }` and lost the aim layer's path resolution,
+and a builder bit sheet named `bit.png` came back as stock cluster art.
+
 Hook registry and module splitting (no server, exits 1 on a failure):
 
 ```powershell
@@ -1367,7 +1752,7 @@ Carried Lua (M2, M3, M5 and M6, no server, exits 1 on a failure):
 bun run tools/check_carried_lua.ts
 ```
 
-59 cases on `src/utils/modLib/carryClosure.ts` and the carried-hook emission: the
+92 cases on `src/utils/modLib/carryClosure.ts` and the carried-hook emission: the
 closure of a hook body (the helper it calls, the helper that helper calls, the
 module constant, the table it appends to, in source order), the lockstep rewrites
 (`math.random` to `wa.random`, `math.sin/cos/atan` to `wa.math.*`, and the float
@@ -1375,17 +1760,25 @@ form reported rather than rewritten), a hook calling a name nothing declares, a
 block with an unclosed `if` refused, a bundle module renamed around the export's
 own `fx` (with a string saying `fx` left alone), a require of the same module not
 carried twice, the bundle's own art paths moved to the export folder, and the
-dependency a carried `require` needs. It runs on the four real bundles when D: is
+dependency a carried `require` needs. Five cases cover the **scope walk**: a
+registration inside a `function weapon.setup()` helper carries the helper it
+calls, the state beside it in the same `do … end` block, the constant beside
+that, and what the helper closes over one block up; one `local shared =
+require("lib/shared")` written in both `weapon.definition` and `weapon.setup` is
+carried once and not reported as a clash; and two *different* locals of one name
+are one carried and one reported. It runs on the four real bundles when D: is
 mounted (vortex carries 12 prologue and 21 preamble blocks, `start_vortex` and its
 chain plus the `draw` that paints the hole; pulsar carries `aura` and its
 `missile_frame`; the Conductor carries its whole `on_fire` gun, 14 prologue and 12
 preamble; railgun carries nothing) and asserts the exported file has no dangling
 name, that an import leaves the author's snippet box alone, that the export has
 one `on_explode` key, that each carried registration is written once and the
-export registers exactly ours plus theirs, plus the round trip: export, re-import,
-and the carried code comes back identical. It also asserts a re-import of the 55
-generated test-pack weapons carries nothing of its own, which is what keeps our
-output from growing a header a pass.
+export registers exactly ours plus theirs, and the panel's four switches and the
+order they leave behind, plus the round trip: export, re-import, and the carried
+code comes back identical. It also asserts a re-import of the 58 generated
+test-pack weapons carries exactly what it started with (nothing of our own, so the
+emitter's two registrations stay recognised, and the two weapons written to carry
+code carry it once).
 
 Carried-code rules (no server, exits 1 on a failure):
 
@@ -1620,6 +2013,15 @@ that `vite preview` at `/` hides).
     not `==` to the next frame's. Keep the handle for the calls you have to make
     and compare `worm.id` (team * 16 + index). `st.worm == w` made the melee clip
     run, hit and release with nothing drawn (lesson 23's twin failure).
+25. **`wa._mod` is the component, not the bundle.** Sheets are claimed and
+    resolved per bundle (a component resolves a sibling's sheet), but `_mod` names
+    the weapon whose install is running, so anything keyed by it inside a shared
+    library splits a multi-weapon bundle in two. That is how `effects.sdk` 0.4.2
+    lost every effect a bundle's second weapon made (the saw's aura on a placed
+    saw, the death mark's thunder) without one error line: an effect that no
+    callback paints is simply not drawn. When the key is a draw callback, either
+    install from every component or adopt the stray ones (0.4.3 does, by longest
+    id prefix, and says so).
 
 ---
 ## 14. Out of scope / deferred
@@ -1646,14 +2048,33 @@ emitter (muzzle or round, ring, bolts, own ribbon), terrain stamp with impact
 damage, sequential fire, custom WAVs, pack art, the bundle reader (`.wep` + Lua tables + this editor's own
 features **and the code it does not model**: a bundle's `on_explode` and `on_fire`,
 every other claim hook, every foreign `wa.on.*` registration, the closure each one
-reads and the art it names) and the exporter. `wfws.sdk` is 0.16.1 and ships
+reads and the art it names) and the exporter. `wfws.sdk` is 0.16.2 and ships
 inside every export.
 
-Validated by the full check set in §11: `lint`, `build`, `gen_test_pack` (56
-weapons), `check_mod_import` (56/56), `check_carried_lua` (59 cases),
-`audit_records` (0 findings), `check_copyfrom`, `check_sheet_dedupe`,
-`check_lua_rules` (57 cases), `check_lua_hooks` (68), `wfcheck` on the pack and on
-a UI-exported ZIP.
+Validated by the full check set in §11: `lint`, `build`, `gen_test_pack` (58
+weapons), `check_mod_import` (58/58), `check_carried_lua` (92 cases),
+`check_lua_hooks` (73), `check_module_scan` (60), `check_pack_roundtrip` (66),
+`check_pack_fixture` (34), `audit_records` (0 findings), `check_copyfrom`,
+`check_sheet_dedupe`, `check_lua_rules` (57 cases), `check_generator_edges`,
+`wfcheck` on the pack and on a UI-exported ZIP.
+
+**The exporter is one code path** (`reqs/pack_export_plan.md`, §10): a
+single-weapon export is `emitPackFiles` of a pack of one, proven byte-identical on
+two real PX weapons, and a pack writes one `mod.toml` with N components, the
+unioned dependencies, one profile and pack-wide sheet dedupe. P0, P1, P2, **P4 and P5** are
+delivered (the pack rail, the Bundle Settings card, the per-bundle Code tab,
+`exportPackZip`, and reading a whole bundle as a pack from the mod browser's
+**Import bundle (N weapons)**), **P3 is** (structure and the findings that raise at
+load, refused by weapon and rule) and **P6 is** (`check_pack_fixture`: the 58-shape
+test pack and three installed bundles round-trip **byte for byte**, with `wfcheck`
+clean on each written bundle), which is the whole plan.
+Verified in the browser on real bundles: two PX weapons in one bundle export as
+`swim_suit/` with two components, per-weapon art folders, the javelin's `.wep` at
+`weps/javelin/prod.wep`, one profile, `wfcheck` clean, and the editor's own reader
+reads the exported pack back as two weapons with records; and the installed
+`wf-lib/px` bundle (97 components, 89 records) imports as one 89-weapon pack and
+exports as `ports/` in about a second, one component and one profile slot per
+weapon, 22 deduped sheets, `wfcheck` 0 errors and 0 warnings.
 
 Waiting on a person for:
 
@@ -1664,15 +2085,37 @@ Waiting on a person for:
 - a review of the redesign branch on a phone, then a merge or a rebase;
 - the GitHub remote and Pages (§12).
 
-The import plan has one milestone left, **M7**: the Carried Lua panel (a list of
-the carried blocks with what each declares, its lockstep rewrites, its art, and a
-per-block disable), plus the summary wording that goes with it. M5 and M6 shipped
-the model it edits: `on_explode` and `on_fire` merge into one handler each, every
-other hook and `wa.on.*` registration is carried with its filter, and the art a
-carried block names is declared and written. A bundle now round-trips through
-import, export and re-import with its code intact and no block doubled. Separately:
-WF 51/52 (a swing that misses behind and outside the arc, and one that only
-reaches overhead when the box follows the swing).
+The import plan is complete: M0 to M7 shipped. A bundle round-trips through
+import, export and re-import with its code intact, its art declared and written,
+and no block doubled; the Carried Lua panel lists what arrived and lets an author
+switch a block off. The next piece of work is planned in
+`reqs/wflib_weapon_import_plan.md`: reading weapons whose Lua lives under
+`wf-lib/`, or whose `entry` is one shared loader (`px.ports` uses one file for 97
+weapon components, and 43 of its record-bearing weapons read a name their own
+module does not declare). Its L0 (the `scan_mods.ts` report) and L1 (module
+discovery by the engine's own rules) are delivered: 347 weapons over 52 bundle
+roots resolve with no unresolved `require`, 16 read a record out of a library,
+and the 9 misses are the `definition` shape (L3), four `.wep`s outside their
+bundle, and one whole-bundle loader. **L2 measured as something else**: the 43 of
+`px.ports`' weapons that read names their own module does not declare were a hook
+written inside another hook (`on_shot`/`on_done` inside `on_fire`, now
+`split.nestedHooks`) and a parameter of an install header (`function
+M.install(ctx, spec)`, now reported with the function and line), so the corpus is
+at 279 of 280 with the last one refused by name and no corpus name that comes
+from a library's file-level local. `L4` is delivered for **options**: declarations
+in `[[components.options]]` in declaration order, values in the profile's
+`[options."<id>"]` only when they differ from the declared default, and the
+`Weapon Options` drawer. L3 (`definition` as data), the rest of L4
+(`ctx.placed`/`ctx.weapons`/`ctx.data` in carried code) and L5 (art) are open.
+`WormForgeNew/tools/split_highlander.py` writes the per-weapon modules that make
+the cross-module reads self-describing; the standalone `px_buffalo` bundle is the
+benchmark, and its `require("wf-lib/px_sprite_builder")` resolves through `wf.sdk`,
+so the `lib/` copy it also ships is dead weight rather than the load failure it
+was first read as.
+Separately: WF 51/52 (a swing that misses behind and outside the arc, and one that
+only reaches overhead when the box follows the swing), and its other half,
+`reqs/pack_export_plan.md`: writing several weapons as one bundle, so a pack the
+editor writes is the pack it reads back (status in the paragraph above).
 
 ---
 

@@ -117,9 +117,12 @@ const BASE_AMBIENT = [
  * Names the generator itself puts in scope of an emitted weapon file: the
  * aiming manager, the sequencer, the fuse sampler, the stamp helpers and the
  * clamp bounds. A custom body passes for reading them because they are there.
+ * `trail` is deliberately not here: its require is gated on the effects SDK,
+ * so exempting it hid a burst-only weapon claiming `trail.BEAM` without the
+ * module, and the whole weapon failed to load at install.
  */
 const EDITOR_AMBIENT = [
-  'sb', 'holds', 'fx', 'trail', 'blast', 'seq', 'zap', 'ctx', 'hold', 'ev',
+  'sb', 'holds', 'fx', 'blast', 'seq', 'zap', 'ctx', 'hold', 'ev',
   'seq_dir', 'fuse_of', 'stamp_clear', 'stamp_hit', 'stamp_orientation',
   'AIM_LO', 'AIM_HI', 'aim_clamped', 'FUSE_DEFAULT', 'FUSE_AIM',
   'STAMP_CLEAR', 'STAMP_HIT',

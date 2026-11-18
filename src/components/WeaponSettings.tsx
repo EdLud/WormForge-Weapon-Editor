@@ -1,11 +1,13 @@
 import React, { useMemo, useRef, useState } from 'react';
+import { WeaponOptionsPanel } from './WeaponOptionsPanel';
 import { WeaponProject, FireType } from '../types/weapon';
 import { STOCK_BY_ID, STOCK_WEAPONS, StockWeaponInfo } from '../data/stockWeapons';
-import { WFWS_PREFIX, weaponIdSuffix, withWfwsPrefix } from '../utils/weaponId';
+import { ID_MAX, isUnderNamespace, slugId } from '../utils/weaponId';
 import { TooltipLabel, UnitNumberInput, buildTooltip } from './RecordEditor';
 import { NumberInput } from './NumberInput';
 import { DEFAULT_MELEE } from '../data/melee';
 import {
+  AlertTriangle,
   Image as ImageIcon,
   Trash2,
   SlidersHorizontal,
@@ -16,6 +18,8 @@ import {
 
 interface WeaponSettingsProps {
   project: WeaponProject;
+  /** The bundle this weapon is in. Its id is the namespace a weapon id lives under. */
+  bundleId?: string;
   onChange: (updated: Partial<WeaponProject>) => void;
 }
 
@@ -96,7 +100,7 @@ const FAMILY_GROUPS: { label: string; families: StockWeaponInfo['family'][] }[] 
   { label: 'Specials & Utilities', families: ['special'] },
 ];
 
-export const WeaponSettings: React.FC<WeaponSettingsProps> = ({ project, onChange }) => {
+export const WeaponSettings: React.FC<WeaponSettingsProps> = ({ project, bundleId, onChange }) => {
   const iconInputRef = useRef<HTMLInputElement>(null);
   const [showHandling, setShowHandling] = useState(false);
   // The id box keeps the typed text (spaces and capitals included) while it is
@@ -297,36 +301,38 @@ export const WeaponSettings: React.FC<WeaponSettingsProps> = ({ project, onChang
 
             <div>
               <TooltipLabel
-                label="Unique Weapon ID"
+                label="Weapon ID"
                 code="id"
-                desc="Unique bundle component ID. The wfws. namespace keeps created weapons distinct from other mods."
+                desc="The component id this weapon ships under. The bundle id is its namespace, so a weapon in a bundle is <bundle id>.<weapon>; the engine refuses two bundles that claim the same id."
                 htmlFor="ws-component-id"
               />
-              <div className="flex items-stretch overflow-hidden rounded-lg border border-stone-200 bg-white focus-within:border-forge-500 focus-within:ring-2 focus-within:ring-forge-500 dark:border-stone-700 dark:bg-stone-900">
-                <span
-                  className="flex select-none items-center border-r border-stone-200 bg-stone-50 px-2 font-mono text-xs text-stone-500 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-400"
-                  aria-hidden="true"
-                >
-                  {WFWS_PREFIX}
-                </span>
-                <input
-                  id="ws-component-id"
-                  type="text"
-                  value={idDraft ?? weaponIdSuffix(project.id)}
-                  onChange={(e) => {
-                    const raw = e.target.value;
-                    setIdDraft(raw);
-                    // Clearing the box keeps the last id: `wfws.` alone is not an
-                    // id, and the old fallback quietly wrote `wfws.weapon`.
-                    if (!raw.replace(/[^a-zA-Z0-9_-]/g, '')) return;
-                    onChange({ id: withWfwsPrefix(raw) });
-                  }}
-                  onBlur={() => setIdDraft(null)}
-                  placeholder="moon_grenade"
-                  maxLength={64 - WFWS_PREFIX.length}
-                  className="min-w-0 flex-1 bg-transparent px-2.5 py-1.5 font-mono text-xs text-stone-900 focus:outline-hidden dark:text-white"
-                />
-              </div>
+              <input
+                id="ws-component-id"
+                type="text"
+                value={idDraft ?? project.id}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  setIdDraft(raw);
+                  // Clearing the box keeps the last id: an empty id is not one,
+                  // and a silent fallback would rename the weapon mid-typing.
+                  if (!raw.replace(/[^a-zA-Z0-9_.-]/g, '').replace(/[._-]/g, '')) return;
+                  onChange({ id: slugId(raw) });
+                }}
+                onBlur={() => setIdDraft(null)}
+                placeholder="my_mod.moon_grenade"
+                maxLength={ID_MAX}
+                className={fieldInput}
+              />
+              {bundleId && !isUnderNamespace(project.id, bundleId) && (
+                <p className="mt-1 flex items-start gap-1.5 text-[10px] leading-snug text-amber-700 dark:text-amber-400">
+                  <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
+                  <span>
+                    This id is outside the bundle id (<code className="font-mono">{bundleId}</code>),
+                    so nothing keeps it from colliding with an installed mod. A weapon of this
+                    bundle normally lives under <code className="font-mono">{bundleId}.</code>
+                  </span>
+                </p>
+              )}
             </div>
 
             <div>
@@ -698,6 +704,9 @@ export const WeaponSettings: React.FC<WeaponSettingsProps> = ({ project, onChang
             </div>
           </div>
         </div>
+
+        {/* The component's ctx.option settings, when the weapon declares any. */}
+        <WeaponOptionsPanel project={project} onChange={onChange} />
 
         {/* Row 4: Collapsible Native Turn Handling Drawer */}
         {showHandling && (

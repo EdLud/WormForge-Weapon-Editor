@@ -8,6 +8,12 @@
  * Output is a summary per bundle plus the weapons that failed, so a PX-style
  * bundle that hides its records behind `weapons/index.lua` shows up as a number
  * rather than a silent zero.
+ *
+ * This is L0 of `reqs/wflib_weapon_import_plan.md`: it reports how each weapon's
+ * module was *found* (`resolvedVia`), which modules hand their record to a
+ * library, which `require` names nothing in the selection provides, and which
+ * weapons read a `ctx.option` their own component does not declare (`ctx.option`
+ * raises on an unknown key, so that one is a load failure, not a warning).
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
@@ -100,6 +106,90 @@ for (const bundle of bundles) {
 }
 
 console.log(`\nweapons with a record: ${withRecord}/${weapons.length}`);
+const routes = new Map<string, number>();
+for (const weapon of weapons) {
+  const route = weapon.resolvedVia ?? (weapon.record ? 'other' : 'miss');
+  routes.set(route, (routes.get(route) ?? 0) + 1);
+}
+console.log(
+  `\nmodule found by: ${[...routes]
+    .sort((a, b) => b[1] - a[1])
+    .map(([route, count]) => `${route} ${count}`)
+    .join(', ')}`,
+);
+const viaRequire = weapons.filter((weapon) => weapon.resolvedVia === 'require');
+if (viaRequire.length > 0) {
+  console.log(`records handed to a library: ${viaRequire.length}`);
+  for (const weapon of viaRequire.slice(0, 5)) {
+    console.log(`  ${weapon.componentId} -> ${weapon.modulePath}`);
+  }
+}
+
+// `ctx.option` reads. An option the component does not declare raises at
+// install (`ctx.option` is an error for an unknown key), so an undeclared read
+// is a load failure rather than a warning.
+const optionWeapons = weapons.filter((weapon) => (weapon.optionReads ?? []).length > 0);
+// `ctx.option` reads *this component's* options, so an option declared on
+// another component of the same bundle (a feature's settings) is still a nil
+// read here: both classes are reported.
+const declaredOwn = new Set(
+  weapons.flatMap((weapon) => weapon.options ?? []).map((option) => option.key),
+);
+const declaredAnywhere = new Set(
+  bundles.flatMap((bundle) => bundle.components).flatMap((component) => component.options.map((option) => option.key)),
+);
+const undeclared = new Set(
+  optionWeapons
+    .flatMap((weapon) => weapon.optionReads ?? [])
+    .filter((key) => !declaredAnywhere.has(key)),
+);
+const declaredElsewhere = new Set(
+  optionWeapons
+    .flatMap((weapon) => weapon.optionReads ?? [])
+    .filter((key) => declaredAnywhere.has(key) && !declaredOwn.has(key)),
+);
+const dataOptions = weapons
+  .flatMap((weapon) => weapon.options ?? [])
+  .filter((option) => option.data);
+console.log(`\nctx.option: ${optionWeapons.length} weapon(s) read a declared option`);
+if (dataOptions.length > 0) {
+  console.log(
+    `  options that are weapon data fields: ${[...new Set(dataOptions.map((option) => option.key))].join(', ')}`,
+  );
+}
+console.log(
+  `  read but declared nowhere in the selection: ${undeclared.size > 0 ? [...undeclared].join(', ') : 'none'}`,
+);
+console.log(
+  `  read but declared on another component (nil for this one): ${
+    declaredElsewhere.size > 0 ? [...declaredElsewhere].join(', ') : 'none'
+  }`,
+);
+
+// A `require` is only resolvable inside the selection: `wf-lib/<name>` goes
+// through the exporting bundle's `[exports]`, so a dependency left out of the
+// scan reads as missing.
+const unresolved = new Map<string, number>();
+const legacy = new Map<string, number>();
+for (const weapon of weapons) {
+  for (const name of weapon.unresolvedRequires ?? []) {
+    unresolved.set(name, (unresolved.get(name) ?? 0) + 1);
+  }
+  for (const name of weapon.localLibraryRequires ?? []) {
+    legacy.set(name, (legacy.get(name) ?? 0) + 1);
+  }
+}
+console.log(`\nunresolved requires: ${unresolved.size}`);
+for (const [name, count] of [...unresolved].sort((a, b) => b[1] - a[1]).slice(0, 8)) {
+  console.log(`  ${name} (${count})`);
+}
+if (legacy.size > 0) {
+  // Satisfied by the bundle's own `lib/` while the name says `wf-lib/`: the
+  // current engine refuses that (`modules.rs` resolves the prefix through a
+  // declared dependency's `[exports]` only), so the code loads nowhere as is.
+  console.log(`\na wf-lib/ name the bundle satisfies from its own lib/: ${[...legacy.keys()].join(', ')}`);
+}
+
 const failed = weapons.filter((weapon) => !weapon.record);
 for (const weapon of failed.slice(0, 15)) {
   console.log(`  MISS ${weapon.componentId}: ${weapon.error}${weapon.modulePath ? ` (${weapon.modulePath})` : ''}`);

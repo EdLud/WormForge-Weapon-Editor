@@ -25,6 +25,27 @@ export interface ModFile {
   readBytes?: () => Promise<Uint8Array>;
 }
 
+/**
+ * One `[[components.options]]` entry (`components.rs`, `OptionDecl`): the
+ * settings `ctx.option(key)` reads, with the value the profile stores under
+ * `[options."<component id>"]` overriding `default`.
+ */
+export interface ModOption {
+  key: string;
+  /** `bool`, `int` or `choice`; anything else is reported as declared. */
+  kind: string;
+  label?: string;
+  description?: string;
+  default?: string | number | boolean;
+  choices?: string[];
+  min?: number;
+  max?: number;
+  /** `from_bool`: a choice the profile may also write as `true`/`false`. */
+  fromBool?: [string, string];
+  /** `data = true`: the option *is* the weapon data field of the same key. */
+  data?: boolean;
+}
+
 export interface ModComponent {
   id: string;
   name: string;
@@ -34,6 +55,12 @@ export interface ModComponent {
   description?: string;
   row?: string;
   column?: number;
+  /** `[[components.options]]` for this component, in declaration order. */
+  options: ModOption[];
+  /** `[[components.weapon_options]]`: a feature's per-placed-weapon settings. */
+  weaponOptions: ModOption[];
+  /** `[components.suggests."<feature id>"]` values, by feature id. */
+  suggests: Record<string, Record<string, unknown>>;
 }
 
 export interface ModBundle {
@@ -48,6 +75,10 @@ export interface ModBundle {
   components: ModComponent[];
   /** `[sprites."…"]` declarations, keyed by the bundle-relative path. */
   spriteDecls: Record<string, Record<string, unknown>>;
+  /** `[exports]`: public `wf-lib/<name>` -> bundle-relative `.lua` entry. */
+  exports: Record<string, string>;
+  /** `asset_namespace`, e.g. `wf-lib/px`: the prefix this bundle's art carries. */
+  assetNamespace?: string;
   /** Files in this bundle, relative to `dir`. */
   files: string[];
 }
@@ -67,8 +98,27 @@ export interface ModWeapon {
   name: string;
   description?: string;
   icon?: string;
+  /** The component's `default_position`: the panel slot it replaces. */
+  row?: string;
+  column?: number;
   /** Bundle-relative path of the Lua module the record was read from. */
   modulePath: string;
+  /** How the module was found, so a miss can be told from a wrong guess. */
+  resolvedVia?: ModuleRoute;
+  /** The component's declared settings (`ctx.option` reads these). */
+  options?: ModOption[];
+  /** `ctx.option("k")` / `ctx.options.k` keys the module reads, in file order. */
+  optionReads?: string[];
+  /** Modules the weapon's own module requires, bundle-relative where resolved. */
+  requires?: string[];
+  /** `require` names nothing in this bundle or its dependencies provides. */
+  unresolvedRequires?: string[];
+  /**
+   * A `require("wf-lib/<name>")` the bundle satisfies from its *own* `lib/`
+   * instead of a declared dependency's `[exports]`. The current engine refuses
+   * that (`modules.rs`), so it is reported rather than followed silently.
+   */
+  localLibraryRequires?: string[];
   /** The record tables (`missile`, `clusters`, `handling`, …). */
   record?: LuaTable;
   /**
@@ -110,19 +160,74 @@ const slug = (text: string): string =>
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '');
 
-/** `weapons/index.lua`'s `["px.banana_express"] = "weapons/banana_express"`. */
-function readWeaponIndex(text: string): Record<string, string> {
-  const map: Record<string, string> = {};
-  const pattern = /\[\s*["']([^"']+)["']\s*\]\s*=\s*["']([^"']+)["']/g;
+const MODULE_NAME = /^[A-Za-z0-9_./-]+$/;
+
+/**
+ * Every `["<component id>"] = "<module>"` pair in a module, whatever file it
+ * sits in: `weapons/index.lua` is the common one (`["px.banana_express"] =
+ * "weapons/banana_express"`), but a bundle is free to keep its index anywhere,
+ * and a `wf-lib/`-hosted one names paths outside `weapons/`.
+ *
+ * The dotted key is the filter: component ids are namespaced (`px.buffalo`), so
+ * an ordinary `["name"] = "value"` table (a sound map, a cast list) cannot be
+ * mistaken for one. The target must look like a module path, with no other
+ * file extension.
+ */
+function readIndexMap(text: string, into: Record<string, string>): void {
+  const pattern = /\[\s*["']([A-Za-z0-9_-]+\.[A-Za-z0-9_.-]+)["']\s*\]\s*=\s*["']([^"']+)["']/g;
   let match: RegExpExecArray | null;
-  while ((match = pattern.exec(text))) map[match[1]] = match[2];
-  return map;
+  while ((match = pattern.exec(text))) {
+    const id = match[1];
+    const target = match[2].replace(/^\.\//, '');
+    if (!MODULE_NAME.test(target)) continue;
+    if (/\.\w+$/.test(target) && !/\.lua$/.test(target)) continue;
+    if (into[id] === undefined) into[id] = target;
+  }
+}
+
+/** One `[[components.options]]` entry, decoded defensively. */
+function optionsFrom(value: unknown): ModOption[] {
+  if (!Array.isArray(value)) return [];
+  const out: ModOption[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object') continue;
+    const raw = entry as Record<string, unknown>;
+    const key = typeof raw.key === 'string' ? raw.key : '';
+    if (!key) continue;
+    const fallback = raw.default;
+    out.push({
+      key,
+      kind: typeof raw.type === 'string' ? raw.type : '',
+      label: typeof raw.label === 'string' ? raw.label : undefined,
+      description: typeof raw.description === 'string' ? raw.description : undefined,
+      default:
+        typeof fallback === 'string' ||
+        typeof fallback === 'number' ||
+        typeof fallback === 'boolean'
+          ? fallback
+          : undefined,
+      choices: Array.isArray(raw.choices)
+        ? raw.choices.filter((choice): choice is string => typeof choice === 'string')
+        : undefined,
+      min: typeof raw.min === 'number' ? raw.min : undefined,
+      max: typeof raw.max === 'number' ? raw.max : undefined,
+      fromBool:
+        Array.isArray(raw.from_bool) &&
+        raw.from_bool.length === 2 &&
+        raw.from_bool.every((choice) => typeof choice === 'string')
+          ? ([raw.from_bool[0], raw.from_bool[1]] as [string, string])
+          : undefined,
+      data: raw.data === true ? true : undefined,
+    });
+  }
+  return out;
 }
 
 function componentFrom(table: Record<string, unknown>): ModComponent | null {
   const id = typeof table.id === 'string' ? table.id : '';
   if (!id) return null;
   const position = table.default_position as Record<string, unknown> | undefined;
+  const suggests = table.suggests;
   return {
     id,
     name: typeof table.name === 'string' ? table.name : id,
@@ -132,6 +237,12 @@ function componentFrom(table: Record<string, unknown>): ModComponent | null {
     description: typeof table.description === 'string' ? table.description : undefined,
     row: typeof position?.row === 'string' ? position.row : undefined,
     column: typeof position?.column === 'number' ? position.column : undefined,
+    options: optionsFrom(table.options),
+    weaponOptions: optionsFrom(table.weapon_options),
+    suggests:
+      suggests && typeof suggests === 'object'
+        ? (suggests as Record<string, Record<string, unknown>>)
+        : {},
   };
 }
 
@@ -164,6 +275,9 @@ export function readBundles(files: ModFile[]): ModBundle[] {
         : [],
       components,
       spriteDecls: doc.spriteDecls,
+      exports: doc.exports,
+      assetNamespace:
+        typeof doc.values.asset_namespace === 'string' ? doc.values.asset_namespace : undefined,
       files: files
         .filter((entry) => entry.path.startsWith(prefix))
         .map((entry) => entry.path.slice(prefix.length)),
@@ -284,58 +398,143 @@ function readRecord(text: string): {
   return { record, source, defaults, copyFrom, sprite, clusterSprite, wepNames };
 }
 
+/** How a weapon's module was found (L1 of `reqs/wflib_weapon_import_plan.md`). */
+export type ModuleRoute =
+  | 'index'
+  | 'entry'
+  | 'weapons-id'
+  | 'weapons-name'
+  | 'wf-lib'
+  | 'lib'
+  | 'require';
+
+/** `ctx.option("k")` and `ctx.options.k`, the settings a component can read. */
+function optionReadsOf(text: string): string[] {
+  const out = new Set<string>();
+  for (const match of text.matchAll(/ctx\.option\(\s*["']([^"']+)["']/g)) out.add(match[1]);
+  for (const match of text.matchAll(/ctx\.options\.([A-Za-z_][A-Za-z0-9_]*)/g)) out.add(match[1]);
+  return [...out];
+}
+
 /**
  * Every weapon component in the given bundles, with its record read.
  *
- * A component's `entry` is often one shared file (`components/weapon.lua`) that
- * dispatches through `weapons/index.lua`, so the module is resolved per weapon:
- * the index first, then `weapons/<id after the dot>.lua`, then the component's
- * own name. A unique entry is read directly.
+ * A component's `entry` is one shared file in a bundle with more than one weapon
+ * (`components/weapon.lua`, a loader), so the module is resolved the way the
+ * engine's loader does it: the bundle's own index first (`["<id>"] = "<module>"`,
+ * wherever it lives), then a unique `entry`, then `weapons/<id after the dot>`,
+ * then `weapons/<name>`, then the same names under `wf-lib/` and `lib/`. The
+ * first candidate that yields a record wins and `resolvedVia` says which one, so
+ * a miss is told apart from a wrong guess.
+ *
+ * A `require` is resolved by the engine's rules (`lua-host/src/modules.rs`,
+ * `make_require`): a plain name is bundle-relative, `wf-lib/<name>` is a
+ * declared dependency's `[exports]` entry. A bundle that keeps its own library
+ * under `lib/` and still requires `wf-lib/<name>` (PX's standalone bundles) is
+ * followed for reading and reported in `localLibraryRequires`, because the
+ * current engine refuses that at load.
  */
 export function readWeapons(bundles: ModBundle[], files: ModFile[]): ModWeapon[] {
   const byPath = new Map(files.map((file) => [file.path, file.text]));
   const weapons: ModWeapon[] = [];
 
+  // `wf-lib/<name>` -> the bundle that exports it. First declaration wins; the
+  // engine refuses an ambiguous one, which a bundle reader cannot see anyway.
+  const libraryExports = new Map<string, { dir: string; path: string }>();
+  for (const bundle of bundles) {
+    for (const [name, entry] of Object.entries(bundle.exports)) {
+      if (!libraryExports.has(name)) {
+        libraryExports.set(name, { dir: bundle.dir, path: entry.replace(/^\.?\//, '') });
+      }
+    }
+  }
+
+  /**
+   * Resolve one `require` name to a bundle-relative `.lua` path, in the bundle
+   * that holds the *calling* module: a plain name is relative to that bundle
+   * (`modules.rs` reads `<bundle>/<name>.lua`), and a module a library
+   * exports resolves its own requires in the library's bundle, not the
+   * weapon's. `wf-lib/<name>` is a declared dependency's `[exports]` entry, and
+   * the bundle's own `lib/<name>.lua` is the legacy shape the engine refuses.
+   */
+  const resolvers = new Map<string, (name: string) => { path: string; legacy?: boolean } | null>();
+  const resolverFor = (bundle: ModBundle) => {
+    const key = bundle.dir;
+    const cached = resolvers.get(key);
+    if (cached) return cached;
+    const asLua = (name: string) =>
+      joinPath(
+        bundle.dir,
+        `${name.replace(/^\.?\//, '').replace(/\.lua$/, '')}.lua`,
+      );
+    const resolve = (name: string): { path: string; legacy?: boolean } | null => {
+      const clean = name.replace(/^\.?\//, '');
+      if (clean.startsWith('wf-lib/')) {
+        const exported = libraryExports.get(clean);
+        if (exported) {
+          const path = joinPath(
+            exported.dir,
+            `${exported.path.replace(/^\.?\//, '').replace(/\.lua$/, '')}.lua`,
+          );
+          if (byPath.has(path)) return { path };
+        }
+        const local = asLua(`lib/${clean.slice('wf-lib/'.length)}`);
+        if (byPath.has(local)) return { path: local, legacy: true };
+        return null;
+      }
+      const path = asLua(clean);
+      return byPath.has(path) ? { path } : null;
+    };
+    resolvers.set(key, resolve);
+    return resolve;
+  };
+  /** The bundle a module path belongs to (the longest manifest prefix). */
+  const bundleOf = (path: string): ModBundle | undefined => {
+    let found: ModBundle | undefined;
+    for (const bundle of bundles) {
+      if (bundle.dir && !path.startsWith(`${bundle.dir}/`)) continue;
+      if (!found || bundle.dir.length > found.dir.length) found = bundle;
+    }
+    return found;
+  };
+
   for (const bundle of bundles) {
     const weaponComponents = bundle.components.filter((component) => component.type === 'weapon');
-    const entryCounts = new Map<string, number>();
-    for (const component of weaponComponents) {
-      entryCounts.set(component.entry, (entryCounts.get(component.entry) ?? 0) + 1);
+    const resolveName = resolverFor(bundle);
+
+    // Every id -> module map in the bundle, whatever file holds it.
+    const index: Record<string, string> = {};
+    for (const rel of bundle.files) {
+      if (!/\.lua$/i.test(rel)) continue;
+      const text = byPath.get(joinPath(bundle.dir, rel));
+      if (text) readIndexMap(text, index);
     }
 
-    // `weapons/index.lua` (or any file that maps ids to modules) for this bundle.
-    let index: Record<string, string> = {};
-    for (const file of bundle.files) {
-      if (!/\.lua$/.test(file)) continue;
-      const text = byPath.get(joinPath(bundle.dir, file));
-      if (!text) continue;
-      if (file.endsWith('index.lua') || /\[\s*["'][\w.-]+["']\s*\]\s*=\s*["']weapons\//.test(text)) {
-        index = { ...index, ...readWeaponIndex(text) };
-      }
-    }
-
+    const namespace = bundle.assetNamespace?.replace(/^wf-lib\//, '');
     for (const component of weaponComponents) {
       const suffix = component.id.split('.').pop() ?? component.id;
-      const candidates: string[] = [];
-      const indexed = index[component.id];
-      if (indexed) candidates.push(indexed);
-      candidates.push(`weapons/${suffix}`);
-      candidates.push(`weapons/${slug(component.name)}`);
-      if (component.entry && (entryCounts.get(component.entry) ?? 0) === 1) {
-        candidates.unshift(component.entry.replace(/\.lua$/, ''));
-      }
-
-      let modulePath = '';
-      let text = '';
-      for (const candidate of candidates) {
-        const path = joinPath(bundle.dir, `${candidate.replace(/\.lua$/, '')}.lua`);
-        const found = byPath.get(path);
-        if (found !== undefined) {
-          modulePath = path;
-          text = found;
-          break;
+      const candidates: { name: string; route: ModuleRoute }[] = [];
+      const add = (name: string, route: ModuleRoute) => {
+        const clean = name.replace(/^\.?\//, '').replace(/\.lua$/, '');
+        if (clean && !candidates.some((candidate) => candidate.name === clean)) {
+          candidates.push({ name: clean, route });
         }
+      };
+      const indexed = index[component.id];
+      if (indexed) add(indexed, 'index');
+      // The component's own `entry` is the module the engine runs, whether one
+      // weapon uses it or twenty: `px.bunker_buster` and `px.super_bunker_buster`
+      // are two components over one module that tells them apart by `ctx.id`. A
+      // shared loader entry yields no record here and the search continues.
+      if (component.entry) add(component.entry, 'entry');
+      add(`weapons/${suffix}`, 'weapons-id');
+      add(`weapons/${slug(component.name)}`, 'weapons-name');
+      if (namespace) {
+        add(`wf-lib/${namespace}/weapons/${suffix}`, 'wf-lib');
+        add(`wf-lib/${namespace}/${suffix}`, 'wf-lib');
       }
+      add(`lib/weapons/${suffix}`, 'lib');
+      add(`lib/${suffix}`, 'lib');
 
       const base: ModWeapon = {
         bundleId: bundle.id,
@@ -348,58 +547,140 @@ export function readWeapons(bundles: ModBundle[], files: ModFile[]): ModWeapon[]
         name: component.name,
         description: component.description,
         icon: component.icon,
-        modulePath,
+        row: component.row,
+        column: component.column,
+        modulePath: '',
+        options: component.options,
       };
 
-      if (!text) {
-        weapons.push({ ...base, error: 'no Lua module found for this component' });
+      // The weapon's own module is the first candidate that is a file; the
+      // record comes from the first candidate that spells one.
+      let modulePath = '';
+      let moduleText = '';
+      let parsed: ReturnType<typeof readRecord> | null = null;
+      let recordPath = '';
+      let resolvedVia: ModuleRoute | undefined;
+      for (const candidate of candidates) {
+        const resolved = resolveName(candidate.name);
+        if (!resolved) continue;
+        if (!modulePath) {
+          modulePath = resolved.path;
+          moduleText = byPath.get(resolved.path) ?? '';
+        }
+        const next = readRecord(byPath.get(resolved.path) ?? '');
+        if (!parsed) parsed = next;
+        else if (!parsed.record && (next.defaults || next.wepNames.length > 0)) {
+          parsed = { ...next, wepNames: [...next.wepNames, ...parsed.wepNames] };
+        }
+        if (next.record) {
+          parsed = next;
+          recordPath = resolved.path;
+          resolvedVia = candidate.route;
+          break;
+        }
+      }
+
+      if (!modulePath) {
+        weapons.push({
+          ...base,
+          optionReads: [],
+          requires: [],
+          unresolvedRequires: [],
+          localLibraryRequires: [],
+          error: `no Lua module found for this component (tried ${candidates
+            .map((candidate) => candidate.name)
+            .join(', ')})`,
+        });
         continue;
       }
 
-      let parsed = readRecord(text);
-      let modulePathForRecord = modulePath;
       // A module can hand the record to a library (`lib/px_ninja_star.lua`).
-      // Follow its local requires one level deep, which is where PX's ports put
-      // the `wa.weapons.replace{ … }` call instead of the weapon file.
-      if (!parsed.record) {
+      // Follow its requires two levels deep, resolved by the engine's own rules,
+      // which is where PX's ports put the `wa.weapons.replace{ … }` call.
+      const requires: string[] = [];
+      const unresolvedRequires: string[] = [];
+      const localLibraryRequires: string[] = [];
+      /** `require` names in a module, resolved in the module's own bundle. */
+      const noteRequires = (text: string, from: string) => {
+        const resolve = resolverFor(bundleOf(from) ?? bundle);
+        for (const name of requiresOf(text)) {
+          const resolved = resolve(name);
+          if (!resolved) {
+            if (!unresolvedRequires.includes(name)) unresolvedRequires.push(name);
+            continue;
+          }
+          if (resolved.legacy && !localLibraryRequires.includes(name)) {
+            localLibraryRequires.push(name);
+          }
+          if (!requires.includes(resolved.path)) requires.push(resolved.path);
+        }
+      };
+      noteRequires(moduleText, modulePath);
+
+      if (!recordPath) {
         const seen = new Set<string>([modulePath]);
-        const queue = requiresOf(text).map((target) => ({ target, depth: 0 }));
-        while (queue.length > 0 && !parsed.record) {
+        const queue = requiresOf(moduleText).map((target) => ({ target, depth: 0 }));
+        while (queue.length > 0 && !recordPath) {
           const { target, depth } = queue.shift()!;
-          const candidate = joinPath(bundle.dir, `${target.replace(/\.lua$/, '')}.lua`);
-          if (seen.has(candidate)) continue;
-          seen.add(candidate);
-          const source = byPath.get(candidate);
-          if (source === undefined) continue;
+          const resolved = resolveName(target);
+          if (!resolved || seen.has(resolved.path)) continue;
+          seen.add(resolved.path);
+          const source = byPath.get(resolved.path) ?? '';
+          noteRequires(source, resolved.path);
           const next = readRecord(source);
           if (next.record) {
             parsed = next;
-            modulePathForRecord = candidate;
+            recordPath = resolved.path;
+            resolvedVia = 'require';
             break;
           }
           if (depth < 1) {
+            const nestedResolve = resolverFor(bundleOf(resolved.path) ?? bundle);
             for (const nested of requiresOf(source)) {
-              queue.push({ target: nested, depth: depth + 1 });
+              if (nestedResolve(nested)) queue.push({ target: nested, depth: depth + 1 });
             }
           }
         }
       }
 
+      const recordText = recordPath ? (byPath.get(recordPath) ?? '') : '';
+      if (recordPath && recordPath !== modulePath) noteRequires(recordText, recordPath);
+
+      // What the code will actually load: a module reached by `require` runs its
+      // own requires too, in its own bundle, and `ctx.option`/`wf-lib/` failures
+      // are reported from anywhere in that graph. Walk it two levels for the
+      // report, whether or not the record came from the first module.
+      const walked = new Set<string>([modulePath, recordPath].filter(Boolean));
+      let frontier = [...walked];
+      for (let depth = 0; depth < 2 && frontier.length > 0; depth += 1) {
+        const next: string[] = [];
+        for (const path of frontier) {
+          for (const name of requiresOf(byPath.get(path) ?? '')) {
+            const resolved = resolverFor(bundleOf(path) ?? bundle)(name);
+            if (!resolved || walked.has(resolved.path)) continue;
+            walked.add(resolved.path);
+            noteRequires(byPath.get(resolved.path) ?? '', resolved.path);
+            next.push(resolved.path);
+          }
+        }
+        frontier = next;
+      }
+
       // A `.wep` the module names: match it against the bundle's own files by
       // base name, because the path may be assembled by concatenation.
       const wepNames = [
-        ...parsed.wepNames,
-        ...(modulePathForRecord !== modulePath
-          ? Array.from((byPath.get(modulePathForRecord) ?? '').matchAll(/["']([^"']+\.wep)["']/gi)).map(
-              (match) => match[1],
-            )
+        ...(parsed?.wepNames ?? []),
+        ...(recordPath && recordPath !== modulePath
+          ? Array.from(recordText.matchAll(/["']([^"']+\.wep)["']/gi)).map((match) => match[1])
           : []),
       ];
       let wepPath = '';
       for (const name of wepNames) {
         const wanted = name.split(/[\/]/).pop()!.toLowerCase();
         const found = bundle.files.find(
-          (file) => file.toLowerCase().endsWith('.wep') && file.toLowerCase().endsWith(`/${wanted}`) ||
+          (file) =>
+            (file.toLowerCase().endsWith('.wep') &&
+              file.toLowerCase().endsWith(`/${wanted}`)) ||
             file.toLowerCase() === wanted,
         );
         if (found) {
@@ -408,18 +689,29 @@ export function readWeapons(bundles: ModBundle[], files: ModFile[]): ModWeapon[]
         }
       }
 
+      const optionReads = optionReadsOf(
+        recordPath && recordPath !== modulePath ? `${moduleText}\n${recordText}` : moduleText,
+      );
+
       weapons.push({
         ...base,
-        ...parsed,
-        modulePath: parsed.record ? modulePathForRecord : modulePath,
+        ...(parsed ?? { wepNames: [] }),
+        modulePath: recordPath || modulePath,
+        resolvedVia: recordPath ? resolvedVia : undefined,
+        optionReads,
+        requires,
+        unresolvedRequires,
+        localLibraryRequires,
         wepPath: wepPath || undefined,
         wepNames: wepNames.length > 0 ? wepNames : undefined,
         error:
-          parsed.record || wepPath
+          recordPath || wepPath
             ? undefined
             : wepNames.length > 0
               ? 'the record is in a .wep file that is not in this bundle'
-              : 'no record table in the module',
+              : `no record table in ${modulePath} (looked in ${candidates
+                  .map((candidate) => candidate.name)
+                  .join(', ')})`,
       });
     }
   }

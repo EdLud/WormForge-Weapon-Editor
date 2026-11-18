@@ -1325,7 +1325,10 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
         offCtx.translate(xX, xY);
         offCtx.rotate(xAngle);
         offCtx.scale(xSize, xSize);
-        offCtx.drawImage(xImg, -xImg.naturalWidth / 2, -xImg.naturalHeight / 2);
+        // The SDK draws every support-hand sheet into a fixed 60 px hand cell.
+        // Scale uploads into that cell instead of treating the PNG's canvas
+        // dimensions as in-game size (a 100 px upload looked oversized here).
+        offCtx.drawImage(xImg, -30, -30, 60, 60);
         offCtx.restore();
       }
     }

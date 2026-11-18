@@ -10,17 +10,27 @@ import {
   Copy,
   Download,
   ChevronRight,
+  Boxes,
 } from 'lucide-react';
 import { readBundles, readWeapons, flattenRecord, type ModBundle, type ModWeapon } from '../utils/modLib/scan';
 import { readDroppedItems, readFileTexts, readZipTexts } from '../utils/modLib/loadFiles';
 import { importBundleWeapon } from '../utils/modLib/importWeapon';
-import type { WeaponProject } from '../types/weapon';
+import { importBundlePack } from '../utils/modLib/importPack';
+import type { PackProject, WeaponProject } from '../types/weapon';
 
 interface Props {
   onClose: () => void;
   showToast: (message: string) => void;
   /** Applies an imported weapon to the editor's project. */
   onImport: (project: Partial<WeaponProject> & { replaceProject?: boolean }) => void;
+  /**
+   * Opened from the bundle rail's "add from installed mods": the weapon joins the
+   * bundle instead of replacing the open weapon. Only the label differs here; the
+   * editor decides what appending means.
+   */
+  appendToPack?: boolean;
+  /** Reads a whole bundle as a pack: every weapon component in it, ids kept. */
+  onImportPack: (pack: PackProject) => void;
 }
 
 type Phase = 'idle' | 'reading' | 'ready' | 'error';
@@ -36,7 +46,13 @@ type Phase = 'idle' | 'reading' | 'ready' | 'error';
  * `lib/` module, or a `.wep` file -- so the panel reports what it could not read
  * instead of hiding it.
  */
-export function ModBrowserModal({ onClose, showToast, onImport }: Props) {
+export function ModBrowserModal({
+  onClose,
+  showToast,
+  onImport,
+  appendToPack = false,
+  onImportPack,
+}: Props) {
   const folderRef = useRef<HTMLInputElement>(null);
   const zipRef = useRef<HTMLInputElement>(null);
   const [phase, setPhase] = useState<Phase>('idle');
@@ -82,6 +98,11 @@ export function ModBrowserModal({ onClose, showToast, onImport }: Props) {
     if (!file) return;
     await ingest(await readZipTexts(file));
   };
+
+  const selectedBundleInfo = useMemo(
+    () => bundles.find((bundle) => bundle.id === selectedBundle),
+    [bundles, selectedBundle],
+  );
 
   const bundleWeapons = useMemo(() => {
     const inBundle = weapons.filter((weapon) => weapon.bundleId === selectedBundle);
@@ -144,10 +165,14 @@ export function ModBrowserModal({ onClose, showToast, onImport }: Props) {
             <p className="mt-1.5 flex items-start gap-1.5 text-[11px] text-amber-700 dark:text-amber-400">
               <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
               <span>
-                <strong className="font-semibold">WFWS weapons only, for now.</strong> Only
-                bundles this editor writes (the WFWS format) map back into the panels and
-                import reliably. A Project X port can still be read, but its own callbacks,
-                libraries and art naming are not carried, expect its record tables only.
+                <strong className="font-semibold">Not every bundle comes back whole.</strong>{' '}
+                Bundles this editor writes (the WFWS format) map back into the panels and
+                re-export the same bytes. A Project X port can be read too, and its callbacks,
+                registrations and the sheets and WAVs they name are carried, but <strong
+                className="font-semibold">nothing guarantees the custom code stays put</strong>:
+                it is rebuilt from the editor's own Lua, so formatting, the placement of
+                helpers and anything the reader cannot model can change or be left out. Read
+                the Carried Lua panel and the exported file before shipping the weapon.
               </span>
             </p>
           </div>
@@ -337,9 +362,44 @@ export function ModBrowserModal({ onClose, showToast, onImport }: Props) {
 
                 <div className="overflow-y-auto p-3 space-y-2">
                   {!selectedWeapon && (
-                    <p className="text-[11px] text-stone-500">
-                      Pick a weapon to see the record tables the reader found.
-                    </p>
+                    <div className="space-y-2">
+                      <p className="text-[11px] text-stone-500">
+                        Pick a weapon to see the record tables the reader found.
+                      </p>
+                      {selectedBundleInfo && bundleWeapons.some((weapon) => weapon.record) && (
+                        <div className="space-y-1.5 rounded-lg border border-stone-200 p-2 dark:border-stone-700">
+                          <p className="text-[11px] leading-relaxed text-stone-500 dark:text-stone-400">
+                            Or read the whole bundle as one pack: every weapon it holds, with the ids
+                            it declares, in one mod.toml and one profile.
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void (async () => {
+                                const importable = bundleWeapons.filter((weapon) => weapon.record);
+                                const result = await importBundlePack(
+                                  selectedBundleInfo,
+                                  importable,
+                                  files,
+                                );
+                                onImportPack(result.pack);
+                                showToast(
+                                  `Read ${result.pack.weapons.length} weapon${
+                                    result.pack.weapons.length === 1 ? '' : 's'
+                                  } from ${selectedBundleInfo.id} as ${result.pack.id}`,
+                                );
+                                onClose();
+                              })();
+                            }}
+                            className="inline-flex items-center gap-1 rounded-md bg-forge-600 px-2 py-1 text-[10px] font-semibold text-white hover:bg-forge-700"
+                          >
+                            <Boxes className="w-3 h-3" />
+                            Import bundle ({bundleWeapons.filter((weapon) => weapon.record).length} weapon
+                            {bundleWeapons.filter((weapon) => weapon.record).length === 1 ? '' : 's'})
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   )}
                   {selectedWeapon && (
                     <>
@@ -359,7 +419,11 @@ export function ModBrowserModal({ onClose, showToast, onImport }: Props) {
                           {selectedWeapon.clusterSprite && (
                             <span>cluster: {selectedWeapon.clusterSprite}</span>
                           )}
-                          <span>{flatKeys.length} fields</span>
+                          {selectedWeapon.wepPath ? (
+                            <span>record: {selectedWeapon.wepPath}</span>
+                          ) : (
+                            <span>{flatKeys.length} fields</span>
+                          )}
                         </div>
                       </div>
 
@@ -389,7 +453,7 @@ export function ModBrowserModal({ onClose, showToast, onImport }: Props) {
                               className="inline-flex items-center gap-1 rounded-md bg-forge-600 px-2 py-1 text-[10px] font-semibold text-white hover:bg-forge-700"
                             >
                               <Download className="w-3 h-3" />
-                              Import into editor
+                              {appendToPack ? 'Add to bundle' : 'Import into editor'}
                             </button>
                             <button
                               type="button"

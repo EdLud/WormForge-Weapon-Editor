@@ -70,7 +70,7 @@ check(
   bundles.some((bundle) => bundle.id === 'wfws.sdk'),
   bundles.map((bundle) => bundle.id).join(', '),
 );
-check('test pack has 56 weapons', weapons.length === 56, String(weapons.length));
+check('test pack has 58 weapons', weapons.length === 58, String(weapons.length));
 
 const byName = new Map(weapons.map((weapon) => [weapon.name, weapon]));
 const projects = new Map<string, WeaponProject>();
@@ -456,6 +456,7 @@ return {
     wa.weapons.replace{
       name = "Callback sample",
       copy_from = "stock.grenade",
+      sounds = { "sounds/x/explosion.wav" },
       on_explode = { on = function(ev)
         blast.explode{
           x = ev.x, y = ev.y,
@@ -1183,6 +1184,10 @@ return {
   check('WF 56: its anchor', em?.anchor === 'muzzle', String(em?.anchor));
   check('WF 56: it hands over to the round', em?.carry === true, String(em?.carry));
   near('WF 56: the muzzle offset', em?.offsetX, 25);
+  near('WF 56: reach direction round-trips', em?.reachDirection, -90);
+  near('WF 56: reach spread round-trips', em?.reachSpread, 120);
+  near('WF 56: emitter color round-trips', em?.color, '#8fc4ff');
+  check('WF 56: reach stays enabled', em?.reach === true, String(em?.reach));
   check(
     'WF 56: the ring comes back',
     em?.ring.enabled === true && Math.round(em.ring.radius) === 26,
@@ -1217,6 +1222,52 @@ return {
       generateModToml(fullProject(emitterWeapon, 'WF 56 Emitter Ring')),
     ),
     'effects.sdk is not in the manifest',
+  );
+  // WF 57 and WF 58: the code the two pack weapons were written to carry.
+  const hurtWeapon = project('WF 57 Carried Hurt')!;
+  check(
+    'WF 57: a foreign handler is carried',
+    hurtWeapon.carriedLua?.registrations?.length === 1 &&
+      hurtWeapon.carriedLua.registrations[0].event === 'hurt',
+    String(hurtWeapon.carriedLua?.registrations?.map((registration) => registration.event)),
+  );
+  check(
+    'WF 57: and the helper it closes over comes with it',
+    hurtWeapon.carriedLua?.prologue.some((block) => block.declares.includes('label_for')) === true,
+    hurtWeapon.carriedLua?.prologue.map((block) => block.declares.join(',')).join(' | '),
+  );
+  const hurtLua = generateLuaCode(fullProject(hurtWeapon, 'WF 57 Carried Hurt'));
+  check(
+    'WF 57: the carried handler is emitted again',
+    hurtLua.includes('wa.on.hurt(function(hit)') &&
+      hurtLua.includes('local function label_for(amount)') &&
+      hurtLua.indexOf('local function label_for(amount)') < hurtLua.indexOf('wa.on.hurt(function(hit)'),
+    'the carried handler or its helper is missing from the regenerated Lua',
+  );
+  const mergeWeapon = project('WF 58 Carried Merge')!;
+  // An export merges the bundle's body and the author's into one handler, so a
+  // re-import of that export sees one body: both halves arrive as carried code,
+  // and the snippet box stays empty. That is the shape of the round trip, not a
+  // loss: the two bodies are still there, in order, and the claim still has one
+  // `on_explode`.
+  const mergedBody = mergeWeapon.carriedLua?.hooks?.[0];
+  check(
+    'WF 58: the merged body comes back whole',
+    mergeWeapon.carriedLua?.hooks?.length === 1 &&
+      mergedBody?.key === 'on_explode' &&
+      mergedBody.text.includes('wa.sound.play(ev.worm, 88, 5)') &&
+      mergedBody.text.includes('wa.sound.play(ev.worm, 96, 6)') &&
+      mergeWeapon.customLuaSnippet === '',
+    mergedBody?.text ?? 'no carried on_explode',
+  );
+  const mergeLua = generateLuaCode(fullProject(mergeWeapon, 'WF 58 Carried Merge'));
+  check(
+    'WF 58: one on_explode, bundle first, then the author, then the stamp',
+    mergeLua.split('on_explode = { on = function').length - 1 === 1 &&
+      mergeLua.indexOf('wa.sound.play(ev.worm, 88, 5)') <
+        mergeLua.indexOf('wa.sound.play(ev.worm, 96, 6)') &&
+      mergeLua.indexOf('wa.sound.play(ev.worm, 96, 6)') < mergeLua.indexOf('wa.land.stamp{'),
+    `keys ${mergeLua.split('on_explode = { on = function').length - 1}, order ${mergeLua.indexOf('wa.sound.play(ev.worm, 88, 5)')}/${mergeLua.indexOf('wa.sound.play(ev.worm, 96, 6)')}/${mergeLua.indexOf('wa.land.stamp{')}`,
   );
   check(
     'WF 56: its own handlers are not carried back',
@@ -1426,11 +1477,19 @@ for (const [name, p] of projects) {
 // would carry them as foreign code on top of the features (two ribbons).
 {
   const withHandlers: string[] = [];
+  // The two weapons written to carry a bundle's code say so instead: WF 57's
+  // `wa.on.hurt` is nothing the panels model, and M6 carries it. A "not modelled"
+  // line is only a failure for a handler this editor's own panels *do* emit.
+  const carriedOnPurpose = new Set(['WF 57 Carried Hurt']);
   for (const [name, notes] of notesByName) {
     const line = notes.find((note) => note.startsWith('wa.on handlers:'));
     if (!line) continue;
     withHandlers.push(name);
-    check(`${name}: its wa.on handlers are rebuilt from the panels`, !/not modelled/.test(line), line);
+    check(
+      `${name}: its wa.on handlers are rebuilt from the panels`,
+      carriedOnPurpose.has(name) ? /not modelled \(hurt\)/.test(line) : !/not modelled/.test(line),
+      line,
+    );
   }
   check(
     'the pack has weapons whose own handlers were recognised',

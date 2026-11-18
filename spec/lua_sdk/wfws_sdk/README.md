@@ -394,7 +394,8 @@ two-handed grip) is the layer's:
 ```lua
 extra_hand = {
   sheet = "sprites/<mod>/hand2.png",  -- optional: the first hand's art otherwise
-  radius = -6, rotation = 1, radial_rotation = 1, scale = 0.9, size = 60,
+  radius = -6, rotation = 1, radial_rotation = 1, scale = 0.9,
+  -- size = 60,  -- optional: the cell in pixels, defaults to the first hand's
   offset = { x = 2, y = -3 },
 },
 ```
@@ -403,6 +404,14 @@ extra_hand = {
   `radius` (mirrored by `facing`), drawn angle `rot + PI*rotation`, cell `size`
   scaled by `grow(counter) * scale` (the first hand's rule), and `offset` in the
   hand cell's pixels, mirrored with the side and turned with the drawn angle.
+- **`size` is a length in pixels, never a percentage.** The sheet is drawn into
+  `size * scale` game pixels, so `size = 90` is a 90 px hand next to the first
+  hand's 60 px cell, and `size = 120` is twice it. Leave it unset and it follows
+  the weapon's `hand_size`, so `scale = 1` always means "the same size as the
+  first hand". `scale` is the size knob (the first hand calls it `hand_scale`).
+- `offset` is multiplied by `scale` alone, exactly like the first hand's
+  `hand_offset`, so changing the cell never moves the grip off the weapon. The
+  editor writes `size = 60` because its two hands are always 60 px cells.
 - It carries a swing's `dx`/`dy` with the weapon, so a two-handed swing does not
   slide apart, and it is skipped on the echo ghosts and on the firing pass (the
   firing role has its own hand).

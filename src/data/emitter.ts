@@ -21,6 +21,10 @@ export interface EmitterPresetFx {
   spark: { cell: number; frames: number; size: number; rate: number; pause: number };
   glow: { cell: number; size: number; passes: number };
   bolts: {
+    /** Degrees in screen coordinates: 0 right, 90 down, -90 up. */
+    direction: number;
+    /** Total spread in degrees around direction. */
+    spread: number;
     first: readonly [number, number];
     stagger: number;
     cooldown: readonly [number, number];
@@ -46,6 +50,8 @@ export const EMITTER_PRESETS: Record<
       reach: true,
       reachCount: 2,
       reachDistance: 35,
+      reachDirection: 0,
+      reachSpread: 360,
       reachSpeed: 12,
       reachCurve: 'arc',
       reachBulge: 130,
@@ -58,7 +64,7 @@ export const EMITTER_PRESETS: Record<
     fx: {
       spark: { cell: 60, frames: 10, size: 0.4, rate: 0.02, pause: 0.1 },
       glow: { cell: 128, size: 0.18, passes: 3 },
-      bolts: { first: [6, 22], stagger: 12, cooldown: [13, 51] },
+      bolts: { direction: 0, spread: 360, first: [6, 22], stagger: 12, cooldown: [13, 51] },
     },
   },
   thunder: {
@@ -70,6 +76,8 @@ export const EMITTER_PRESETS: Record<
       reach: true,
       reachCount: 1,
       reachDistance: 0,
+      reachDirection: 90,
+      reachSpread: 0,
       reachSpeed: 50,
       reachCurve: 'line',
       reachBulge: 0,
@@ -88,6 +96,8 @@ export const EMITTER_PRESETS: Record<
         cooldown: [30, 110],
         down: [40, 80],
         downSide: 16,
+        direction: 90,
+        spread: 0,
         hold: 3,
         fade: 20,
       },
@@ -143,6 +153,8 @@ export const DEFAULT_EMITTER: EmitterConfig = {
   reach: true,
   reachCount: 2,
   reachDistance: 35,
+  reachDirection: 0,
+  reachSpread: 360,
   reachSpeed: 12,
   reachCurve: 'arc',
   reachBulge: 130,

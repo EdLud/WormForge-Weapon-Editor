@@ -113,3 +113,13 @@ export function getStockPanelPosition(slotId: string): { row: string; column: nu
   if (stock) return { row: stock.row, column: stock.column };
   return { row: 'F1', column: 1 };
 }
+
+/**
+ * The stock slot at a panel position, the inverse of `getStockPanelPosition`.
+ * A bundle's `default_position` is exactly where its weapon sits on the panel, so
+ * reading a pack back needs this to keep each weapon on the slot the author chose.
+ */
+export function stockSlotForPosition(row?: string, column?: number): string | undefined {
+  if (!row || typeof column !== 'number') return undefined;
+  return STOCK_WEAPONS.find((weapon) => weapon.row === row && weapon.column === column)?.id;
+}

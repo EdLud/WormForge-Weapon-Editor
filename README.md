@@ -38,6 +38,7 @@ Maintenance and hand-off notes live in [AGENTS.md](AGENTS.md).
   - Rotation sheets: bake a single projectile frame into a full 360° direction strip (16/32/64 frames, frame 0 pointing up and turning clockwise, WA's airmisl order) with the record's native animation set to follow the flight direction.
   - Effects-SDK ribbon trail for the main projectile: colour, core/glow width, length, sample rate and fade, emitted as `wf-lib/effects/trail` (`dependencies = ["effects.sdk"]`), with the choice of trailing only the main round or a whole cluster burst.
   - Effects-SDK explosion burst: Project X's electric-style ring + squashed lens (`wf-lib/effects/px_effects`), either drawn on top of WA's blast or replacing it with the SDK's damage/push/crater/sound (`custom_explosion`), with a 50 Hz preview.
+  - **Effects emitter** (`effects.sdk`): sparks, glow, configurable reach bolts, ring and emitter ribbon follow the muzzle or the fired round. Set bolt direction and spread in screen coordinates, and preview the effect at 50 Hz. Any export that uses the effects library carries it at `wf-lib/effects_sdk/`, so players get the version the weapon was built against instead of a separate download.
   - **Terrain Stamp** (`wa.land.stamp`, no library needed): an up-pointing upload is baked into 32 clockwise cells and burned into the land where the round bursts, at the impact heading or a fixed angle, with `buried.soften`/`blend` and optional true colours, and no stamp where a live worm stands (it would be sealed into the land). **Damage On Impact** turns it into PX's javelin: the round damages every worm, mine, crate and oil drum at the impact point (its own kind, knockback and search radius), sticks in the land only when it hit nothing, and zeroes the record's own blast so nothing explodes twice. A built-in verb, so it adds no dependency; a native blast's crater erases it, so the card warns until the custom blast replacement is on.
   - Bundle Code page lists the `mod.toml` dependencies the features add automatically and lets you add extra SDK/mod ids (`effects.sdk`, `wf.sdk`, or your own).
 - **Desktop Application (Tauri v2)**:
@@ -62,7 +63,7 @@ bun run dev
 # 3. Build for production (web / dist)
 bun run build
 
-# 4. Dev only: generate the in-game behaviour test pack (35 weapons + profile)
+# 4. Dev only: generate the in-game behaviour test pack (58 weapons + profile)
 bun run tools/gen_test_pack.ts
 ```
 
@@ -107,6 +108,8 @@ The site is served at `https://<user>.github.io/<repo>/`.
 
 `vite.config.ts` uses `base: './'`, so the build works from any repository subpath, and `assetUrl()` resolves the logo and default sprites the same way in the dev server, Pages and the Tauri webview.
 
+`wf-lib/effects_sdk/` is the SDK the weapon was generated against, written only when the weapon requires it. `wf-lib/wfws_sdk/` is the builder every export names.
+
 ### Tauri Desktop Builds
 The `src-tauri/` project is included, so desktop installers can be built locally with `bun run tauri build`. There is no desktop release workflow in this repository yet.
 
@@ -135,8 +138,10 @@ When clicking **Export Mod (.zip)**, the archive contains:
     hold.png (when hold art is enabled; the hand-drawn fallback is written until you upload a sheet)
     missile.png (when custom flight art is enabled; the hand-drawn fallback is written until you upload a sheet)
     trail.png / bit.png / bit_homing.png / bit_trail.png / body.png (only for the pack-art slots you uploaded)
+wf-lib/wfws_sdk/ (the flight and aiming builder, so the weapon does not need a separate install)
+wf-lib/effects_sdk/ (the ribbon, burst and emitter library, written only when the weapon uses it)
 ```
-Drop the extracted folder into `WormForge/Mods/` next to `wf-lib/` and launch Worms Armageddon!
+Drop the extracted folder into `WormForge/Mods/` next to `wf-lib/` and launch Worms Armageddon! If `Mods/wf-lib/effects_sdk` already exists, extracting updates it in place; keep one copy, because the engine refuses a mod installed twice.
 
 ---
 

@@ -118,6 +118,9 @@ function baseProject(patch: Partial<WeaponProject> = {}): WeaponProject {
     hold: p.hold ?? DEFAULT_IMPORT_HOLD,
     aimClip: p.aimClip,
     melee: p.melee,
+    // The emitter writes two `wa.on` registrations of its own, so a base that
+    // dropped it would test a weapon the pack does not have.
+    emitter: p.emitter,
     packArt: p.packArt ?? {},
     customSprites: p.customSprites ?? {},
     recordOverrides: p.recordOverrides ?? {},
@@ -275,6 +278,43 @@ function carryOf(moduleText: string, project: WeaponProject) {
   check('and nothing is carried for it', carried.prologue.length === 0 && carried.preamble.length === 0);
 }
 
+// ---- a name that is a parameter of the enclosing function --------------
+{
+  // `lib/cursor.lua` is shaped `function M.install(ctx, spec)`: the hooks inside
+  // it close over `spec`, which the *caller* supplies, so there is nothing to
+  // carry and the summary has to say which line the binding comes from.
+  const moduleText = lines(
+    'local M = {}',
+    'function M.install(ctx, spec)',
+    '  wa.on.worm_message(function(worm)',
+    '    if spec.frame then spec.frame(worm) end',
+    '  end, { msgs = { wa.msg.FIRE_WEAPON } })',
+    'end',
+    'return M',
+  );
+  const split = splitModule(moduleText);
+  const project = baseProject();
+  const emitted = generateLuaCode(project);
+  const seeds = split.registrations
+    .filter((r) => r.event === 'worm_message')
+    .map((r) => ({ label: 'wa.on.worm_message', text: r.text, enclosing: r.enclosing }));
+  const carried = carryClosure(seeds, split, declaredNames(emitted), sanitizeModFolder(project.id), emitted);
+  check('a parameter of the enclosing function is not carried', carried.unresolved.includes('spec'), carried.unresolved.join(', '));
+  check(
+    'and the note names the function and its line',
+    carried.notes.some((note) => note.includes('parameter of') && note.includes('M.install(ctx, spec)') && note.includes('line 2')),
+    carried.notes.join(' | '),
+  );
+  // The reading block is still carried when its other names resolve, so the note
+  // may not claim the body was dropped: `utilities.cursor` ships `on_click` with
+  // `spec` as a nil, and that is what the note has to describe.
+  check(
+    'and says the code reads it as a nil rather than that the body was dropped',
+    carried.notes.some((note) => note.includes('reads it as a nil') && !note.includes('not carried')),
+    carried.notes.join(' | '),
+  );
+}
+
 // ---- a block the scanner cannot close is refused ------------------------
 {
   const moduleText = lines(
@@ -372,6 +412,120 @@ function carryOf(moduleText: string, project: WeaponProject) {
   );
 }
 
+// ---- a hook outside `install` closes over its own helper's scope --------
+{
+  // PX's swim suit, portal gun and nuke rocket all declare their state inside
+  // `function weapon.setup() … do … end` and register their hooks from there,
+  // so a carry that only read the module level and `install` saw 44 of 89
+  // weapons with names nothing declares.
+  const moduleText = lines(
+    'local weapon = {}',
+    'function weapon.setup()',
+    '  local shared = require("lib/shared")',
+    '  do',
+    '    local SWIM_RING = 12',
+    '    local swimmers = {}',
+    '    local function swim_push(w)',
+    '      swimmers[w.id] = SWIM_RING',
+    '      shared.splash(w.id)',
+    '    end',
+    '    wa.on.worm_message(function(worm)',
+    '      swim_push(worm)',
+    '    end, { msgs = { wa.msg.FIRE_WEAPON } })',
+    '  end',
+    'end',
+    'return weapon',
+  );
+  const split = splitModule(moduleText);
+  const project = baseProject();
+  const emitted = generateLuaCode(project);
+  const seeds = split.registrations
+    .filter((r) => r.event === 'worm_message')
+    .map((r) => ({ label: 'wa.on.worm_message', text: r.text, enclosing: r.enclosing }));
+  const carried = carryClosure(seeds, split, declaredNames(emitted), sanitizeModFolder(project.id), emitted);
+  const text = carried.prologue.map((block) => block.text).join('\n');
+  check(
+    'a registration inside a setup helper carries the helper it calls',
+    text.includes('local function swim_push('),
+    carried.prologue.map((block) => block.text.split('\n')[0]).join(' | '),
+  );
+  check('and the state beside it in the same block', text.includes('local swimmers = {}'));
+  check('and the constant beside that', text.includes('local SWIM_RING = 12'));
+  check(
+    'and what the helper closes over one block up',
+    text.includes('local shared = require("lib/shared")'),
+    text,
+  );
+  check('with nothing left unresolved', carried.unresolved.length === 0, carried.unresolved.join(', '));
+}
+
+// ---- one declaration written twice is one binding ----------------------
+{
+  // PX opens both `weapon.definition` and `weapon.setup` with the same require,
+  // and a hook in each needs it. Two copies are one binding, not a collision.
+  const moduleText = lines(
+    'local weapon = {}',
+    'function weapon.definition()',
+    '  local shared = require("lib/shared")',
+    '  return { on_explode = function(ev) shared.boom(ev.x, ev.y) end }',
+    'end',
+    'function weapon.setup()',
+    '  local shared = require("lib/shared")',
+    '  wa.on.worm_message(function(w) shared.settle(w) end, { msgs = { wa.msg.FIRE_WEAPON } })',
+    'end',
+    'return weapon',
+  );
+  const split = splitModule(moduleText);
+  const project = baseProject();
+  const emitted = generateLuaCode(project);
+  const seeds = [
+    { label: 'on_explode', text: split.hooks.on_explode ?? '', enclosing: split.hookScopes.on_explode },
+    ...split.registrations
+      .filter((r) => r.event === 'worm_message')
+      .map((r) => ({ label: 'wa.on.worm_message', text: r.text, enclosing: r.enclosing })),
+  ];
+  const carried = carryClosure(seeds, split, declaredNames(emitted), sanitizeModFolder(project.id), emitted);
+  const copies = carried.prologue.filter((block) => block.text.includes('require("lib/shared")'));
+  check('the same require written in two helpers is carried once', copies.length === 1, String(copies.length));
+  check('and it is not reported as a clash', carried.unresolved.length === 0, carried.unresolved.join(', '));
+  check(
+    'and no note claims a declaration was dropped',
+    !carried.notes.some((note) => note.includes('different scope')),
+    carried.notes.join(' | '),
+  );
+}
+{
+  // Two different values under one name really are two bindings: carrying both
+  // would make one hook read the other's number.
+  const moduleText = lines(
+    'local weapon = {}',
+    'function weapon.definition()',
+    '  local points = 5',
+    '  return { on_explode = function(ev) points = points + ev.power end }',
+    'end',
+    'function weapon.setup()',
+    '  local points = 9',
+    '  wa.on.worm_message(function(w) wa.world.set_hp(w, points) end, { msgs = { wa.msg.FIRE_WEAPON } })',
+    'end',
+    'return weapon',
+  );
+  const split = splitModule(moduleText);
+  const project = baseProject();
+  const emitted = generateLuaCode(project);
+  const seeds = [
+    { label: 'on_explode', text: split.hooks.on_explode ?? '', enclosing: split.hookScopes.on_explode },
+    ...split.registrations
+      .filter((r) => r.event === 'worm_message')
+      .map((r) => ({ label: 'wa.on.worm_message', text: r.text, enclosing: r.enclosing })),
+  ];
+  const carried = carryClosure(seeds, split, declaredNames(emitted), sanitizeModFolder(project.id), emitted);
+  check(
+    'two different locals of one name are one carried and one reported',
+    carried.notes.some((note) => note.includes('different scope')) && carried.unresolved.includes('points'),
+    `${carried.notes.join(' | ')} / ${carried.unresolved.join(',')}`,
+  );
+}
+
 // ---- the bundle's own art moves with the export -------------------------
 {
   const moduleText = lines(
@@ -395,6 +549,100 @@ function carryOf(moduleText: string, project: WeaponProject) {
   check('a carried sprite path follows the export folder', text.includes('sprites/moved/hole.png'), text);
   check('and so does a sound path', text.includes('sounds/moved/boom.wav'));
   check('and the count is reported', carried.pathRewrites === 2, String(carried.pathRewrites));
+}
+
+// ---- the Carried Lua panel's switches (the plan's UI section) -----------
+{
+  // One row per block, one switch each: a block that is switched off stays in
+  // the project (its text is not lost) and is not written to the export.
+  const project = baseProject({
+    carriedLua: {
+      preamble: [
+        {
+          origin: 'preamble',
+          text: 'local LIMIT = 12',
+          declares: ['LIMIT'],
+          requires: [],
+          line: 1,
+          neededBy: ['puff'],
+        },
+      ],
+      prologue: [
+        {
+          origin: 'prologue',
+          text: 'local function puff(x, y)\n  return x + LIMIT, y\nend',
+          declares: ['puff'],
+          requires: [],
+          line: 2,
+          neededBy: ['on_explode'],
+        },
+      ],
+      hooks: [{ key: 'on_explode', text: 'function(ev) puff(ev.x, ev.y) end', line: 5 }],
+      registrations: [
+        { event: 'hurt', text: 'wa.on.hurt(function(w, dmg)\n  puff(w.x, w.y)\nend)', line: 9 },
+      ],
+      unresolved: [],
+    },
+  });
+  const code = generateLuaCode(project);
+  check('a carried preamble is written', code.includes('local LIMIT = 12'));
+  check('a carried install local is written', code.includes('local function puff(x, y)'));
+  check('a carried hook is merged into the handler', code.includes('puff(ev.x, ev.y)'));
+  check('a carried registration is written', code.includes('wa.on.hurt('));
+  // Order: the declarations first, the registration after the claim.
+  check(
+    'the order is preamble, claim, registration',
+    code.indexOf('local LIMIT') < code.indexOf('wa.weapons.replace') &&
+      code.indexOf('wa.weapons.replace') < code.indexOf('wa.on.hurt('),
+    `${code.indexOf('local LIMIT')}, ${code.indexOf('wa.weapons.replace')}, ${code.indexOf('wa.on.hurt(')}`,
+  );
+
+  const disabled = (
+    pick: 'preamble' | 'prologue' | 'hook' | 'registration',
+  ): WeaponProject => {
+    const carried = project.carriedLua!;
+    return {
+      ...project,
+      carriedLua: {
+        ...carried,
+        preamble: carried.preamble.map((block) => ({ ...block, disabled: pick === 'preamble' })),
+        prologue: carried.prologue.map((block) => ({ ...block, disabled: pick === 'prologue' })),
+        hooks: carried.hooks!.map((hook) => ({ ...hook, disabled: pick === 'hook' })),
+        registrations: carried.registrations!.map((registration) => ({
+          ...registration,
+          disabled: pick === 'registration',
+        })),
+      },
+    };
+  };
+  const offPreamble = generateLuaCode(disabled('preamble'));
+  check('switching the preamble off leaves it out', !offPreamble.includes('local LIMIT = 12'));
+  check('and the rest of the carried code stays', offPreamble.includes('wa.on.hurt('));
+  const offPrologue = generateLuaCode(disabled('prologue'));
+  check('switching an install local off leaves it out', !offPrologue.includes('local function puff('));
+  const offHook = generateLuaCode(disabled('hook'));
+  check('switching the hook off drops its body', !offHook.includes('puff(ev.x, ev.y)'));
+  // Nothing else owns the key on this project, so the handler is not written at
+  // all: a `wa.weapons.replace{ on_explode = ... }` with an empty body would be
+  // a claim key the author did not ask for.
+  check(
+    'and the key it owned is not written',
+    offHook.split('on_explode = ').length - 1 === 0,
+    String(offHook.split('on_explode = ').length - 1),
+  );
+  const offRegistration = generateLuaCode(disabled('registration'));
+  check('switching a registration off leaves it out', !offRegistration.includes('wa.on.hurt('));
+  // A hook switched off is a name the file no longer declares, and the panel
+  // says so instead of hiding it.
+  const broken = generateLuaCode({
+    ...project,
+    carriedLua: { ...project.carriedLua!, prologue: [] },
+  });
+  check(
+    'a disabled declaration leaves a finding, not silence',
+    checkLua(broken, { mode: 'fragment' }).some((finding) => finding.rule === 'undefined-global'),
+    checkLua(broken, { mode: 'fragment' }).map((finding) => finding.rule).join(', '),
+  );
 }
 
 // ---- the four real bundles ---------------------------------------------
@@ -484,6 +732,22 @@ if (!realMods) {
         `${squashText(code).split(needle).length - 1} x ${needle.length}`,
       );
     }
+    // The import summary names what arrived, not a bare count (the plan's UI
+    // section): an import that dropped something says so, and one that carried a
+    // hook names the key.
+    const summary = imported.notes.find((note) => note.startsWith('carried:')) ?? '';
+    check(
+      `${name}: the summary names the hooks`,
+      (project.carriedLua?.hooks ?? []).every((hook) => summary.includes(hook.key)),
+      summary,
+    );
+    check(
+      `${name}: and the registrations`,
+      (project.carriedLua?.registrations ?? []).every((registration) =>
+        summary.includes(`wa.on.${registration.event}`),
+      ),
+      summary,
+    );
     const ours = ownOutputOf(splitModule(code)).own.length;
     check(
       `${name}: the export registers ours plus theirs`,
@@ -539,8 +803,12 @@ if (!realMods) {
 }
 
 // ---- our own output carries nothing ------------------------------------
-// The editor's generated weapons declare everything they use, so a re-import of
-// the test pack must not "carry" its own `local TINT = …` back as foreign code.
+// Every weapon in the pack is generated by this editor, so a re-import must come
+// back with exactly the carried code the file itself declares: nothing of ours
+// (`local TINT = …`, the trail, the interval WAV, the fuse sampler, the emitter's
+// two registrations) may be mistaken for a bundle's code, and the two weapons
+// written to carry code (WF 57's `wa.on.hurt`, WF 58's merged `on_explode`) must
+// carry theirs once, not twice.
 if (statSync(BUNDLE, { throwIfNoEntry: false })) {
   const files: ModFile[] = walk(BUNDLE).map((full) => {
     const path = relative(BUNDLE, full).split(sep).join('/');
@@ -549,20 +817,77 @@ if (statSync(BUNDLE, { throwIfNoEntry: false })) {
   });
   const bundle = readBundles(files)[0];
   const weapons = readWeapons([bundle], files);
-  const carrying: string[] = [];
+  const doubled: string[] = [];
+  let carriedWeapons = 0;
+  let emitterClean = false;
+  const shape = (project: WeaponProject) => ({
+    preamble: project.carriedLua?.preamble.length ?? 0,
+    prologue: project.carriedLua?.prologue.length ?? 0,
+    hooks: project.carriedLua?.hooks?.length ?? 0,
+    registrations: project.carriedLua?.registrations?.length ?? 0,
+  });
   for (const weapon of weapons) {
     if (!weapon.record) continue;
     const imported = await importBundleWeapon(weapon, files);
     const project = baseProject(imported.project);
-    if (project.carriedLua?.preamble.length || project.carriedLua?.prologue.length) {
-      carrying.push(weapon.name);
+    const first = shape(project);
+    const code = generateLuaCode(project);
+    // A weapon the editor wrote must declare every name it reads: a carried
+    // block that is wrongly recognised as ours shows up as a dangling name.
+    const dangling = checkLua(code, { mode: 'module' }).filter(
+      (finding) => finding.rule === 'undefined-global',
+    );
+    if (dangling.length > 0) doubled.push(`${weapon.name}: ${dangling.map((f) => f.name).join(',')}`);
+    // Re-import the export: the carried set must not grow, which is what a
+    // doubled emitter or a trail claimed as foreign code looks like.
+    const exported = generateLuaCode(project);
+    const againFiles: ModFile[] = [
+      { path: 'mod.toml', text: generateModToml(project) },
+      {
+        path: `weapons/${sanitizeModFolder(project.id)}.lua`,
+        text: exported,
+      },
+      ...files.filter((file) => /^(sprites|sounds|wf-lib)\//.test(file.path)),
+    ];
+    const againBundle = readBundles(againFiles)[0];
+    const againWeapon = againBundle
+      ? readWeapons([againBundle], againFiles).find((entry) => entry.record)
+      : undefined;
+    if (againWeapon) {
+      const again = await importBundleWeapon(againWeapon, againFiles);
+      const second = shape(baseProject(again.project));
+      if (
+        second.preamble !== first.preamble ||
+        second.prologue !== first.prologue ||
+        second.hooks !== first.hooks ||
+        second.registrations !== first.registrations
+      ) {
+        doubled.push(
+          `${weapon.name}: carried ${JSON.stringify(first)} came back ${JSON.stringify(second)}`,
+        );
+      }
+    }
+    const carried = shape(project);
+    if (carried.hooks > 0 || carried.registrations > 0) carriedWeapons += 1;
+    if (weapon.name.includes('Emitter')) {
+      // The emitter writes two registrations of its own (`body_move`/`FRAME_FINISH`
+      // and the `missile_frame` latch); both must be recognised, or a re-import
+      // would ship a second emitter.
+      const split = splitModule(generateLuaCode(project));
+      emitterClean = ownOutputOf(split).foreign.length === 0 && split.registrations.length === 2;
     }
   }
   check(
     'a re-import of the generated pack carries nothing of its own',
-    carrying.length === 0,
-    carrying.join(', '),
+    doubled.length === 0,
+    doubled.slice(0, 3).join(' | '),
   );
+  check(
+    'and the pack weapons written to carry code carry it once',
+    carriedWeapons === 2,
+    `${carriedWeapons} carried a hook or a registration`,
+  );
+  check('the emitter weapon re-imports with nothing foreign', emitterClean, 'emitter not clean');
 }
 
 // ---- dependencies ------------------------------------------------------

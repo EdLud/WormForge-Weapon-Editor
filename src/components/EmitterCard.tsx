@@ -173,7 +173,7 @@ export function EmitterCard({ project, onChange }: CardProps) {
         title="Emitter"
         code="wf-lib/effects/px_effects (effects.sdk)"
         icon={<Orbit className="h-4 w-4 text-sky-500" aria-hidden="true" />}
-        desc="PX's CEffectManager as a live actor: sparks, a glow, short reach bolts, an optional ring and ribbon, at a point that follows the muzzle or the fired round."
+        desc="Live effects that follow the muzzle or a fired round. Tap for placement, timing, and effect details."
         right={
           <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-sky-200 bg-sky-50/80 px-3 py-1.5 dark:border-sky-800/70 dark:bg-sky-950/30">
             <input
@@ -210,7 +210,7 @@ export function EmitterCard({ project, onChange }: CardProps) {
             <TooltipLabel
               label="Anchor"
               code="FRAME_FINISH / missile_frame"
-              desc="Round rides the missile WA fires from this record, adopted on its first missile frame. Muzzle sits on the worm's own fire angle (PX's curDist offset) while the turn's worm is aiming with this weapon (and through firing frames when Keep While Firing is on in Hold). No on_fire is written: that key would replace WA's shot."
+              desc="Fired Round follows each missile. Muzzle follows the turn worm's fire angle and can hand off when the trigger fires. The generator avoids on_fire so WA still launches the shot."
             />
             <div className="grid grid-cols-2 gap-1 rounded-xl border border-stone-200 bg-stone-100 p-1 dark:border-stone-800 dark:bg-stone-950/60">
               {(
@@ -253,10 +253,12 @@ export function EmitterCard({ project, onChange }: CardProps) {
                 className="mt-0.5 h-3.5 w-3.5 cursor-pointer rounded text-forge-600 focus:ring-forge-500 disabled:cursor-not-allowed"
               />
               <span className="text-[11px] leading-snug text-stone-700 dark:text-stone-300">
-                <strong className="font-semibold text-stone-900 dark:text-white">
+                <strong
+                  className="font-semibold text-stone-900 dark:text-white"
+                  title="Suppress the muzzle emitter while aiming. It appears only once a projectile launches."
+                >
                   Projectile Exclusive
-                </strong>{' '}
-                — disable the emitter while aiming so it only appears on fired projectiles.
+                </strong>
                 {!roundOk && ' No projectile in this weapon family.'}
               </span>
             </label>
@@ -269,11 +271,13 @@ export function EmitterCard({ project, onChange }: CardProps) {
                 onChange={(e) => update({ followFireAngle: e.target.checked })}
                 className="mt-0.5 h-3.5 w-3.5 cursor-pointer rounded text-forge-600 focus:ring-forge-500"
               />
-              <span className="text-[11px] leading-snug text-stone-700 dark:text-stone-300">
+              <span
+                className="text-[11px] leading-snug text-stone-700 dark:text-stone-300"
+                title="Rotate the ring and ellipse with the worm's fire angle while aiming and at launch. Reach bolts stay in world directions."
+              >
                 <strong className="font-semibold text-stone-900 dark:text-white">
                   Follow Owner Fire Angle
-                </strong>{' '}
-                — rotate the effect angle (ring/ellipse) with the owner&apos;s fire angle while aiming and at launch (opt-out).
+                </strong>
               </span>
             </label>
 
@@ -292,13 +296,14 @@ export function EmitterCard({ project, onChange }: CardProps) {
                     onChange={(e) => update({ carry: e.target.checked })}
                     className="mt-0.5 h-3.5 w-3.5 cursor-pointer rounded text-forge-600 focus:ring-forge-500 disabled:cursor-not-allowed"
                   />
-                  <span className="text-[11px] leading-snug text-stone-700 dark:text-stone-300">
+                  <span
+                    className="text-[11px] leading-snug text-stone-700 dark:text-stone-300"
+                    title="When the trigger fires, move the muzzle effect onto each spawned missile. Turn this off to keep an aiming effect that ends when the worm stops aiming."
+                  >
                     <strong className="font-semibold text-stone-900 dark:text-white">
                       Hand to the round
-                    </strong>{' '}
-                    once the trigger fires, as PX retargets its aiming effect to the spawned missile.
-                    Off keeps it an aiming effect that ends with the aim.
-                    {!roundOk && ' No round to hand it to here, so it stays on the muzzle.'}
+                    </strong>
+                    {!roundOk && ' No projectile exists in this family.'}
                   </span>
                 </label>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -338,8 +343,11 @@ export function EmitterCard({ project, onChange }: CardProps) {
                   />
                 </div>
                 {!carryBlocked && (
-                  <p className="text-[11px] text-sky-800/80 dark:text-sky-300/80">
-                    The muzzle sits on the held art, so the aim offset reads against the drawn weapon.
+                  <p
+                    className="text-[11px] text-sky-800/80 dark:text-sky-300/80"
+                    title="The muzzle offset is measured from the worm, so the preview compares it with the held weapon."
+                  >
+                    Muzzle placement is shown against the held art.
                   </p>
                 )}
               </>
@@ -433,7 +441,7 @@ export function EmitterCard({ project, onChange }: CardProps) {
             id="emitter-color"
             label="Emitter Colour"
             code="r, g, b"
-            hint="Tint for the bolts, spark and glow (the ring and the ribbon have their own)."
+            hint="Tint for the bolts, spark and glow. The ring and emitter ribbon have separate colours."
             value={em.color}
             fallback="#82b4ff"
             onChange={(color) => update({ color })}
@@ -456,6 +464,30 @@ export function EmitterCard({ project, onChange }: CardProps) {
                   min={0}
                   max={8}
                   onChange={(reachCount) => update({ reachCount })}
+                />
+                <NumField
+                  id="emitter-reach-direction"
+                  label="Direction"
+                  code="direction"
+                  hint="Centre direction in screen coordinates: 0 points right, 90 down, -90 up. 180 points left."
+                  value={em.reachDirection ?? 0}
+                  min={-180}
+                  max={180}
+                  step={1}
+                  unit="°"
+                  onChange={(reachDirection) => update({ reachDirection })}
+                />
+                <NumField
+                  id="emitter-reach-spread"
+                  label="Spread"
+                  code="spread"
+                  hint="Total angular range around Direction. 0 makes a straight bolt, 360 allows any direction."
+                  value={em.reachSpread ?? 360}
+                  min={0}
+                  max={360}
+                  step={1}
+                  unit="°"
+                  onChange={(reachSpread) => update({ reachSpread })}
                 />
                 <NumField
                   id="emitter-reach-distance"
@@ -831,14 +863,14 @@ export function EmitterCard({ project, onChange }: CardProps) {
           <SubSectionTitle
             title="What It Draws"
             code="fx.emitter"
-            desc="50 Hz playback of the SDK: the worm sweeps its aim with the emitter on the fire angle, the trigger fires, and the emitter hands itself to the round."
+            desc="50 Hz playback of the muzzle emitter, launch, and round handoff."
           />
           <EmitterPreview config={em} roundOk={roundOk} />
-          <p className="text-[10px] leading-snug text-stone-500 dark:text-stone-400">
-            The game&apos;s own sheets, drawn additively: beam.png for the cores, beam_glow.png
-            for the halos, the SDK&apos;s ten-frame spark and its 128 px glow blob. The bolt
-            cooldowns and the spark cycle are the preset&apos;s numbers, which is why thunder
-            strikes once where electric crackles.
+          <p
+            className="text-[10px] leading-snug text-stone-500 dark:text-stone-400"
+            title="Playback uses the SDK's beam and glow sheets, ten-frame spark and glow blob. Presets set bolt cooldowns and spark timing, so Thunder strikes once while Electric crackles."
+          >
+            SDK sheets and preset timing
           </p>
         </div>
       </div>

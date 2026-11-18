@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { WeaponProject } from './types/weapon';
+import { PackProject, WeaponProject } from './types/weapon';
 import { Sidebar, MobileBar } from './components/Sidebar';
 import { TooltipTap } from './components/TooltipTap';
 import { WeaponSettings } from './components/WeaponSettings';
@@ -10,8 +10,20 @@ import { WepImportModal } from './components/WepImportModal';
 import { ModBrowserModal } from './components/ModBrowserModal';
 import { LuaPreviewModal } from './components/LuaPreviewModal';
 import { BundleDependencies } from './components/BundleDependencies';
-import { exportModZip, downloadBlob } from './utils/modExporter';
+import { CarriedLuaPanel } from './components/CarriedLuaPanel';
+import { exportPackZip, downloadBlob } from './utils/modExporter';
+import { DEFAULT_ID_NAMESPACE } from './utils/weaponId';
 import { generateLuaCode, sanitizeModFolder } from './utils/luaGenerator';
+import {
+  addWeaponToPack,
+  duplicateWeaponInPack,
+  moveWeaponInPack,
+  removeWeaponFromPack,
+  syncPackToSoleWeapon,
+  withWeapon,
+} from './utils/pack';
+import { PackRail, WeaponSwitcher } from './components/PackRail';
+import { PackSettingsCard } from './components/PackSettingsCard';
 import { checkLua } from './utils/luaCheck';
 import { rebaseToDonor } from './utils/donorRebase';
 import { DEFAULT_EXPLOSION_EFFECT } from './data/explosionPresets';
@@ -48,7 +60,8 @@ const INITIAL_PROJECT: WeaponProject = {
   // animation + sound, and the Fire Subtype control edits it.
   specialSubtype: stockDonor('grenade')?.specialSubtype ?? 0,
   teleport: false,
-  id: 'wfws.grenade',
+  // The default value, not a rule: both id fields edit the whole id.
+  id: `${DEFAULT_ID_NAMESPACE}.grenade`,
   name: 'Grenade',
   description: "WormForge's stock Grenade record, ready to be changed.",
   version: '0.1.0',
@@ -133,12 +146,34 @@ const INITIAL_PROJECT: WeaponProject = {
   useWepFile: false,
 };
 
+/**
+ * The bundle is one `PackProject` and one active index; every panel still takes
+ * the active weapon, so nothing below this file knows how many weapons there are.
+ *
+ * **A bundle of one is that weapon.** `syncPackToSoleWeapon` keeps the pack's id,
+ * name, author and version equal to the weapon's while it is alone, which is what
+ * keeps a single-weapon export identical to what it was before packs existed. From
+ * the second weapon on the bundle has its own identity, edited in the Bundle
+ * Settings card, and `mod.toml` carries one `[[components]]` block per weapon.
+ */
 export default function App() {
-  const [project, setProject] = useState<WeaponProject>(INITIAL_PROJECT);
+  const [pack, setPack] = useState<PackProject>(() => ({
+    id: INITIAL_PROJECT.id,
+    name: INITIAL_PROJECT.name,
+    author: INITIAL_PROJECT.author,
+    version: INITIAL_PROJECT.version,
+    weapons: [INITIAL_PROJECT],
+  }));
+  const [activeIndex, setActiveIndex] = useState(0);
+  const project = pack.weapons[activeIndex] ?? pack.weapons[0];
   const [activeTab, setActiveTab] = useState<'editor' | 'hold' | 'effects' | 'code'>('editor');
   const [activeSubTab, setActiveSubTab] = useState<RecordTabId>('missile');
   const [isWepModalOpen, setIsWepModalOpen] = useState(false);
   const [isModBrowserOpen, setIsModBrowserOpen] = useState(false);
+  // The mod browser either replaces the active weapon (the old behaviour, and
+  // what "import this weapon" means) or appends one to the bundle, which is how a
+  // pack is built out of weapons that already exist.
+  const [importMode, setImportMode] = useState<'replace' | 'append'>('replace');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [isExporting, setIsExporting] = useState(false);
 
@@ -209,24 +244,97 @@ export default function App() {
   };
 
   const updateProject = (patch: Partial<WeaponProject>) => {
-    setProject((prev) => {
+    setPack((prev) => {
+      const current = prev.weapons[activeIndex] ?? prev.weapons[0];
       // A donor change re-bases the record: the panels must show the donor the
       // claim actually copies, and the generator diffs against that donor.
       const donor =
-        patch.based_on !== undefined && patch.based_on !== prev.based_on
+        patch.based_on !== undefined && patch.based_on !== current.based_on
           ? patch.based_on
           : undefined;
-      const next = { ...prev, ...patch };
-      return donor && !next.useWepFile ? rebaseToDonor(next, donor) : next;
+      const next = { ...current, ...patch };
+      const rebased = donor && !next.useWepFile ? rebaseToDonor(next, donor) : next;
+      return withWeapon(prev, activeIndex, rebased);
     });
   };
+
+  /** Bundle-level edits: identity, `replaces`, the profile name. */
+  const updatePack = (patch: Partial<PackProject>) => {
+    setPack((prev) => syncPackToSoleWeapon({ ...prev, ...patch }));
+  };
+
+  const selectWeapon = (index: number) => {
+    const next = Math.max(0, Math.min(pack.weapons.length - 1, index));
+    setActiveIndex(next);
+  };
+
+  const addBlankWeapon = () => {
+    // A fresh weapon starts from the default donor, exactly as the app does, and
+    // never inherits the open weapon's record, art or builder settings.
+    const result = addWeaponToPack(pack, {
+      ...INITIAL_PROJECT,
+      id: '',
+      name: 'New Weapon',
+      customIconFile: undefined,
+      customIconPreview: undefined,
+    });
+    setPack(result.pack);
+    setActiveIndex(result.index);
+  };
+
+  const duplicateWeapon = (index: number) => {
+    const result = duplicateWeaponInPack(pack, index);
+    setPack(result.pack);
+    setActiveIndex(result.index);
+  };
+
+  const removeWeapon = (index: number) => {
+    const result = removeWeaponFromPack(pack, index);
+    setPack(result.pack);
+    setActiveIndex(result.index);
+  };
+
+  const moveWeapon = (index: number, delta: -1 | 1) => {
+    const result = moveWeaponInPack(pack, index, delta);
+    setPack(result.pack);
+    setActiveIndex(result.index);
+  };
+
+  const rail = (
+    <PackRail
+      pack={pack}
+      activeIndex={activeIndex}
+      onSelect={selectWeapon}
+      onAddWeapon={addBlankWeapon}
+      onImportWeapon={() => {
+        setImportMode('append');
+        setIsModBrowserOpen(true);
+      }}
+      onDuplicate={duplicateWeapon}
+      onRemove={removeWeapon}
+      onMove={moveWeapon}
+    />
+  );
 
   const handleApplyWepImport = (parsed: Partial<WeaponProject>) => {
     // A bundle import is a new weapon (`replaceProject`): it starts from the
     // default project, so the open weapon's record, art and builder settings
     // cannot leak into it. A `.wep` import still merges into what is open.
     const replace = !!(parsed as { replaceProject?: boolean }).replaceProject;
-    setProject((open) => {
+    // "Add to this bundle": the imported weapon joins the pack instead of
+    // replacing the open one, with a free id and its art moved to its own folder.
+    if (replace && importMode === 'append') {
+      const incoming = { ...INITIAL_PROJECT, ...parsed } as WeaponProject;
+      const result = addWeaponToPack(pack, incoming);
+      setPack(result.pack);
+      setActiveIndex(result.index);
+      setImportMode('replace');
+      showToast(`Added ${parsed.name || 'weapon'} to the bundle.`);
+      return;
+    }
+    setImportMode('replace');
+    setPack((prevPack) => {
+      const open = prevPack.weapons[activeIndex] ?? prevPack.weapons[0];
       const prev = replace ? INITIAL_PROJECT : open;
       const body: WeaponProject['body'] = {
         ...prev.body,
@@ -254,7 +362,7 @@ export default function App() {
       const specialSubtype = parsed.specialSubtype ?? prev.specialSubtype;
       const useWepFile = !!parsed.useWepFile && !!parsed.wepFile;
 
-      return {
+      const merged: WeaponProject = {
         ...prev,
         ...parsed,
         body,
@@ -300,11 +408,26 @@ export default function App() {
             ? prev.donorBaseline
             : stockDonorBaseline(parsed.based_on ?? prev.based_on) ?? prev.donorBaseline),
       };
+      return withWeapon(prevPack, activeIndex, merged);
     });
     showToast(
       parsed.useWepFile && parsed.wepFile
         ? `Imported ${parsed.wepFileName || parsed.wepFile.name}; the bundle will use that .wep record.`
         : `Imported ${parsed.name || 'weapon'} record into project.`
+    );
+  };
+
+  /**
+   * A whole bundle read as a pack (P5 of `reqs/pack_export_plan.md`): every weapon
+   * it holds replaces the open bundle, with the ids the source declares (or a
+   * namespaced id when the source is another author's).
+   */
+  const handleImportPack = (imported: PackProject) => {
+    setPack(imported);
+    setActiveIndex(0);
+    setImportMode('replace');
+    showToast(
+      `Read ${imported.weapons.length} weapon${imported.weapons.length === 1 ? '' : 's'} into ${imported.id}.`,
     );
   };
 
@@ -316,19 +439,43 @@ export default function App() {
       // `start_vortex`): the file then fails the moment the hook runs. The export
       // is not blocked, because the author may know better, but the toast says so
       // instead of letting it be discovered in game.
-      const unresolved = checkLua(generateLuaCode(project))
-        .filter((finding) => finding.notGenerated)
-        .map((finding) => finding.name ?? `line ${finding.line}`);
-      const blob = await exportModZip(project);
-      const modFolder = sanitizeModFolder(project.id);
+      // Per weapon, because with a pack of eighty-nine the bare line numbers say
+      // nothing about which weapon's carried code will fail.
+      const unresolved = pack.weapons
+        .map((weapon) => ({
+          label: weapon.name || weapon.id,
+          names: [
+            ...new Set(
+              checkLua(generateLuaCode(weapon))
+                .filter((finding) => finding.notGenerated)
+                .map((finding) => finding.name ?? `${finding.rule} at line ${finding.line}`),
+            ),
+          ],
+        }))
+        .filter((entry) => entry.names.length > 0);
+      const named = unresolved
+        .slice(0, 3)
+        .map((entry) => `${entry.label} (${entry.names.join(', ')})`)
+        .join('; ');
+      const namedMore =
+        unresolved.length > 3 ? ` and ${unresolved.length - 3} more weapon(s)` : '';
+      const blob = await exportPackZip(pack);
+      const modFolder = sanitizeModFolder(pack.id);
       downloadBlob(blob, `${modFolder}.zip`);
+      const contents =
+        pack.weapons.length > 1
+          ? `${pack.weapons.length} weapons, one mod.toml & profile`
+          : 'mod.toml & profile';
       showToast(
         unresolved.length > 0
-          ? `Exported ${modFolder}.zip, but the custom Lua reads ${[...new Set(unresolved)].join(', ')} and nothing declares it: that hook fails at load (Bundle & Export).`
-          : `Exported ${modFolder}.zip with mod.toml & profile.`,
+          ? `Exported ${modFolder}.zip, but carried code in ${named}${namedMore} reads names nothing declares: those hooks fail at load (Bundle & Export).`
+          : `Exported ${modFolder}.zip with ${contents}.`,
       );
     } catch (err: any) {
-      alert(`Export failed: ${err.message || String(err)}`);
+      const message = err?.message || String(err);
+      // A `validateBundle` refusal already reads as a sentence and names the
+      // weapon, the line and the rule, so it is shown as it is.
+      alert(/^this bundle would not load/.test(message) ? message : `Export failed: ${message}`);
     } finally {
       setIsExporting(false);
     }
@@ -383,6 +530,7 @@ export default function App() {
         isDark={isDark}
         setIsDark={setIsDark}
         onCopyId={copyId}
+        rail={rail}
       />
 
       <div className="flex min-h-screen flex-col lg:pl-68">
@@ -397,6 +545,14 @@ export default function App() {
           onExportZip={handleExportZip}
           isDark={isDark}
           setIsDark={setIsDark}
+          weaponSwitcher={
+            <WeaponSwitcher
+              pack={pack}
+              activeIndex={activeIndex}
+              onSelect={selectWeapon}
+              onAdd={addBlankWeapon}
+            />
+          }
         />
 
         <main
@@ -419,7 +575,14 @@ export default function App() {
 
           {activeTab === 'editor' && (
             <div className="space-y-4">
-              <WeaponSettings project={project} onChange={updateProject} />
+              {pack.weapons.length > 1 && (
+                <PackSettingsCard
+                  pack={pack}
+                  onChange={updatePack}
+                  onRemoveWeapon={() => removeWeapon(activeIndex)}
+                />
+              )}
+              <WeaponSettings project={project} bundleId={pack.id} onChange={updateProject} />
               <RecordEditor
                 project={project}
                 onChange={updateProject}
@@ -441,9 +604,16 @@ export default function App() {
 
           {activeTab === 'code' && (
             <div className="space-y-6">
+              <CarriedLuaPanel project={project} onChange={updateProject} />
               <BundleDependencies project={project} onChange={updateProject} />
               <div className="h-[750px]">
-                <LuaPreviewModal project={project} inline />
+                <LuaPreviewModal
+                  project={project}
+                  pack={pack}
+                  activeWeaponIndex={activeIndex}
+                  onSelectWeapon={selectWeapon}
+                  inline
+                />
               </div>
             </div>
           )}
@@ -454,7 +624,8 @@ export default function App() {
             <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-stone-500 dark:text-stone-400">
               <span>WormForge Weapon Studio</span>
               <span className="font-mono">
-                WormForge/Mods/{sanitizeModFolder(project.id)}/
+                WormForge/Mods/{sanitizeModFolder(pack.id)}/
+                {pack.weapons.length > 1 ? ` · ${pack.weapons.length} weapons` : ''}
               </span>
             </div>
 
@@ -493,9 +664,14 @@ export default function App() {
 
       {isModBrowserOpen && (
         <ModBrowserModal
-          onClose={() => setIsModBrowserOpen(false)}
+          onClose={() => {
+            setIsModBrowserOpen(false);
+            setImportMode('replace');
+          }}
           showToast={showToast}
           onImport={handleApplyWepImport}
+          onImportPack={handleImportPack}
+          appendToPack={importMode === 'append'}
         />
       )}
 

@@ -10,7 +10,7 @@ import {
 } from '../types/weapon';
 import { COLLISION_FLAGS } from '../data/recordSchema';
 import { decodeRecordId } from '../data/stockSprites';
-import { withWfwsPrefix } from './weaponId';
+import { DEFAULT_ID_NAMESPACE, slugId } from './weaponId';
 
 export interface WepParseResult {
   success: boolean;
@@ -785,9 +785,11 @@ export function parseWepBinary(buffer: ArrayBuffer, fileName: string): WepParseR
   if (shots > 0) recordOverrides['handling.shots'] = shots;
   if (retreat > 0) recordOverrides['handling.retreat'] = retreat;
 
-  // The editor's own namespace is fixed: a decoded `.wep` becomes a `wfws.`
-  // bundle, never one that could look like a mod it reads.
-  const cleanId = withWfwsPrefix(weaponName);
+  // A decoded `.wep` has no bundle behind it, so the id is the weapon's own name
+  // under the editor's **default** namespace. Nothing enforces that namespace: it
+  // is there so a freshly decoded record does not land on an installed mod's id,
+  // and the author renames it in one field.
+  const cleanId = `${DEFAULT_ID_NAMESPACE}.${slugId(weaponName)}`;
 
   const projectState: Partial<WeaponProject> = {
     id: cleanId,

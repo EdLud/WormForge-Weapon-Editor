@@ -39,7 +39,7 @@
  */
 import { fixLockstepRng, freeNames } from '../luaCheck';
 import { checkLua } from '../luaCheck';
-import { rewriteNames } from '../luaText';
+import { maskLuaCode, rewriteNames, scanBlockEnd } from '../luaText';
 import type { LuaBlock, SplitModule } from './splitModule';
 
 export interface CarryBlock {
@@ -104,6 +104,15 @@ export interface CarryResult {
  */
 const MODULE_DEPENDENCIES: { prefix: string; id: string }[] = [
   { prefix: 'wf-lib/holds', id: 'wf.sdk' },
+  // `wf.sdk`'s own `[exports]` table: the engine's library bundle provides these
+  // names, so `require("wf-lib/own_time")` resolves once the manifest declares
+  // `wf.sdk`. A carried PX weapon opens with exactly that line.
+  { prefix: 'wf-lib/own_time', id: 'wf.sdk' },
+  { prefix: 'wf-lib/shared', id: 'wf.sdk' },
+  { prefix: 'wf-lib/parkour', id: 'wf.sdk' },
+  { prefix: 'wf-lib/tooltip', id: 'wf.sdk' },
+  { prefix: 'wf-lib/lightning', id: 'wf.sdk' },
+  { prefix: 'wf-lib/px_sprite_builder', id: 'wf.sdk' },
   { prefix: 'wf-lib/sdk', id: 'wf.sdk' },
   { prefix: 'wf-lib/wfws_sprite_builder', id: 'wfws.sdk' },
   { prefix: 'wf-lib/wfws_sdk/', id: 'wfws.sdk' },
@@ -120,30 +129,54 @@ export function dependencyForModule(module: string): string | null {
 
 const cache = new WeakMap<LuaBlock, string[]>();
 
+/**
+ * The free names of a body, **including the function literals it builds**.
+ *
+ * `wa.on.worm_message(function(worm) swim_push(worm) end, { … })` is one
+ * statement, and the checker reads a bare call as one expression, so it reports
+ * nothing inside the callback: every registration seed carried no names at all,
+ * and a bundle's state was only resolved through its claim hooks. The bundles
+ * that declare their state in a `setup` helper register exactly this way.
+ */
+function bodyFreeNames(text: string, ambient: string[]): string[] {
+  const names = new Set(freeNames(text, ambient));
+  const masked = maskLuaCode(text);
+  const word = /[A-Za-z_][A-Za-z0-9_]*/g;
+  let m: RegExpExecArray | null;
+  while ((m = word.exec(masked)) !== null) {
+    if (m[0] !== 'function') continue;
+    // `scanBlockEnd` answers the offset the closer starts at, so the body runs
+    // to the end of that word: `function(w) points = 0` without its `end` is an
+    // unbalanced fragment, and the checker reports nothing inside one.
+    const end = scanBlockEnd(masked, m.index + m[0].length);
+    if (end <= m.index) continue;
+    const body = text.slice(m.index, end + 'end'.length);
+    for (const name of freeNames(body, ambient)) names.add(name);
+    word.lastIndex = end;
+  }
+  return [...names];
+}
+
 /** The free names of a block, given what is already in scope. */
 function needs(block: LuaBlock, ambient: string[]): string[] {
   const cached = cache.get(block);
   if (cached) return cached;
-  const names = freeNames(block.text, ambient);
+  const names = bodyFreeNames(block.text, ambient);
   cache.set(block, names);
   return names;
 }
 
 /**
- * Which block declares `name`, in `scope`. The **last** declaration wins, as it
- * does in Lua, and the carried blocks are emitted in source order so a forward
- * call between two `local function`s still resolves.
+ * Which block declares `name`, searching `scopes` in order. The **last**
+ * declaration in a scope wins, as it does in Lua, and the carried blocks are
+ * emitted in source order so a forward call between two `local function`s still
+ * resolves.
  */
-function findDeclaration(
-  name: string,
-  scope: 'module' | 'install',
-  preamble: LuaBlock[],
-  prologue: LuaBlock[],
-): LuaBlock | null {
-  const regions = scope === 'install' ? [prologue, preamble] : [preamble];
-  for (const region of regions) {
+function findDeclaration(name: string, scopes: LuaBlock[][], skip?: LuaBlock): LuaBlock | null {
+  for (const region of scopes) {
     let found: LuaBlock | null = null;
     for (const block of region) {
+      if (block === skip) continue;
       if (block.declares.includes(name)) found = block;
     }
     if (found) return found;
@@ -169,7 +202,7 @@ function freeAlias(name: string, taken: Set<string>): string {
  * `require`s mapped to their module id, and its own locals mapped to `''`.
  */
 export function carryClosure(
-  seeds: { label: string; text: string }[],
+  seeds: { label: string; text: string; enclosing?: LuaBlock[][] }[],
   split: SplitModule,
   reserved: Map<string, string>,
   /** The export's sprite/sound folder (`sanitizeModFolder(id)`). */
@@ -191,20 +224,68 @@ export function carryClosure(
   const unresolved: string[] = [];
   const refused: string[] = [];
   const notes: string[] = [];
-  const queue: { name: string; scope: 'module' | 'install'; from: string }[] = [];
+  // A queue item carries the scopes of the point of use, innermost first, so a
+  // name declared inside `function weapon.setup() … end` resolves where it was
+  // written rather than at module level (`swim_suit`, `portal_gun`, `nuke_rocket`).
+  const queue: { name: string; scopes: LuaBlock[][]; from: string; skip?: LuaBlock }[] = [];
+  /**
+   * The scopes a block's own needs are resolved in: its own enclosing blocks,
+   * then the install body (where a prologue block lives and where a carried
+   * block is hoisted to), then the module level.
+   */
+  const scopesOf = (block: LuaBlock): LuaBlock[][] => [
+    block.scope ?? [],
+    ...(block.enclosing ?? []),
+    prologueAll,
+    preambleAll,
+  ];
   for (const seed of seeds) {
-    for (const name of freeNames(seed.text, installAmbient)) {
-      queue.push({ name, scope: 'install', from: seed.label });
+    const scopes = [...(seed.enclosing ?? []), prologueAll, preambleAll];
+    for (const name of bodyFreeNames(seed.text, installAmbient)) {
+      queue.push({ name, scopes, from: seed.label });
     }
   }
+  /**
+   * The function whose parameter list binds `name`, if that is where it comes
+   * from. A module shaped `function M.install(ctx, spec)` takes `spec` from
+   * whoever calls it (`lib/cursor.lua` is installed that way), so the hook
+   * closes over the *caller's* table: carrying the body without the call reads a
+   * nil, and the summary has to say which line that is rather than "nothing
+   * declares it".
+   */
+  const parameterOf = (name: string, scopes: LuaBlock[][]) => {
+    for (const region of scopes) {
+      for (const block of region) {
+        const head = /function\s*([A-Za-z0-9_.:]*)\s*\(([^)]*)\)/.exec(block.text);
+        if (!head) continue;
+        const params = head[2].split(',').map((param) => param.trim()).filter(Boolean);
+        if (params.includes(name)) {
+          return { header: head[1] || 'function', params: head[2].trim(), line: block.line };
+        }
+      }
+    }
+    return null;
+  };
   const visited = new Set<string>();
   while (queue.length > 0) {
-    const { name, scope, from } = queue.shift()!;
-    const key = `${scope}:${name}`;
+    const { name, scopes, from, skip } = queue.shift()!;
+    // The skip is part of the identity: `x = …` asks for the `local x` while
+    // excluding itself, and that is a different question from the earlier
+    // lookup of `x` that found the assignment.
+    const key = `${name}|${skip?.line ?? 0}|${scopes.map((scope) => scope[0]?.line ?? 0).join(',')}`;
     if (visited.has(key)) continue;
     visited.add(key);
-    const block = findDeclaration(name, scope, preambleAll, prologueAll);
+    const block = findDeclaration(name, scopes, skip);
     if (!block) {
+      const parameter = parameterOf(name, scopes);
+      if (parameter) {
+        // The block that reads it **is** carried when its other names resolve
+        // (`utilities.cursor` installs `lib/cursor.lua`'s machinery with a spec
+        // table, and its `on_click` hook arrives intact while `spec` stays a
+        // nil), so the note must not claim the body was dropped.
+        const note = `\`${name}\` is a parameter of \`${parameter.header}(${parameter.params})\` on line ${parameter.line}, which the caller supplies: the carried code reads it as a nil unless the call that passes it is carried too`;
+        if (!notes.includes(note)) notes.push(note);
+      }
       if (!unresolved.includes(name)) unresolved.push(name);
       continue;
     }
@@ -221,12 +302,46 @@ export function carryClosure(
       if (!unresolved.includes(name)) unresolved.push(name);
       continue;
     }
-    const entry = carried.get(block);
+    // The same declaration can be reached through more than one path, and the
+    // scope walk builds its own block objects for a nested scope (a `setup`
+    // helper is read once as a top-level statement and once from inside). One
+    // line is one declaration, whatever object it arrived as.
+    const sameBlock = (a: LuaBlock, b: LuaBlock) =>
+      a.line === b.line && squash(a.text) === squash(b.text);
+    const twin = [...carried.keys()].find((other) => sameBlock(other, block));
+    const entry = twin ? carried.get(twin) : undefined;
     if (entry) {
       entry.neededBy.push(from);
       continue;
     }
-    const origin = prologueAll.includes(block) ? 'prologue' : 'preamble';
+    const origin = preambleAll.includes(block) ? 'preamble' : 'prologue';
+    // Two *locals* of one name would collide once both are hoisted into install;
+    // a `local x` and the `x = …` that follows it are one binding (lesson 21's
+    // shape), so only two `local` declarations clash.
+    const declaresLocal = (text: string) => /^\s*local\b/.test(text);
+    const clash = declaresLocal(block.text)
+      ? [...carried.keys()].find(
+          (other) =>
+            other !== block &&
+            declaresLocal(other.text) &&
+            other.declares.some((declared) => block.declares.includes(declared)),
+        )
+      : undefined;
+    if (clash) {
+      // The same declaration written twice, once per helper that needs it: PX's
+      // `weapon.definition` and `weapon.setup` both open with
+      // `local shared = require("lib/shared")`, and that is one binding, not a
+      // collision. The first copy serves both.
+      if (squash(clash.text) === squash(block.text)) {
+        carried.get(clash)?.neededBy.push(from);
+        continue;
+      }
+      notes.push(
+        `line ${block.line} declares ${block.declares.join(', ')} in a different scope from line ${clash.line}, so only the first was carried`,
+      );
+      if (!unresolved.includes(name)) unresolved.push(name);
+      continue;
+    }
     carried.set(block, { origin, neededBy: [from] });
     // A `wa` read at module level is a load-time nil (lesson 21).
     if (origin === 'preamble' && block.kind !== 'require') {
@@ -243,11 +358,12 @@ export function carryClosure(
     // at module level and assigns `zap = require("wf-lib/electric/damage")`
     // inside `install` (lesson 21's shape, because that module reads `wa` while
     // it loads).
+    const own = scopesOf(block);
     if (origin === 'prologue' && !/^\s*local\b/.test(block.text)) {
-      queue.push({ name, scope: 'module', from: name });
+      queue.push({ name, scopes: own, from: name, skip: block });
     }
     for (const need of needs(block, nextScope === 'install' ? installAmbient : [])) {
-      queue.push({ name: need, scope: nextScope, from: name });
+      queue.push({ name: need, scopes: own, from: name });
     }
   }
 

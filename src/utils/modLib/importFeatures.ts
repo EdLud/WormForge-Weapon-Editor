@@ -421,7 +421,21 @@ function readBurstRows(table: LuaTable, config: ExplosionEffectConfig): Explosio
  * own emission: a hand-written stamp call is the author's custom Lua, so it is
  * kept (and reported) instead of being silently deleted.
  */
-function customExplodeBody(moduleText: string, stripStamp = false): string {
+function customExplodeBody(
+  moduleText: string,
+  stripStamp = false,
+  /**
+   * True when the claim declares `sounds/<mod>/explosion.wav`, the file this
+   * editor's custom-WAV card writes. Without one it never emitted a play line,
+   * so nothing is stripped: the shape alone is not ownership.
+   */
+  stripOwnedSound = false,
+  /**
+   * True when the effects-SDK burst was recognised as this editor's, which also
+   * means the target guard above it (`local explode_role = sb.role …`) is ours.
+   */
+  stripOwnedBurst = false,
+): string {
   const tableForm = /on_explode\s*=\s*\{\s*on\s*=\s*function\s*\(\s*(\w*)\s*\)/.exec(
     moduleText,
   );
@@ -495,7 +509,33 @@ function customExplodeBody(moduleText: string, stripStamp = false): string {
       }
       continue;
     }
-    if (/^if\s+ev\.worm\s+then\s+wa\.sound\.play\(/.test(trimmed)) continue;
+    // Our custom-WAV play, and only that one: `if ev.worm then
+    // wa.sound.play(ev.worm, "sounds/<mod>/explosion.wav", n) end`. The shape
+    // alone is not enough to claim the line, a bundle's own body plays stock
+    // samples in exactly that shape (WF 58 merged one into this handler), and
+    // stripping it lost the bundle's code.
+    // The burst's target guard: `local explode_role = sb.role and ev.missile and
+    // sb.role(ev.missile) or nil` and the `return` line that acts on it. Both are
+    // generated from the burst card's Target select, and left in they come back
+    // as the bundle's body (WF 52 carried the pair as its whole hook).
+    if (
+      stripOwnedBurst &&
+      (/^local explode_role = sb\.role /.test(trimmed) ||
+        /^if explode_role (?:==|~=) "bit" then return end$/.test(trimmed))
+    ) {
+      continue;
+    }
+    if (stripOwnedSound) {
+      // Exactly the line the card emits, and only that one: one `wa.sound.play`
+      // of the explosion sample in the module's own folder, on one line, guarded
+      // by the event's `worm`. A bundle's own body plays stocks in the same shape
+      // (WF 58 merges one into this very handler), which is why the file name and
+      // the folder are part of the test rather than the shape alone.
+      const ownedPlay = new RegExp(
+        String.raw`^if\s+${match[1] || 'ev'}\.worm\s+then\s+wa\.sound\.play\(${match[1] || 'ev'}\.worm, "sounds\/[^"\/]+\/explosion\.wav", \d+\)\s*end$`,
+      );
+      if (ownedPlay.test(trimmed)) continue;
+    }
     // The editor's own not-generated markers (a re-import of an export whose
     // custom body was already marked). Dropping them here keeps them from
     // nesting, which `checkLua` reads to tell generated from custom code.
@@ -507,7 +547,11 @@ function customExplodeBody(moduleText: string, stripStamp = false): string {
     if (/^zap\.set_message_electric(?:_missile)?\(/.test(trimmed)) continue;
     kept.push(line);
   }
-  return kept.join('\n').trim();
+  // A body of comments is not code: nothing to carry, and carrying it would put a
+  // claim key the author never wrote into the export. WF 52 is the case: its
+  // `on_explode` is the burst's own target explanation and nothing else.
+  const live = kept.some((line) => line.trim() !== '' && !line.trim().startsWith('--'));
+  return live ? kept.join('\n').trim() : '';
 }
 
 /** Reads every feature the editor models, and attaches the bundle's own files. */
@@ -1099,9 +1143,21 @@ export async function readBundleFeatures(args: {
     const ring = isTable(t.ring) ? t.ring : undefined;
     const trailTable2 = isTable(t.trail) ? t.trail : undefined;
     const reach = isTable(t.reach) ? t.reach : undefined;
+    const spark = isTable(t.spark) ? t.spark : undefined;
+    const glow = isTable(t.glow) ? t.glow : undefined;
     const ellipse = isTable(ring?.ellipse) ? ring.ellipse : undefined;
     const base = project.emitter ?? emitterBase;
-    const rgb = rgbOf(t) ?? { r: 130, g: 180, b: 255 };
+    const rgb =
+      rgbOf(reach ?? {}) ??
+      rgbOf(spark ?? {}) ??
+      rgbOf(glow ?? {}) ??
+      (isTable(t.color) ? rgbOf(t.color) : undefined) ??
+      rgbOf(t) ??
+      {
+        r: 130,
+        g: 180,
+        b: 255,
+      };
     const ringRgb = ring ? rgbOf(ring) : undefined;
     const emTrailRgb = trailTable2 ? rgbOf(trailTable2) : undefined;
     // The ring's spin and start angle are radians in the file and degrees in
@@ -1176,6 +1232,16 @@ export async function readBundleFeatures(args: {
       spark: t.spark !== false,
       glow: t.glow !== false,
       reach: !!reach,
+      reachDirection:
+        num(reach?.direction) ??
+        (str(reach?.from) === 'below'
+          ? 90
+          : base.reachDirection ?? 0),
+      reachSpread:
+        num(reach?.spread) ??
+        (str(reach?.from) === 'below'
+          ? 0
+          : base.reachSpread ?? 360),
       reachCount: num(reach?.count) ?? base.reachCount,
       reachDistance: num(reach?.distance) ?? base.reachDistance,
       reachSpeed: speed === undefined ? base.reachSpeed : Math.round(speed * 100),
@@ -1443,9 +1509,50 @@ export async function readBundleFeatures(args: {
   }
   const sourceSprites = source?.sprites;
   const claimSprites = isTable(sourceSprites) ? sourceSprites : undefined;
+  // A claim `sprites` list is every sheet the claim needs, and a shared file's
+  // name belongs to whoever used it first: the exporter's sheet dedupe can point
+  // a **hold** sheet at another weapon's `body.png` because the bytes matched, and
+  // a name-based reading then called it the weapon's strike art (which also
+  // suppressed `params`, so the re-exported aim layer lost its `gpu_prefix`). A
+  // path a known role already owns is not pack art.
+  // The roles are read from the calls the claim is built from, so every sheet
+  // `sb.hold` / `sb.flight` / `wa.land.stamp` names is art a role already owns.
+  // A path there is not pack art, however its file happens to be named.
+  const roleOwned = new Set<string>();
+  const ownPaths = (value: LuaValue | undefined, depth = 0): void => {
+    if (depth > 4) return;
+    if (typeof value === 'string') {
+      // Only paths: an `anim = "track"` or a `hand = holds.PX_HANDS[2]` literal is
+      // not a sheet name, and a path always has a slash and an extension.
+      if (value.includes('/') && /\.[a-z0-9]+$/i.test(value)) roleOwned.add(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) ownPaths(item, depth + 1);
+      return;
+    }
+    if (isTable(value)) {
+      for (const item of Object.values(value)) ownPaths(item, depth + 1);
+    }
+  };
+  const stampCall = readCallTable(moduleText, 'wa.land.stamp');
+  ownPaths(sbHold?.table);
+  ownPaths(flight?.table);
+  ownPaths(stampCall?.table);
+  for (const path of [
+    // A hold that needs no layer is a plain claim table, so its sheet is read
+    // into the project rather than out of a call.
+    project.hold?.sheet,
+    project.missileSprite?.sheet,
+    ...Object.values(project.customSprites ?? {}).map((asset) => asset?.path),
+    ...(project.carriedLua?.art?.sprites ?? []),
+  ]) {
+    if (typeof path === 'string' && path) roleOwned.add(path);
+  }
   if (claimSprites) {
     for (const value of Object.values(claimSprites)) {
       if (typeof value !== 'string') continue;
+      if (roleOwned.has(value)) continue;
       // Our own exports name the files by role (`trail.png`, `bit.png`,
       // `bit_homing.png`, `bit_trail.png`, `body.png`), so match the stem
       // exactly: `bit_flight.png` is the builder's bit sheet, not cluster art.
@@ -1528,7 +1635,6 @@ export async function readBundleFeatures(args: {
   // shape this editor emits is read: a bundle path, `x`/`y` from the event, and
   // a frame that is either a number or the generated `stamp_orientation(...)`.
   // Anything else stays custom Lua.
-  const stampCall = readCallTable(moduleText, 'wa.land.stamp');
   const stampSprite = str(stampCall?.table.sprite);
   const generatedStamp =
     !!stampCall &&
@@ -1632,7 +1738,19 @@ export async function readBundleFeatures(args: {
   // just the body, so the generator can inline it between its own `before` and
   // `after` parts and a re-import finds the same text again.
   const carriedHooks: { key: string; text: string; line: number }[] = [];
-  const custom = customExplodeBody(moduleText, !!generatedStamp || pierces);
+  const custom = customExplodeBody(
+    moduleText,
+    !!generatedStamp || pierces,
+    // The card writes the WAV into the claim's `sounds` list, so the list is what
+    // says the play line is ours.
+    // `scanLua` reads a list into a `1`-keyed table, so both shapes count.
+    Object.values((source?.sounds ?? {}) as Record<string, unknown>).some(
+      (path) => typeof path === 'string' && /explosion\.wav$/.test(path),
+    ),
+    // The burst is ours when the claim's our-features list has one: the export
+    // writes `fx.burst{` / `blast.explode{` only from the card.
+    /(?:fx\.burst|blast\.explode)\s*\{/.test(moduleText),
+  );
   if (custom) {
     carriedHooks.push({
       key: 'on_explode',

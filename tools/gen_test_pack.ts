@@ -550,6 +550,10 @@ function makeOp(partial: {
   /** PX's effect manager as a live emitter (`fx.emitter`). */
   emitter?: Partial<NonNullable<WeaponProject['emitter']>>;
   defaults?: Partial<WeaponProject['defaults']>;
+  /** Code an imported bundle carried in, written verbatim (`carriedLua`). */
+  carried?: Partial<NonNullable<WeaponProject['carriedLua']>>;
+  /** The author's own snippet box, for a test that merges it with a carry. */
+  customLua?: string;
 }): WeaponProject {
   return {
     id: partial.id,
@@ -660,7 +664,18 @@ function makeOp(partial: {
     packArt: { ...(partial.packArt || {}) },
     customSprites: {},
     recordOverrides: { ...(partial.overrides || {}) },
-    enableCustomLua: false,
+    enableCustomLua: !!partial.customLua,
+    customLuaSnippet: partial.customLua ?? '',
+    carriedLua: partial.carried
+      ? {
+          preamble: partial.carried.preamble ?? [],
+          prologue: partial.carried.prologue ?? [],
+          hooks: partial.carried.hooks ?? [],
+          registrations: partial.carried.registrations ?? [],
+          unresolved: partial.carried.unresolved ?? [],
+          origin: 'wftest.pack',
+        }
+      : undefined,
     useWepFile: false,
   };
 }
@@ -668,6 +683,9 @@ function makeOp(partial: {
 // ---------------------------------------------------------------------------
 // The tests.
 // ---------------------------------------------------------------------------
+/** Multi-line Lua in a carried block, without a backslash-n in every string. */
+const lines = (...parts: string[]) => parts.join(String.fromCharCode(10));
+
 const TESTS: TestCase[] = [
   {
     project: makeOp({
@@ -2178,6 +2196,8 @@ const TESTS: TestCase[] = [
         glow: true,
         reach: true,
         reachCount: 2,
+        reachDirection: -90,
+        reachSpread: 120,
         reachDistance: 22,
         reachSpeed: 14,
         reachCurve: 'arc',
@@ -2217,9 +2237,106 @@ const TESTS: TestCase[] = [
     intent:
       'PX`s effect manager as a live emitter (`fx.emitter`). It rides the muzzle while the turn`s worm aims with this weapon (a `FRAME_FINISH` worm message, at PX`s 25 px along the fire angle), and when WA writes the grenade`s first missile frame the emitter is handed to it (`emitter_round`, keyed by `m.id`). The claim writes no `on_fire`: that would replace WA`s shot. The ring is bent into PX`s lens (`ellipse = { 1.2, 0.45 }`), spins while aiming, and tracks the round`s heading in flight (`track = true`), so the lens faces the way the grenade is going. The emitter carries its own short ribbon, which needs `fx.install{ trail = true }` even though the round has no trail card.',
     expect:
-      'Select the weapon: a bent, spinning ring with sparks and two short crackling bolts sits just in front of the held grenade and follows the aim as the mouse moves. Press Space: the grenade leaves the worm (WA fires it) and the ring travels with it, its long axis turning through the arc to stay along the flight, leaving a thin ribbon, and it ends with the grenade`s blast. Aiming away, or another weapon selected, and it is gone.',
+      'Select the weapon: a bent, spinning ring with sparks and two short crackling bolts sits just in front of the held grenade and follows the aim as the mouse moves. The bolts point up and within 60 degrees either side of straight up (`direction = -90`, `spread = 120`). Press Space: the grenade leaves the worm (WA fires it) and the ring travels with it, its long axis turning through the arc to stay along the flight, leaving a thin ribbon, and it ends with the grenade`s blast. Aiming away, or another weapon selected, and it is gone.',
     watch:
-      'Nothing at all, and the log says `attempt to index a boolean value (local `src`)` (an older `effects.sdk` whose `merge` indexes `spark = true` as a table: this is what 0.3.5 does, so the bundle needs 0.4.2), no ring while aiming (the `FRAME_FINISH` registration missing, or `w.weapon == ctx.id` never true: the worm`s selected weapon is the id, not the slot), no grenade at all on Space (the claim has an `on_fire`: it replaces WA`s shot, so the emitter must never write one), the ring stuck at the spot it appeared (the muzzle handler not calling `move_to`, or the SDK`s ring not following its emitter), the ring staying behind after the shot (the `missile_frame` latch did not set `EMITTER.follow`), a ring left on the map after the grenade bursts (the follower returning a stale point instead of nil once the round is gone), a ring drawn flat rather than bent (`ellipse` dropped), a lens that keeps its angle while the grenade arcs (`track` dropped, so `angle + speed * t` is all there is), a ribbon that leaves no trail (`fx.install{ trail = false }` because the round trail card is off: the emitter`s ribbon needs the same install), or two emitters at once (a re-import carrying our own `FRAME_FINISH` or `missile_frame` registration as foreign code).',
+      'Nothing at all, and the log says `attempt to index a boolean value (local `src`)` (an older `effects.sdk` whose `merge` indexes `spark = true` as a table: this is what 0.3.5 does, so the bundle needs 0.4.2), no ring while aiming (the `FRAME_FINISH` registration missing, or `w.weapon == ctx.id` never true: the worm`s selected weapon is the id, not the slot), no grenade at all on Space (the claim has an `on_fire`: it replaces WA`s shot, so the emitter must never write one), the ring stuck at the spot it appeared (the muzzle handler not calling `move_to`, or the SDK`s ring not following its emitter), the ring staying behind after the shot (the `missile_frame` latch did not set `EMITTER.follow`), a ring left on the map after the grenade bursts (the follower returning a stale point instead of nil once the round is gone), a ring drawn flat rather than bent (`ellipse` dropped), a lens that keeps its angle while the grenade arcs (`track` dropped, so `angle + speed * t` is all there is), a ribbon that leaves no trail (`fx.install{ trail = false }` because the round trail card is off: the emitter`s ribbon needs the same install), bolts spraying in every direction (an `effects.sdk` older than 0.4.2 whose reach copy drops `direction`/`spread`), or two emitters at once (a re-import carrying our own `FRAME_FINISH` or `missile_frame` registration as foreign code).',
+  },
+  {
+    project: makeOp({
+      id: 'wftest.57_carried_hurt',
+      name: 'WF 57 Carried Hurt',
+      slot: 'grenade',
+      // The point is the code: an imported bundle's `wa.on.hurt` and the helper
+      // local it closes over, carried verbatim (the Carried Lua panel). Nothing
+      // in the panels models a hurt handler, so this is what the reader does
+      // with one: it writes it, and the helper comes with it.
+      carried: {
+        prologue: [
+          {
+            origin: 'prologue',
+            text: lines(
+              'local function label_for(amount)',
+              '  return "WF 57 carried hurt saw " .. tostring(amount) .. " electric"',
+              'end',
+            ),
+            declares: ['label_for'],
+            requires: [],
+            line: 4,
+            neededBy: ['wa.on.hurt'],
+          },
+        ],
+        registrations: [
+          {
+            event: 'hurt',
+            text: lines(
+              'wa.on.hurt(function(hit)',
+              '  if hit.kind ~= "taze" then return end',
+              '  wa.log(label_for(hit.amount))',
+              'end)',
+            ),
+            line: 9,
+          },
+        ],
+      },
+    }),
+    intent:
+      'A carried `wa.on.hurt` and the helper local it closes over. The handler is written verbatim after everything the editor installs, and `label_for` is carried into the install body because the handler reads it.',
+    expect:
+      'Zap any worm with an electric weapon from this pack: the engine log prints `WF 57 carried hurt saw N electric` once per taze hit, where N is the damage. Nothing in the match changes, the handler only reports.',
+    watch:
+      "Nothing in the log (the registration was dropped, or a re-import carried our own handlers as foreign code and doubled them), `attempt to call a nil value (global 'label_for')` (the helper not carried, which is the closure rule), an error mentioning `hit.kind` (the event table read wrongly), or the line printing on every hit rather than only electric ones (the filter lost).",
+  },
+  {
+    project: makeOp({
+      id: 'wftest.58_carried_merge',
+      name: 'WF 58 Carried Merge',
+      slot: 'bazooka',
+      body: { sprite: 'bazooka', damage: 35 },
+      // The crater is carved by `blast` mode inside the callback, which is what
+      // lets the stamp survive: WA's own blast runs afterwards and would erase
+      // it.
+      explosion: { enabled: true, mode: 'blast', damage: 35, push: 100, hole: 40, sound: 'none' },
+      terrainStamp: {
+        enabled: true,
+        onImpact: true,
+        soften: 3,
+        blend: 'mix',
+        trueColour: false,
+        wormClearance: 12,
+        sheet: stampAsset(),
+        impact: NO_PIERCE,
+      },
+      // The bundle's own `on_explode` (a carried body) and the author's own box
+      // (a snippet) are two different owners of one claim key: the editor merges
+      // them into the handler it emits, bundle first, author second, and the
+      // stamp last.
+      carried: {
+        hooks: [
+          {
+            key: 'on_explode',
+            text: lines(
+              'function(ev)',
+              "  -- the bundle's own body: it runs before the author's",
+              '  if ev.worm then wa.sound.play(ev.worm, 88, 5) end',
+              'end',
+            ),
+            line: 6,
+          },
+        ],
+      },
+      customLua: lines(
+        'on_explode = { on = function(ev)',
+        "  -- the author's own body: it runs after the bundle's",
+        '  if ev.worm then wa.sound.play(ev.worm, 96, 6) end',
+        'end },',
+      ),
+    }),
+    intent:
+      "One claim key with three owners: the effects-SDK burst, a body an imported bundle carried, and the author's own `on_explode` snippet. The editor emits one handler, in that order, with the terrain stamp last.",
+    expect:
+      "Fire at the ground: the blast carves a crater, plays a zap (the bundle's body) and then a throw (the author's body), and the arrow is stamped inside the crater pointing the way the rocket came in. The claim holds a single `on_explode`, so no owner replaces another.",
+    watch:
+      "Only one of the two sounds (one body overwrote the other: two `on_explode` keys, which is the bug the merge exists to prevent), no stamp (the bodies ran after it, or `effect` mode let WA's blast erase it), the stamp before the sounds (order reversed), or a load error naming `ev` (a merged body whose parameter was not renamed).",
   },
 ];
 

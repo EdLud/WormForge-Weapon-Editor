@@ -1,26 +1,58 @@
 import React, { useMemo, useState } from 'react';
-import { WeaponProject } from '../types/weapon';
-import { generateLuaCode, generateModToml, generateProfileToml, sanitizeModFolder } from '../utils/luaGenerator';
+import { PackProject, WeaponProject } from '../types/weapon';
+import {
+  generateLuaCode,
+  generateModToml,
+  generatePackProfile,
+  generatePackToml,
+  generateProfileToml,
+  sanitizeModFolder,
+} from '../utils/luaGenerator';
 import { Copy, Check, FileCode2, Settings, UserCheck, X } from 'lucide-react';
 import { checkLua } from '../utils/luaCheck';
 import { LuaFindings } from './LuaFindings';
+import { WeaponSwitcher } from './PackRail';
 
 interface LuaPreviewModalProps {
   project: WeaponProject;
+  /**
+   * The whole bundle. A pack of more than one weapon has **one** `mod.toml` and
+   * **one** profile, so those two tabs come from the pack generators while the Lua
+   * tab shows one weapon at a time (the selector above the tabs).
+   */
+  pack?: PackProject;
+  activeWeaponIndex?: number;
+  onSelectWeapon?: (index: number) => void;
   isOpen?: boolean;
   onClose?: () => void;
   inline?: boolean;
 }
 
-export const LuaPreviewModal: React.FC<LuaPreviewModalProps> = ({ project, isOpen = true, onClose, inline = false }) => {
+export const LuaPreviewModal: React.FC<LuaPreviewModalProps> = ({
+  project,
+  pack,
+  activeWeaponIndex = 0,
+  onSelectWeapon,
+  isOpen = true,
+  onClose,
+  inline = false,
+}) => {
   const [activeFile, setActiveFile] = useState<'lua' | 'mod_toml' | 'profile_toml'>('lua');
   const [copied, setCopied] = useState(false);
 
   if (!inline && !isOpen) return null;
 
-  const luaCode = generateLuaCode(project);
-  const modToml = generateModToml(project);
-  const profileToml = generateProfileToml(project);
+  const many = !!pack && pack.weapons.length > 1;
+  const shown = many ? (pack!.weapons[activeWeaponIndex] ?? project) : project;
+  const luaCode = generateLuaCode(shown);
+  // One manifest and one profile per bundle: for a pack of one the pack
+  // generators write the same file the single-weapon ones do (checked by
+  // `tools/check_pack_roundtrip.ts`), so both paths are the same text.
+  const modToml = many ? generatePackToml(pack!) : generateModToml(shown);
+  const profileToml = many ? generatePackProfile(pack!) : generateProfileToml(shown);
+  const profileName = many
+    ? (pack!.profileName || pack!.name || 'Profile').replace(/[\/:*?"<>|]/g, '_')
+    : (shown.name || 'Profile');
 
   // The generated Lua is a complete file, so the editor can say whether it
   // would run: custom code (or a hook an imported bundle carried in) that reads a
@@ -46,7 +78,12 @@ export const LuaPreviewModal: React.FC<LuaPreviewModalProps> = ({ project, isOpe
     <div className={`flex flex-col ${inline ? 'h-full' : 'max-h-[85vh]'} bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 rounded-xl overflow-hidden shadow-xs transition-colors`}>
       {/* File Selector Bar */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-stone-200 dark:border-stone-800 bg-stone-50 dark:bg-stone-800/60">
-        <div className="flex items-center gap-1.5 p-1 bg-stone-200/60 dark:bg-stone-700/60 rounded-lg">
+        <div className="flex flex-wrap items-center gap-1.5 p-1 bg-stone-200/60 dark:bg-stone-700/60 rounded-lg">
+          {many && onSelectWeapon && (
+            <span className="pl-1 pr-0.5">
+              <WeaponSwitcher pack={pack!} activeIndex={activeWeaponIndex} onSelect={onSelectWeapon} />
+            </span>
+          )}
           <button
             type="button"
             onClick={() => setActiveFile('lua')}
@@ -57,7 +94,7 @@ export const LuaPreviewModal: React.FC<LuaPreviewModalProps> = ({ project, isOpe
             }`}
           >
             <FileCode2 className="w-3.5 h-3.5" />
-            weapons/{sanitizeModFolder(project.id)}.lua
+            weapons/{sanitizeModFolder(shown.id)}.lua
           </button>
 
           <button
@@ -83,7 +120,7 @@ export const LuaPreviewModal: React.FC<LuaPreviewModalProps> = ({ project, isOpe
             }`}
           >
             <UserCheck className="w-3.5 h-3.5" />
-            profiles/{project.name || 'Profile'}.toml
+            profiles/{profileName}.toml
           </button>
         </div>
 

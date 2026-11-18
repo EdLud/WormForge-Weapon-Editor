@@ -32,12 +32,13 @@ def check(name, ok, detail=''):
 
 # --------------------------------------------------------------- the fake wa ---
 STATE = {'frame': 0, 'spawned': 0, 'despawned': 0, 'drawn': [], 'quads': [], 'draws': []}
+LOGS = []
 WORM = {'id': 1, 'hp': 100, 'turn': True, 'x': 1000.0, 'y': 1000.0}
 MISSILES = []
 
 wa = lua.table()
 lua.globals()['wa'] = wa
-wa.log = lambda msg: None
+wa.log = lambda msg: LOGS.append(str(msg))
 
 wa.depth = lua.table()
 wa.depth.FRONT = 1
@@ -214,8 +215,22 @@ check('it draws something', len(ring_calls) >= 1, str(len(ring_calls)))
 
 # The ring rides the emitter. A ribbon pass has at most `max` points (12 here)
 # and the ring has segments + 1 (23), so the ring's own loop is the long one.
-def ring_pass():
+def ring_pass(near=None):
+    """The ring the SDK drew this frame, optionally the one centred at a point.
+
+    Several emitters can be alive at once (the static one, the tracking one), and
+    every `draw` paints all of them: picking the first loop measured whichever
+    emitter was drawn first, which is how a quarter-turn assertion can pass or
+    fail for a reason that has nothing to do with rotation.
+    """
     loops = [d for d in STATE['drawn'] if len(d['points']) == 23]
+    if near is not None:
+        loops = [
+            loop
+            for loop in loops
+            if abs(ring_centre(loop)[0] - near[0]) < 12
+            and abs(ring_centre(loop)[1] - near[1]) < 12
+        ]
     return loops[0] if loops else None
 
 
@@ -293,7 +308,7 @@ check(
     str(tracking['ring']['angle']),
 )
 draw()
-turned = ring_pass()
+turned = ring_pass((MOVING['x'], MOVING['y']))
 turned_xs = [p['x'] for p in turned['points']]
 turned_ys = [p['y'] for p in turned['points']]
 check(
@@ -398,6 +413,49 @@ for _ in range(8):
 check('it starts its bolt', bolts >= 1, f'{bolts} bolts')
 
 # ---------------------------------------------------------- death and cleanup --
+# ------------------------------------------------------- emitter colour + aim ---
+# Generated tables use one top-level RGB color and explicit reach direction and
+# spread. These are applied by the SDK, not just the preview.
+colored = fx.emitter(
+    lua_table(
+        """{ x = 80, y = 90, owner = WORM, preset = "electric",
+  color = { r = 192, g = 96, b = 64 }, spark = true, glow = true,
+  reach = { count = 1, first = { 1, 1 }, direction = 0, spread = 0,
+    distance = 20 } }"""
+    )
+)
+check(
+    'emitter RGB reaches spark, glow, reach and ribbon',
+    colored is not None
+    and colored['spark']['r'] == 192
+    and colored['glow']['g'] == 96
+    and colored['reach']['b'] == 64
+    and colored['trail']['r'] == 192,
+    'top-level color did not reach every part',
+)
+for _ in range(3):
+    tick_actors()
+arc = colored['arcs'][1]
+check(
+    'fixed reach direction points right in screen coordinates',
+    arc is not None
+    and abs(arc['to_x'] - (colored['x'] + 20)) < 0.001
+    and abs(arc['to_y'] - colored['y']) < 0.001,
+    f"({arc['to_x'] if arc else None}, {arc['to_y'] if arc else None})",
+)
+no_bolts = fx.emitter(
+    lua_table('{ x = 20, y = 30, owner = WORM, preset = "electric", reach = false }')
+)
+for _ in range(4):
+    tick_actors()
+check(
+    'explicit reach false overrides preset bolt count',
+    no_bolts is not None and no_bolts['reach']['count'] == 0 and len(no_bolts['arcs']) == 0,
+    f"count={no_bolts['reach']['count'] if no_bolts else None}",
+)
+colored['dead'] = True
+no_bolts['dead'] = True
+
 POS['alive'] = False
 tick_actors()
 check('the emitter dies with its anchor', emitter['dead'] is True)
@@ -428,6 +486,79 @@ if len(noisy) >= 3:
     check('the trail noise bends the ribbon', off > 0.2, f'{off:.2f} px off the chord')
 else:
     check('the trail noise bends the ribbon', False, 'too few points')
+
+# ------------------------------------------------- siblings of one bundle ---
+# `wa._mod` is the component, not the bundle: the engine resolves a sheet
+# through the other components of the same bundle, but `fx.install` registers one
+# callback per component that calls it and paints only that component's effects.
+# A bundle that installs from its first weapon therefore used to lose every
+# effect its second weapon made, with no error at all: the saw's aura on a placed
+# saw (px.saw_place), the death mark's thunder (px.marked_for_death). An effect
+# whose component never installed is adopted by the installer sharing the longest
+# id prefix with it, once, and the log names it.
+wa._mod = 'px.saw_grenade'
+install()
+
+
+COUNT = [0]
+
+
+def sibling(mod):
+    """A ring made by `mod`, the callbacks that painted it, and its passes."""
+    COUNT[0] += 1
+    x, y = 1200.0 + 40 * COUNT[0], 5600.0
+    wa._mod = mod
+    item = fx.ring(
+        lua_table('{ x = %d, y = %d, radius = 30, segments = 16 }' % (x, y))
+    )
+    painters, passes = set(), 0
+    for index, fn in enumerate(DRAW):
+        STATE['drawn'].clear()
+        fn()
+        for d in STATE['drawn']:
+            n = len(d['points'])
+            cx = sum(p['x'] for p in d['points']) / n
+            cy = sum(p['y'] for p in d['points']) / n
+            if abs(cx - x) < 12 and abs(cy - y) < 12:
+                painters.add(index)
+                passes += 1
+    return item, painters, passes
+
+
+own, own_painters, own_passes = sibling('px.saw_grenade')
+placed, placed_painters, placed_passes = sibling('px.saw_place')
+random_saw, random_painters, random_passes = sibling('px.saw_random')
+foreign, foreign_painters, foreign_passes = sibling('otherpack.thing')
+check(
+    'a component that installed paints its own effect once',
+    len(own_painters) == 1 and own_passes >= 1,
+    f'{len(own_painters)} callbacks, {own_passes} passes',
+)
+check(
+    'a sibling component effect is adopted by the installer',
+    placed is not None and placed['mod'] == 'px.saw_grenade',
+    str(placed['mod'] if placed is not None else None),
+)
+check(
+    'and painted by exactly that one callback',
+    placed_painters == own_painters and placed_passes == own_passes,
+    f'{len(placed_painters)} callbacks, {placed_passes} passes',
+)
+check(
+    'the same for a feature component',
+    random_saw is not None and random_painters == own_painters and random_passes == own_passes,
+    f"{random_saw['mod'] if random_saw is not None else None} {len(random_painters)} callbacks",
+)
+check(
+    'an unrelated id is left alone and nothing paints it',
+    foreign is not None and foreign['mod'] == 'otherpack.thing' and foreign_passes == 0,
+    f"{foreign['mod'] if foreign is not None else None} {foreign_passes} passes",
+)
+check(
+    'the log names an adopted component',
+    any('px.saw_place' in line and 'drawn as px.saw_grenade' in line for line in LOGS),
+    str(LOGS[-2:]),
+)
 
 print()
 if FAILED:

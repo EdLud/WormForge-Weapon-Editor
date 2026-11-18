@@ -175,6 +175,18 @@ export function isNotGeneratedMarker(line: string): 'open' | 'close' | null {
 }
 
 /**
+ * The same text without the editor's own region markers. A bundle this editor
+ * wrote already carries them, so a re-import that kept them would wrap the body
+ * in a second pair and gain two comment lines on every round trip.
+ */
+export function stripNotGeneratedMarkers(code: string): string {
+  if (!code.includes('not generated')) return code;
+  const lines = code.split(String.fromCharCode(10));
+  if (!lines.some((line) => isNotGeneratedMarker(line))) return code;
+  return lines.filter((line) => isNotGeneratedMarker(line) === null).join(String.fromCharCode(10));
+}
+
+/**
  * Line ranges (1-based, inclusive) of the text between the markers, so a finding
  * that carries a line number can be answered with "did the editor generate
  * this". An unclosed region runs to the end of the file, which is what a

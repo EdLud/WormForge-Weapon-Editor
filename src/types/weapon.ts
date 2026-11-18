@@ -765,6 +765,10 @@ export interface EmitterConfig {
   glow: boolean;
   /** Short bolts that jump out every cooldown (`reach`). */
   reach: boolean;
+  /** Direction of reach bolts in screen coordinates, 0 right, 90 down, -90 up. */
+  reachDirection?: number;
+  /** Total angular spread around `reachDirection`; 360 sends rays in every direction. */
+  reachSpread?: number;
   reachCount: number;
   reachDistance: number;
   reachSpeed: number;
@@ -1101,6 +1105,16 @@ export interface WeaponProject {
   useWepFile?: boolean;
   wepFile?: File;
   wepFileName?: string;
+  /**
+   * The weapon's folder inside a **pack** of more than one weapon. One bundle has
+   * one `weps/` folder, so two weapons built from a `.wep` both called
+   * `weapon.wep` would write one file and one of them would load the other's
+   * record. The pack emitter sets this and `wepBundlePath` names the folder; a
+   * single-weapon export leaves it unset, so today's ZIP stays byte-identical.
+   * The art paths already carry the weapon's own slug (`sprites/<slug>/`), which
+   * is why only `weps/` needs this.
+   */
+  packSlug?: string;
   wepBaseline?: WepBaseline;
   /**
    * The `copy_from` donor's own decoded record. With no `.wep` the engine
@@ -1108,6 +1122,68 @@ export interface WeaponProject {
    * are left to it and only real edits are written.
    */
   donorBaseline?: WepBaseline;
+  /**
+   * The weapon's `ctx.option` settings (`[[components.options]]`). A bundle's
+   * module reads them and `ctx.option` is an **error** for a key the manifest
+   * does not declare, so an imported weapon's list is passed through and edited,
+   * never dropped.
+   */
+  options?: WeaponOptionConfig[];
+}
+
+/**
+ * One `[[components.options]]` entry (`components.rs`, `OptionDecl`). `value` is
+ * the player's choice; the manifest carries `default`, so a value equal to the
+ * default is not written to the profile at all.
+ */
+export interface WeaponOptionConfig {
+  key: string;
+  /** `bool`, `int` or `choice`; the engine refuses anything else. */
+  kind: string;
+  label?: string;
+  description?: string;
+  default?: boolean | number | string;
+  value?: boolean | number | string;
+  /** For `choice` only. */
+  choices?: string[];
+  /** For `int` only. */
+  min?: number;
+  max?: number;
+  /** A `choice` the profile may also write as `true`/`false`. */
+  fromBool?: [string, string];
+  /** `data = true`: on a weapon, the option is its weapon data field too. */
+  data?: boolean;
+}
+
+/**
+ * A bundle holding one or more weapons (`reqs/pack_export_plan.md`).
+ *
+ * The engine puts every component of a bundle in **one Lua environment**
+ * (`declare_all` keys `envs` by bundle), so a pack shares its module cache, its
+ * `[sprites]` table and its dependency list, while each `[[components]]` block
+ * claims its own weapon. A single-weapon export is this shape with one element in
+ * `weapons` and the weapon's own id as the pack id, which is what keeps today's
+ * ZIPs identical.
+ *
+ * The weapon ids inside a pack are namespaced `<packId>.<slug>`: `id` is unique
+ * across every installed bundle, and every art path is derived from the last id
+ * segment, so the slug is also the weapon's folder inside the pack.
+ */
+export interface PackProject {
+  /** Bundle id, e.g. `wfws.arsenal`. */
+  id: string;
+  /** Bundle name, shown by the mod loader. */
+  name: string;
+  author: string;
+  version: string;
+  description?: string;
+  /** Bundle ids this pack takes over. */
+  replaces?: string[];
+  /** The one profile the export writes; defaults to the pack name. */
+  profileName?: string;
+  /** A bundle-level `mod_icon`; else the first weapon's uploaded icon. */
+  modIcon?: string;
+  weapons: WeaponProject[];
 }
 
 /** A `wa.on.*` call carried verbatim, filter included. */
@@ -1118,6 +1194,13 @@ export interface CarriedLuaRegistration {
   text: string;
   /** 1-based line in the source module. */
   line: number;
+  /**
+   * Switched off in the Carried Lua panel: the block stays in the project (so
+   * switching it back on restores the text) and is not written to the export.
+   * A disabled block can leave the ones above it reading a nil, which is why
+   * the panel shows the validator's report next to the list.
+   */
+  disabled?: boolean;
 }
 
 export interface CarriedLuaArt {
@@ -1142,6 +1225,8 @@ export interface CarriedLuaBlock {
   line: number;
   /** The names that pulled it into the closure. */
   neededBy: string[];
+  /** Switched off in the Carried Lua panel; the export writes it again when on. */
+  disabled?: boolean;
 }
 
 /** A claim hook carried from a bundle, as the function literal it was. */
@@ -1152,6 +1237,8 @@ export interface CarriedLuaHook {
   text: string;
   /** 1-based line in the source module, for the notes and the panel. */
   line: number;
+  /** Switched off in the Carried Lua panel; the export writes it again when on. */
+  disabled?: boolean;
 }
 
 export interface CarriedLua {

@@ -226,7 +226,11 @@ function muzzleOf(cfg: EmitterConfig, aim: number): { x: number; y: number } {
 }
 
 function cosmetics(cfg: EmitterConfig) {
-  const preset = (EMITTER_PRESETS[cfg.preset] ?? EMITTER_PRESETS.electric).fx;
+  const base = (EMITTER_PRESETS[cfg.preset] ?? EMITTER_PRESETS.electric).fx;
+  const preset = {
+    ...base,
+    bolts: { ...base.bolts, direction: cfg.reachDirection ?? base.bolts.direction, spread: cfg.reachSpread ?? base.bolts.spread },
+  };
   return {
     preset,
     count: cfg.reach ? Math.max(0, Math.min(8, Math.round(cfg.reachCount))) : 0,
@@ -374,17 +378,21 @@ function stepSim(sim: Sim, cfg: EmitterConfig, seed: number, flies: boolean, noA
       if (sim.cooldowns[i] > 0) continue;
       const from = { x: sim.x, y: sim.y };
       let to: { x: number; y: number };
-      if (cos.preset.bolts.down) {
-        // `from = "below"`: the bolt runs down out of the emitter.
-        const [lo, hi] = cos.preset.bolts.down;
+      const { direction, spread, down } = cos.preset.bolts;
+      if (down && direction === 90 && spread === 0) {
+        // The thunder preset's native `from = "below"` case stays vertical.
+        const [lo, hi] = down;
         const depth = Math.round(lo + (hi - lo) * rand01(seed + sim.t, i * 7));
         const side = Math.round(
           (rand01(seed + sim.t, i * 13) * 2 - 1) * (cos.preset.bolts.downSide ?? 0),
         );
         to = { x: from.x + side, y: from.y + depth };
       } else {
-        const jitter = (k: number) => Math.round((rand01(seed + sim.t, i * 17 + k) * 2 - 1) * cos.distance);
-        to = { x: from.x + jitter(0), y: from.y + jitter(1) };
+        const angle = ((direction + (rand01(seed + sim.t, i * 17) - 0.5) * spread) * Math.PI) / 180;
+        const distance = down
+          ? down[0] + (down[1] - down[0]) * rand01(seed + sim.t, i * 7)
+          : Math.sqrt(rand01(seed + sim.t, i * 17 + 1)) * cos.distance;
+        to = { x: from.x + Math.cos(angle) * distance, y: from.y + Math.sin(angle) * distance };
       }
       const bolt: Bolt = {
         ray: i,
@@ -660,11 +668,11 @@ export function EmitterPreview({ config, roundOk }: EmitterPreviewProps) {
       return hexOf(r, g, b);
     };
     /** A part's own colour, or the hue clock when either switch asks for it. */
-    const partColour = (part: { rainbow: boolean; color: string }): {
+    const partColour = (part: { rainbow: boolean; color?: string }): {
       r: number;
       g: number;
       b: number;
-    } => (rainbow || part.rainbow ? rainbowRgb(clock * 0.012) : parseHexColour(part.color));
+    } => (rainbow || part.rainbow ? rainbowRgb(clock * 0.012) : parseHexColour(part.color ?? cfg.color));
 
     /** One ribbon pass: a textured quad per segment, additive, per-segment alpha. */
     const ribbon = (points: RibbonPoint[], sheetKey: 'beam' | 'glow', closed: boolean): void => {

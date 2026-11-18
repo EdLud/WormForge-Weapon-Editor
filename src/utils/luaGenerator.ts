@@ -8,7 +8,9 @@ import {
   HoldConfig,
   MeleeSound,
   PackArtSlot,
+  PackProject,
   RoamActionConfig,
+  WeaponOptionConfig,
   WeaponProject,
 } from '../types/weapon';
 import { getStockPanelPosition } from '../data/stockWeapons';
@@ -65,7 +67,11 @@ export function sanitizeModFolder(id: string): string {
 }
 
 function luaQuote(str: string): string {
-  return JSON.stringify(str);
+  // `JSON.stringify(undefined)` is `undefined`, not a string, so a missing value
+  // would reach the manifest as the bare word `undefined` and make the whole
+  // bundle unparseable. Nothing that lands in a manifest is a value the engine
+  // can do without: an absent one is the empty string.
+  return JSON.stringify(str ?? '');
 }
 
 /**
@@ -334,9 +340,12 @@ function emitEmitterBlock(
   lines.push(`        preset = ${luaQuote(em.preset)},`);
   lines.push(`        spark = ${em.spark ? 'true' : 'false'},`);
   lines.push(`        glow = ${em.glow ? 'true' : 'false'},`);
+  lines.push(`        color = { r = ${r}, g = ${g}, b = ${b} },`);
   if (em.reach) {
     lines.push('        reach = {');
     lines.push(`          count = ${Math.max(0, Math.round(em.reachCount))},`);
+    lines.push(`          direction = ${formatNumber(em.reachDirection ?? 0)},`);
+    lines.push(`          spread = ${formatNumber(Math.max(0, Math.min(360, em.reachSpread ?? 360)))},`);
     lines.push(`          distance = ${formatNumber(Math.max(0, em.reachDistance))},`);
     lines.push(`          speed = { ${reachSpeed}, ${reachSpeed} },`);
     lines.push(`          bulge = { ${reachBulge}, ${reachBulge} },`);
@@ -1182,7 +1191,12 @@ export function sanitizeWepFileName(name: string): string {
  *  the firing source. The engine reads `wep` relative to the bundle root. */
 export function wepBundlePath(project: WeaponProject): string | null {
   if (!project.useWepFile || !project.wepFile) return null;
-  return `weps/${sanitizeWepFileName(project.wepFileName || project.wepFile.name)}`;
+  const file = sanitizeWepFileName(project.wepFileName || project.wepFile.name);
+  // One bundle has one `weps/` folder, so a weapon inside a pack of more than one
+  // names its own: two records both called `weapon.wep` would otherwise be one
+  // file, and one of the two weapons would load the other's record.
+  const slug = project.packSlug ? `${sanitizeModFolder(project.packSlug)}/` : '';
+  return `weps/${slug}${file}`;
 }
 
 export function generateLuaCode(project: WeaponProject): string {
@@ -1255,9 +1269,12 @@ export function generateLuaCode(project: WeaponProject): string {
   // Carried claim hooks (M5): the bundle's own `on_explode` and `on_fire`. The
   // key is single-valued, so they are inlined into the handler the editor emits
   // rather than written as a second key, which would replace one of the two.
-  const carriedHooks = new Map(
-    (project.carriedLua?.hooks ?? []).map((hook) => [hook.key, hook]),
-  );
+  // One switch per block (the Carried Lua panel): a disabled block stays in the
+  // project so its text is not lost, and is simply not written. That can leave a
+  // helper reading a name nothing declares, which is the author's call and shows
+  // in the panel's report, not something to guess around.
+  const carriedHookList = (project.carriedLua?.hooks ?? []).filter((hook) => !hook.disabled);
+  const carriedHooks = new Map(carriedHookList.map((hook) => [hook.key, hook]));
   const carriedExplode = carriedHooks.has('on_explode')
     ? hookBodyOf(carriedHooks.get('on_explode')!.text)
     : null;
@@ -1344,9 +1361,7 @@ export function generateLuaCode(project: WeaponProject): string {
   // Claim keys the engine reads verbatim and the editor does not model: the
   // bundle's own callbacks, written as the key itself. `on_explode`/`on_fire`
   // are not here: they are merged into the handler the editor emits.
-  const verbatimHooks = (project.carriedLua?.hooks ?? []).filter(
-    (hook) => !MERGEABLE_HOOKS.has(hook.key),
-  );
+  const verbatimHooks = carriedHookList.filter((hook) => !MERGEABLE_HOOKS.has(hook.key));
   // A sequentially fired round is launched by us (`wa.weapons.launch`), so WA's
   // fuse option never reaches it: the launch writes the record's own
   // `missile.fuse`, and a weapon that relies on the option (every grenade) keeps
@@ -1415,6 +1430,8 @@ export function generateLuaCode(project: WeaponProject): string {
   // the trigger and has no muzzle, so it is excluded.
   const emitter = project.emitter;
   const usesEmitter = !!emitter?.enabled && project.fireType !== 'melee';
+  // Trail sampling/drawing remains independent of the emitter actor.
+  const emitterRibbon = usesEmitter && !!emitter?.trail?.enabled;
   // The round anchor needs a missile WA builds from this record (a placed mine
   // is a mine entity, a strike's bombs carry no `m.weapon`).
   const emitterRoundOk =
@@ -1432,7 +1449,7 @@ export function generateLuaCode(project: WeaponProject): string {
   const emitterCarries = emitterUsesAim && emitterUsesRound;
   // Anything in px_effects needs the module required and installed; the trail
   // module on its own installs itself.
-  const usesEffectsSdk = usesExplosionEffect || usesEmitter;
+  const usesEffectsSdk = usesExplosionEffect || usesEmitter || usesRibbonTrail;
 
   if (usesHold) {
     lines.push('local holds = require("wf-lib/holds")');
@@ -1592,14 +1609,17 @@ export function generateLuaCode(project: WeaponProject): string {
     lines.push('  return false');
     lines.push('end');
   }
-  if (usesRibbonTrail) {
+  if (usesEffectsSdk) {
+    // The claim names `trail.BEAM` and `trail.GLOW` for every weapon that
+    // installs the effects SDK, not only the ones with a ribbon card: the
+    // shared library draws every mod's sheets, so the whole set is claimed.
+    // The module therefore has to be in scope whenever the SDK is, or a
+    // burst-only weapon indexes a nil `trail` at install and fails to load.
     lines.push('local trail = require("wf-lib/effects/trail")');
   }
   if (usesEffectsSdk) {
-    lines.push('local fx = require("wf-lib/effects/px_effects")');
-    if (!usesRibbonTrail) {
-      // px_effects falls back to the trail module's beam and glow sheets.
-      lines.push('local trail = require("wf-lib/effects/trail")');
+    if (usesEmitter || usesExplosionEffect || usesRibbonTrail) {
+      lines.push('local fx = require("wf-lib/effects/px_effects")');
     }
     if (silencesBlast) {
       lines.push('local blast = require("wf-lib/effects/custom_explosion")');
@@ -1623,11 +1643,21 @@ export function generateLuaCode(project: WeaponProject): string {
   // callback reads at run time, and they come after them so a carried unit that
   // reads `fx` gets the file's own `fx` rather than being shadowed by a second.
   const carriedLua = project.carriedLua;
-  if (carriedLua?.preamble.length) {
+  const carriedPreamble = (carriedLua?.preamble ?? []).filter((block) => !block.disabled);
+  const carriedPrologue = (carriedLua?.prologue ?? []).filter((block) => !block.disabled);
+  if (carriedPreamble.length) {
+    // The `not generated` markers are load-bearing, not decoration: `checkLua`
+    // reads them to say a finding below is in code no panel produced, which is
+    // what makes the Carried Lua panel's report about the carried code rather
+    // than about the file, and what lets an author see that switching a block
+    // off left a nil behind. They are comments, so the masked copies every
+    // scanner uses (and therefore the carry's own comparisons) never see them.
+    lines.push(NOT_GENERATED_OPEN);
     lines.push('-- Carried from the source bundle: the declarations its hooks close over.');
-    for (const block of carriedLua.preamble) {
+    for (const block of carriedPreamble) {
       lines.push(...reindentCode(block.text, ''));
     }
+    lines.push(NOT_GENERATED_CLOSE);
     lines.push('');
   }
 
@@ -1923,12 +1953,10 @@ export function generateLuaCode(project: WeaponProject): string {
         holdRows.push('  radial_rotation = 1,');
         holdRows.push(`  scale = ${formatNumber(extra.scale)},`);
         // The quad layer measures the cell itself; the engine ignores this key.
-        // The cell is a HAND cell, never the weapon sheet's: the aim hand the
-        // engine draws is 60 px (`hand_size = 60`), and the second hand reuses
-        // that sheet unless it uploaded its own art. Falling back to the hold
-        // sheet's width drew the support hand at the size of the gun.
-        const handCell = own ? Math.max(1, Math.round(extra.sheetWidth || 60)) : 60;
-        holdRows.push(`  size = ${handCell},`);
+        // A hand cell is always 60 px, even when the uploaded PNG has transparent
+        // padding or a wider canvas. Using the source width made a 100 px support
+        // hand noticeably larger than WA's own 60 px hand.
+        holdRows.push('  size = 60,');
         if ((extra.offsetX ?? 0) !== 0 || (extra.offsetY ?? 0) !== 0) {
           holdRows.push(
             `  offset = { x = ${formatNumber(extra.offsetX)}, y = ${formatNumber(extra.offsetY)} },`,
@@ -2077,11 +2105,8 @@ export function generateLuaCode(project: WeaponProject): string {
     // so the ring only surfaced once the boom had played out, a second later,
     // by which time the envelope was nearly gone. Worms and the whole blast are
     // what it should cover; the smoke stays on its own band behind it.
-    // `trail = true` is what makes `fx.install` call `trail.install()`, which is
-    // the hook that *draws* a ribbon. The emitter's own ribbon is a ribbon too,
-    // so it needs the flag even when the round has no trail: with `false` the
-    // emitter's points were sampled and never drawn.
-    const sdkTrail = usesRibbonTrail || (usesEmitter && !!emitter?.trail?.enabled);
+    // Either ribbon card installs the shared sampler and draw callback.
+    const sdkTrail = usesRibbonTrail || emitterRibbon;
     lines.push(
       `    fx.install{ trail = ${sdkTrail ? 'true' : 'false'}, depth = { burst = wa.depth.FRONT } }`,
     );
@@ -2110,11 +2135,13 @@ export function generateLuaCode(project: WeaponProject): string {
   // helper that calls a library the panel installed (`fx.burst`, `zap.hurt`) runs
   // against an installed library, and before the claim, because the claim's hook
   // bodies are the only thing that needs them.
-  if (carriedLua?.prologue.length) {
+  if (carriedPrologue.length) {
+    lines.push(`    ${NOT_GENERATED_OPEN}`);
     lines.push('    -- Carried from the source bundle: the install-time locals its hooks close over.');
-    for (const block of carriedLua.prologue) {
+    for (const block of carriedPrologue) {
       lines.push(...reindentCode(block.text, '    '));
     }
+    lines.push(`    ${NOT_GENERATED_CLOSE}`);
     lines.push('');
   }
 
@@ -2236,7 +2263,7 @@ export function generateLuaCode(project: WeaponProject): string {
   const claimSdkSheet = (name: string) => {
     if (!packSprites.includes(name)) packSprites.push(name);
   };
-  if (usesRibbonTrail) {
+  if (usesRibbonTrail || emitterRibbon) {
     claimSdkSheet('trail.BEAM');
     claimSdkSheet('trail.GLOW');
   }
@@ -3871,10 +3898,13 @@ export function generateLuaCode(project: WeaponProject): string {
     onFire.push('        }');
   }
   if (hasCarriedOnFire && carriedOnFire) {
+    // The parameter alias goes **inside** the region: `hookBodyOf` cuts from the
+    // signature to the last `end`, so a line written before the marker comes back
+    // as part of the body next time and the marker would drift below it.
+    onFire.push(`        ${NOT_GENERATED_OPEN}`);
     if (carriedOnFire.param !== 'ev') {
       onFire.push(`        local ${carriedOnFire.param} = ev`);
     }
-    onFire.push(`        ${NOT_GENERATED_OPEN}`);
     onFire.push(...reindentCode(carriedOnFire.body, '        '));
     onFire.push(`        ${NOT_GENERATED_CLOSE}`);
   }
@@ -3896,9 +3926,12 @@ export function generateLuaCode(project: WeaponProject): string {
   // was (`on_click`, `on_done`, `on_place`, `on_transport`, `on_select`), because
   // nothing here merges into them.
   for (const hook of verbatimHooks) {
-    const hookLines = hook.text.split('\n');
-    lines.push(`      ${hook.key} = ${hookLines[0]}`);
-    for (const line of hookLines.slice(1)) lines.push(`      ${line}`);
+    // `reindentCode`, not a blind prefix: a re-import reads the body back with the
+    // indentation the last export gave it, so a blind prefix would add six more
+    // spaces every round trip.
+    const [head, ...body] = hook.text.split('\n');
+    lines.push(`      ${hook.key} = ${head.trim()}`);
+    lines.push(...reindentCode(body.join('\n'), '      '));
     lines.push('      ,');
   }
 
@@ -4174,8 +4207,7 @@ export function generateLuaCode(project: WeaponProject): string {
     const max = Math.max(2, Math.round(t.max));
     const every = Math.max(1, Math.round(t.every));
     const vanish = Math.max(1, Math.round(t.vanish));
-    // An exploding bundle already installed the SDK (fx.install runs trail.install).
-    if (!usesExplosionEffect) lines.push('    trail.install()');
+    // `fx.install{ trail = true }` above installs the shared sampler and draw hook.
     lines.push('    local TRAIL = {');
     lines.push(`      max = ${max}, every = ${every}, vanish = ${vanish},`);
     lines.push(`      core_w = ${formatNumber(Math.max(0, t.coreWidth))},`);
@@ -4467,12 +4499,16 @@ export function generateLuaCode(project: WeaponProject): string {
   // is part of the call, has to find the install done. Their filters come with
   // them, because `bind_on` accepts options for `worm_message` and a dropped
   // filter would run the handler on every message.
-  const carriedRegistrations = project.carriedLua?.registrations ?? [];
+  const carriedRegistrations = (project.carriedLua?.registrations ?? []).filter(
+    (registration) => !registration.disabled,
+  );
   if (carriedRegistrations.length > 0) {
+    lines.push(`    ${NOT_GENERATED_OPEN}`);
     lines.push('    -- Carried from the source bundle: its own `wa.on` hooks.');
     for (const registration of carriedRegistrations) {
       for (const line of reindentCode(registration.text, '    ')) lines.push(line);
     }
+    lines.push(`    ${NOT_GENERATED_CLOSE}`);
     lines.push('');
   }
 
@@ -4483,7 +4519,20 @@ export function generateLuaCode(project: WeaponProject): string {
   return lines.join('\n');
 }
 
-export function generateModToml(project: WeaponProject): string {
+/**
+ * One weapon's part of a bundle manifest: its dependency list, its `mod_icon`
+ * (when it uploaded one) and the text of its `[[components]]` block plus the
+ * `[sprites]` sections its art needs. The bundle header belongs to the pack, not
+ * to the weapon, so `generatePackToml` owns it.
+ */
+export interface WeaponManifestPart {
+  dependencies: string[];
+  modIcon?: string;
+  /** Starts with a blank line, so it reads the same wherever it is placed. */
+  block: string;
+}
+
+export function weaponManifestPart(project: WeaponProject): WeaponManifestPart {
   const modFolder = sanitizeModFolder(project.id);
   const pos = getStockPanelPosition(project.slot);
   const icon = project.customIconFile ? `sprites/${modFolder}/icon.png` : (project.panel_icon || project.slot);
@@ -4537,17 +4586,10 @@ export function generateModToml(project: WeaponProject): string {
     !!project.fireSequence?.enabled &&
     !(project.enableCustomLua && /(?:^|\n)[ \t]*on_fire\s*=/.test(project.customLuaSnippet || '')) &&
     supportsFireSequence(project);
-  // Anything in px_effects (`fx.burst`, `fx.emitter`) needs the effects SDK; the
-  // trail module alone ships in the same bundle, so it declares it too.
-  const usesEffectsSdk = usesExplosionEffect || usesEmitter;
-  const lines: string[] = [
-    `id = ${luaQuote(project.id)}`,
-    `name = ${luaQuote(project.name)}`,
-    `version = ${luaQuote(project.version || '0.1.0')}`,
-    `author = ${luaQuote(project.author || 'WormForge Creator')}`,
-    'api_version = 4',
-    'format_version = 2',
-  ];
+  // The ribbon sampler/drawer is also installed by `fx.install`, even when no
+  // emitter actor or explosion burst is enabled.
+  const usesEffectsSdk = usesExplosionEffect || usesEmitter || usesRibbonTrail;
+  const lines: string[] = [];
 
   const dependencies: string[] = [];
   if (usesHold) dependencies.push('wf.sdk');
@@ -4564,13 +4606,7 @@ export function generateModToml(project: WeaponProject): string {
     const id = (dependency || '').trim();
     if (id && !dependencies.includes(id)) dependencies.push(id);
   }
-  if (dependencies.length > 0) {
-    lines.push(`dependencies = [${dependencies.map(luaQuote).join(', ')}]`);
-  }
-
-  if (project.customIconFile) {
-    lines.push(`mod_icon = ${luaQuote(`sprites/${modFolder}/icon.png`)}`);
-  }
+  const modIcon = project.customIconFile ? `sprites/${modFolder}/icon.png` : undefined;
 
   const weaponFileName = `${modFolder}.lua`;
   lines.push('');
@@ -4582,6 +4618,37 @@ export function generateModToml(project: WeaponProject): string {
   lines.push(`entry = "weapons/${weaponFileName}"`);
   lines.push(`icon = ${luaQuote(icon)}`);
   lines.push(`default_position = { row = ${luaQuote(pos.row)}, column = ${pos.column} }`);
+
+  // `[[components.options]]` belong to the component above them: they are the
+  // settings `ctx.option(key)` reads, and an undeclared read is a load error
+  // (`"<id> has no option <key>"`), so an imported weapon's list is written back
+  // exactly, in declaration order.
+  for (const option of project.options ?? []) {
+    const key = (option.key || '').trim();
+    if (!key) continue;
+    lines.push('');
+    lines.push('[[components.options]]');
+    lines.push(`key = ${luaQuote(key)}`);
+    lines.push(`type = ${luaQuote(option.kind || 'bool')}`);
+    if (option.label) lines.push(`label = ${luaQuote(option.label)}`);
+    if (option.description) lines.push(`description = ${luaQuote(option.description)}`);
+    if (option.kind === 'choice') {
+      const choices = option.choices ?? [];
+      if (choices.length > 0) lines.push(`choices = [${choices.map(luaQuote).join(', ')}]`);
+      // `default` is what the profile falls back to, so it has to be one of the
+      // choices; an import that lost it falls back to the first.
+      const fallback = typeof option.default === 'string' ? option.default : (choices[0] ?? '');
+      lines.push(`default = ${luaQuote(fallback)}`);
+      if (option.fromBool) lines.push(`from_bool = [${option.fromBool.map(luaQuote).join(', ')}]`);
+    } else if (option.kind === 'int') {
+      lines.push(`min = ${option.min ?? 0}`);
+      lines.push(`max = ${option.max ?? 1}`);
+      lines.push(`default = ${typeof option.default === 'number' ? option.default : (option.min ?? 0)}`);
+    } else {
+      lines.push(`default = ${option.default === true ? 'true' : 'false'}`);
+    }
+    if (option.data) lines.push('data = true');
+  }
 
   // Sprites declarations
   const emitted = new Set<string>();
@@ -4722,24 +4789,134 @@ export function generateModToml(project: WeaponProject): string {
   }
 
   lines.push('');
+  return { dependencies, modIcon, block: lines.join('\n') };
+}
+
+/** The bundle header and every weapon's block: one file, N components. */
+export function generatePackToml(pack: PackProject): string {
+  const parts = pack.weapons.map(weaponManifestPart);
+  const lines: string[] = [
+    `id = ${luaQuote(pack.id)}`,
+    `name = ${luaQuote(pack.name)}`,
+    `version = ${luaQuote(pack.version || '0.1.0')}`,
+    `author = ${luaQuote(pack.author || 'WormForge Creator')}`,
+    'api_version = 4',
+    'format_version = 2',
+  ];
+
+  // One dependency list for the bundle: the union of what its weapons need, in
+  // the order they first ask for it. A library installs once per bundle, so a
+  // second mention is the same dependency.
+  const dependencies: string[] = [];
+  for (const part of parts) {
+    for (const dependency of part.dependencies) {
+      if (!dependencies.includes(dependency)) dependencies.push(dependency);
+    }
+  }
+  if (dependencies.length > 0) {
+    lines.push(`dependencies = [${dependencies.map(luaQuote).join(', ')}]`);
+  }
+  const modIcon = pack.modIcon || parts.find((part) => part.modIcon)?.modIcon;
+  if (modIcon) lines.push(`mod_icon = ${luaQuote(modIcon)}`);
+  if (pack.replaces?.length) {
+    lines.push(`replaces = [${pack.replaces.map(luaQuote).join(', ')}]`);
+  }
+
+  // Each block starts and ends with a blank line, because on its own it is the
+  // whole manifest's tail (the blank before `[[components]]` and the one after
+  // its last sprite). Between two blocks that would be two blank lines, so the
+  // leading one is dropped from every block but the first: a pack of one is then
+  // the single-weapon manifest, byte for byte.
+  parts.forEach((part, index) => {
+    const blockLines = part.block.split('\n');
+    if (index > 0 && blockLines[0] === '') blockLines.shift();
+    lines.push(...blockLines);
+  });
   return lines.join('\n');
 }
 
+/** A single weapon is a pack of one, with its own id and name. */
+export function singleWeaponPack(project: WeaponProject): PackProject {
+  return {
+    id: project.id,
+    name: project.name,
+    author: project.author,
+    version: project.version,
+    description: project.description,
+    weapons: [project],
+  };
+}
+
+export function generateModToml(project: WeaponProject): string {
+  return generatePackToml(singleWeaponPack(project));
+}
+
+/** The option values a profile has to carry: only the ones the player changed. */
+function changedOptions(project: WeaponProject): WeaponOptionConfig[] {
+  return (project.options ?? []).filter(
+    (option) => option.key && option.value !== undefined && option.value !== option.default,
+  );
+}
+
 export function generateProfileToml(project: WeaponProject): string {
+  return generatePackProfile(singleWeaponPack(project));
+}
+
+/**
+ * The one profile a pack places: a line per weapon, a line per stock slot they
+ * replace, infinite ammo where a weapon asked for it, and the option values that
+ * differ from their declared defaults (the engine stores a default as no value,
+ * so writing it back would freeze what a manifest change should still own).
+ *
+ * The engine puts each weapon on the first free position after its
+ * `default_position` and leaves a weapon that does not fit **off the panel** while
+ * still installing it, so a pack larger than the 70 slots is legal and nothing is
+ * silently dropped here.
+ */
+export function generatePackProfile(pack: PackProject): string {
+  // A profile of one weapon describes that weapon, which is what
+  // `generateProfileToml` always wrote; a bundle of several describes itself.
+  const description =
+    pack.description ||
+    (pack.weapons.length === 1 ? pack.weapons[0].description : '') ||
+    `${pack.name} test profile.`;
   const lines: string[] = [
-    `description = ${luaQuote(project.description || `${project.name} test profile.`)}`,
+    `description = ${luaQuote(description)}`,
     '',
     '[weapons]',
-    `${luaQuote(project.id)} = true`,
-    `${luaQuote('stock.' + project.slot)} = true`,
-    '"stock.ninja_rope" = true',
-    '"stock.skip_go" = true',
-    '',
   ];
+  // One key per line: a weapon id is unique by construction, but two weapons can
+  // replace the **same stock slot** (two projectiles both on the Grenade), and a
+  // repeated key is not a table entry, it is a TOML error.
+  const placed = new Set<string>();
+  for (const project of pack.weapons) {
+    for (const key of [project.id, `stock.${project.slot}`]) {
+      if (placed.has(key)) continue;
+      placed.add(key);
+      lines.push(`${luaQuote(key)} = true`);
+    }
+  }
+  lines.push('"stock.ninja_rope" = true', '"stock.skip_go" = true', '');
 
-  if (project.defaults.ammo === -1) {
+  for (const project of pack.weapons) {
+    if (project.defaults.ammo !== -1) continue;
     lines.push(`[weapon_settings.${luaQuote(project.id)}]`);
     lines.push('ammo = -1');
+    lines.push('');
+  }
+
+  for (const project of pack.weapons) {
+    const changed = changedOptions(project);
+    if (changed.length === 0) continue;
+    lines.push(`[options.${luaQuote(project.id)}]`);
+    for (const option of changed) {
+      const value = option.value;
+      lines.push(
+        `${luaQuote(option.key)} = ${
+          typeof value === 'boolean' ? (value ? 'true' : 'false') : typeof value === 'number' ? String(value) : luaQuote(String(value))
+        }`,
+      );
+    }
     lines.push('');
   }
 

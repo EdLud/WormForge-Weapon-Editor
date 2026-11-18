@@ -17,6 +17,8 @@
 import {
   parseCustomLua,
   generateLuaCode,
+  generateModToml,
+  generateProfileToml,
   customSoundPath,
   meleeSoundPath,
 } from '../src/utils/luaGenerator';
@@ -53,6 +55,81 @@ const makeProject = (patch: Partial<WeaponProject> = {}): WeaponProject => {
     ...patch,
   } as WeaponProject;
 };
+
+// ---- ctx.option settings: declared in the manifest, valued in the profile --
+{
+  // `ctx.option` is a load contract: an undeclared key raises `"<id> has no
+  // option <key>"`, so the declarations are written back verbatim and only a
+  // value that differs from the declared default reaches the profile (the
+  // engine's own editor stores the default as *no* value).
+  const project = makeProject({
+    customSprites: {},
+    options: [
+      {
+        key: 'direction',
+        kind: 'choice',
+        label: 'After a collision',
+        description: 'Keeps charging, turns around, or rolls a direction.',
+        choices: ['straight', 'opposite', 'random'],
+        default: 'straight',
+      },
+      { key: 'charges', kind: 'int', min: 1, max: 5, default: 3, data: true },
+      { key: 'trail', kind: 'bool', default: true, fromBool: undefined },
+    ],
+  });
+  const toml = generateModToml(project);
+  const order = toml.indexOf('key = "direction"');
+  const second = toml.indexOf('key = "charges"');
+  const third = toml.indexOf('key = "trail"');
+  check(
+    'every declared option is written back in order, after the component',
+    toml.indexOf('[[components.options]]') > toml.indexOf('default_position') &&
+      order > 0 &&
+      order < second &&
+      second < third,
+    `direction ${order}, charges ${second}, trail ${third}`,
+  );
+  check(
+    'a choice keeps its list and default',
+    toml.includes('choices = ["straight", "opposite", "random"]') && toml.includes('default = "straight"'),
+  );
+  check(
+    'an int keeps its range',
+    toml.includes('min = 1') && toml.includes('max = 5') && toml.includes('default = 3'),
+  );
+  check('data = true is written, because it makes the option a record field', toml.includes('data = true'));
+  check(
+    'a bool default is a TOML boolean',
+    toml.includes('type = "bool"\ndefault = true'),
+    toml.slice(toml.lastIndexOf('[[components.options]]')),
+  );
+  check(
+    'and no value is written while every option is at its default',
+    !generateProfileToml(project).includes('[options.'),
+  );
+  const changed = makeProject({
+    customSprites: {},
+    options: [
+      { key: 'direction', kind: 'choice', choices: ['straight', 'opposite'], default: 'straight', value: 'opposite' },
+      { key: 'trail', kind: 'bool', default: true, value: false },
+    ],
+  });
+  const profile = generateProfileToml(changed);
+  check(
+    'a changed value lands in the profile under the component id',
+    profile.includes('[options."wfws.check.edges"]') && profile.includes('"direction" = "opposite"') && profile.includes('"trail" = false'),
+    profile,
+  );
+  check(
+    'and a value equal to the default writes nothing',
+    !generateProfileToml(
+      makeProject({
+        customSprites: {},
+        options: [{ key: 'trail', kind: 'bool', default: true, value: true }],
+      }),
+    ).includes('[options.'),
+  );
+}
 
 // ---- recordExtra: arrays survive, keys stay valid Lua ---------------------
 {
@@ -479,9 +556,9 @@ const makeProject = (patch: Partial<WeaponProject> = {}): WeaponProject => {
     'the emitter spawned round trackers for a placed mine that never fires a missile',
   );
 
-  // The emitter's own ribbon needs `fx.install{ trail = true }`, which is what
-  // calls `trail.install()` and therefore registers the hook that *draws* a
-  // ribbon. With `trail = false` the samples were taken and never painted.
+  // The emitter's own ribbon needs `fx.install{ trail = true }`, which calls
+  // `trail.install()` and registers the hook that draws the ribbon. This is
+  // independent of the projectile trail card.
   const ribbonOnly = generateLuaCode(
     makeProject({
       emitter: {
@@ -503,6 +580,39 @@ const makeProject = (patch: Partial<WeaponProject> = {}): WeaponProject => {
     'and nothing asks for it without one',
     /fx\.install\{ trail = false,/.test(noRibbon),
     'the trail module was installed for a weapon with no ribbon at all',
+  );
+
+  const projectileTrailOnly = generateLuaCode(
+    makeProject({
+      ribbonTrail: { enabled: true, max: 10, every: 1, vanish: 2, coreWidth: 3, glowWidth: 6, color: '#ffffff', target: 'main', noise: 0, rainbow: false },
+      emitter: { ...DEFAULT_EMITTER, enabled: false, trail: { ...DEFAULT_EMITTER_TRAIL, enabled: false } },
+    }),
+  );
+  check(
+    'projectile ribbon installs without enabling the emitter',
+    /fx\.install\{ trail = true,/.test(projectileTrailOnly) &&
+      projectileTrailOnly.includes('local TRAIL = {') &&
+      !projectileTrailOnly.includes('local function emitter_for(') &&
+      !projectileTrailOnly.includes('trail.install()'),
+    'the round trail was coupled to the emitter actor',
+  );
+
+  const emitterTrailOnly = generateLuaCode(
+    makeProject({
+      ribbonTrail: { enabled: false, max: 12, every: 2, vanish: 2, coreWidth: 8, glowWidth: 13, color: '#ffffff', target: 'main', noise: 0, rainbow: false },
+      emitter: {
+        ...DEFAULT_EMITTER,
+        enabled: true,
+        trail: { ...DEFAULT_EMITTER_TRAIL, enabled: true },
+      },
+    }),
+  );
+  check(
+    'emitter ribbon installs without enabling the projectile ribbon',
+    /fx\.install\{ trail = true,/.test(emitterTrailOnly) &&
+      emitterTrailOnly.includes('local function emitter_for(') &&
+      !emitterTrailOnly.includes('local TRAIL = {'),
+    'the emitter ribbon enabled a projectile trail sampler',
   );
 
   const tracking = generateLuaCode(
@@ -703,6 +813,45 @@ const makeProject = (patch: Partial<WeaponProject> = {}): WeaponProject => {
     JSON.stringify(reimportedCombined),
   );
 
+  const disabledReachLua = generateLuaCode(
+    makeProject({
+      emitter: {
+        ...DEFAULT_EMITTER,
+        enabled: true,
+        reach: false,
+        color: '#c06040',
+      },
+    }),
+  );
+  const importedDisabledReach = (await parseFeatures(disabledReachLua)).project.emitter;
+  check(
+    'disabled reach stays disabled across import/export',
+    disabledReachLua.includes('reach = false,') && importedDisabledReach?.reach === false,
+    JSON.stringify(importedDisabledReach),
+  );
+  check(
+    'top-level emitter color survives when reach is disabled',
+    importedDisabledReach?.color === '#c06040',
+    String(importedDisabledReach?.color),
+  );
+
+  const zeroCountLua = generateLuaCode(
+    makeProject({
+      emitter: {
+        ...DEFAULT_EMITTER,
+        enabled: true,
+        reach: true,
+        reachCount: 0,
+      },
+    }),
+  );
+  const importedZeroCount = (await parseFeatures(zeroCountLua)).project.emitter;
+  check(
+    'enabled reach with zero bolts stays enabled across re-import',
+    importedZeroCount?.reach === true && importedZeroCount.reachCount === 0,
+    JSON.stringify(importedZeroCount),
+  );
+
   const rainbow = generateLuaCode(
     makeProject({
       emitter: {
@@ -778,6 +927,67 @@ const makeProject = (patch: Partial<WeaponProject> = {}): WeaponProject => {
     'a straight trail writes neither key',
     !/^\s+noise = 0,$/m.test(plain) && !/^\s+rainbow = false,$/m.test(plain),
   );
+}
+
+// ---- every effects named in the file has its module in scope --------------
+// A claim that names `trail.BEAM` has to have `trail` in scope, and the same
+// holds for `fx` and `blast`: the SDK sheets are named by module, so a weapon
+// that installs one library without requiring it fails to load with
+// "attempt to index a nil value (global 'trail')", which is what a burst-only
+// weapon did once the ribbon card stopped deciding the require.
+{
+  const projects: [string, WeaponProject][] = [
+    [
+      'a burst-only weapon',
+      makeProject({ explosionEffect: { ...DEFAULT_EXPLOSION_EFFECT, enabled: true } }),
+    ],
+    [
+      'a blast replacement',
+      makeProject({
+        explosionEffect: { ...DEFAULT_EXPLOSION_EFFECT, enabled: true, mode: 'blast' },
+      }),
+    ],
+    [
+      'a ribbon trail',
+      makeProject({
+        ribbonTrail: {
+          enabled: true,
+          max: 10,
+          every: 1,
+          vanish: 2,
+          coreWidth: 5,
+          glowWidth: 9,
+          noise: 0,
+          rainbow: false,
+          color: '#66ccff',
+          target: 'main',
+        },
+      }),
+    ],
+    [
+      'an emitter',
+      makeProject({ emitter: { ...DEFAULT_EMITTER, enabled: true } }),
+    ],
+  ];
+  // Quoted pack paths can contain the same word (`sprites/x/trail.png`), so
+  // the test looks for the module's own members, not the bare prefix.
+  const usedBy: Record<'trail' | 'fx' | 'blast', RegExp> = {
+    trail: /trail\.(?:BEAM|GLOW|add|install|has)\b/,
+    fx: /fx\.(?:burst|emitter|install|SPARK|BLOB|SMOKE|spark|glow|smoke)\b/,
+    blast: /blast\.explode\b/,
+  };
+  for (const [name, project] of projects) {
+    const lua = generateLuaCode(project);
+    for (const mod of ['trail', 'fx', 'blast'] as const) {
+      const used = usedBy[mod].test(lua);
+      const declared = lua.includes(`local ${mod} = require(`);
+      check(
+        `${name} that names ${mod} requires it`,
+        !used || declared,
+        `the file reads ${mod}. without \`local ${mod} = require(...)\``,
+      );
+    }
+  }
 }
 
 if (failed > 0) {

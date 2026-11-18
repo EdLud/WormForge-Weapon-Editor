@@ -1,0 +1,581 @@
+/**
+ * Dev-only: the bundle reader's module discovery, in the engine's own terms
+ * (L1 of `reqs/wflib_weapon_import_plan.md`) and the manifest's component
+ * options (the `ctx` configuration L4 will model).
+ *
+ *   bun run tools/check_module_scan.ts
+ *
+ * Exits 1 on a failure. The shapes are built inline: a shared loader entry with
+ * an index (`px.ports`), two components over one real module
+ * (`px.bunker_buster`), a record handed to a library (`lib/px_bunker.lua`), a
+ * module under `lib/`, a `wf-lib/` name resolved through a dependency's
+ * `[exports]`, the legacy `wf-lib/` name satisfied by the bundle's own `lib/`,
+ * and a module in another bundle requiring a plain name in *its* bundle.
+ * Then the real `Mods/` folder, when it is mounted.
+ */
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { join, relative, sep } from 'node:path';
+import JSZip from 'jszip';
+import { readBundles, readWeapons, type ModFile } from '../src/utils/modLib/scan';
+import { parseToml } from '../src/utils/modLib/modToml';
+import { generateModToml } from '../src/utils/luaGenerator';
+import { stockDonor } from '../src/data/stockDonors';
+
+let failures = 0;
+let checks = 0;
+function ok(condition: boolean, what: string, detail = '') {
+  checks += 1;
+  if (!condition) {
+    failures += 1;
+    console.error(`  FAIL ${what}${detail ? `: ${detail}` : ''}`);
+  }
+}
+
+const files = (entries: Record<string, string>): ModFile[] =>
+  Object.entries(entries).map(([path, text]) => ({ path, text }));
+
+const query = (entries: Record<string, string>, componentId: string) => {
+  const all = files(entries);
+  const weapons = readWeapons(readBundles(all), all);
+  const weapon = weapons.find((entry) => entry.componentId === componentId);
+  return { weapons, weapon, all };
+};
+
+// ---------------------------------------------------------------------------
+// 0. The manifest this editor writes reads back as the options it was given.
+{
+  // `ctx.option` is a load contract, so the two halves have to agree: the writer
+  // emits `[[components.options]]` after the component and the reader must see
+  // the same keys, kinds and defaults. A round trip is the cheap proof.
+  const project = {
+    ...(stockDonor('grenade') as any),
+    id: 'wfws.roundtrip.options',
+    name: 'Round Trip',
+    slot: 'grenade',
+    customSprites: {},
+    options: [
+      {
+        key: 'direction',
+        kind: 'choice',
+        label: 'After a collision',
+        choices: ['straight', 'opposite', 'random'],
+        default: 'straight',
+      },
+      { key: 'charges', kind: 'int', min: 1, max: 5, default: 3, data: true },
+      { key: 'trail', kind: 'bool', default: true },
+    ],
+  };
+  const manifest = generateModToml(project as any);
+  const parsed = readBundles(files({ 'mod.toml': manifest, 'weapons/roundtrip_options.lua': 'return {}' }));
+  const component = parsed[0]?.components?.[0];
+  ok(!!component, 'the written manifest declares a component');
+  const options = component?.options ?? [];
+  ok(options.length === 3, 'and its three options come back', String(options.length));
+  ok(options[0]?.key === 'direction' && options[0]?.kind === 'choice', 'a choice keeps its key and type');
+  ok(
+    JSON.stringify(options[0]?.choices) === JSON.stringify(['straight', 'opposite', 'random']) &&
+      options[0]?.default === 'straight',
+    'and its list and default',
+  );
+  ok(options[1]?.kind === 'int' && options[1]?.min === 1 && options[1]?.max === 5, 'an int keeps its range');
+  ok(options[1]?.data === true, 'and `data = true` survives');
+  ok(options[2]?.kind === 'bool' && options[2]?.default === true, 'a bool keeps its default');
+  ok(
+    parsed[0]?.components?.length === 1,
+    'and no option block became a phantom component',
+    String(parsed[0]?.components?.length),
+  );
+  // `default_position = { row = "F2", column = 1 }` is an inline table, and the
+  // panel slot it names is how a pack keeps its weapons where the author put
+  // them: read as one string, every imported weapon landed on its donor's slot.
+  ok(
+    component?.row === 'F2' && component?.column === 1,
+    'and the component keeps its panel position',
+    `${component?.row}/${component?.column}`,
+  );
+  const weaponEntry = readWeapons(parsed, files({ 'mod.toml': manifest, 'weapons/roundtrip_options.lua': 'return {}' }))[0];
+  ok(
+    weaponEntry?.row === 'F2' && weaponEntry?.column === 1,
+    'which the weapon carries too',
+    `${weaponEntry?.row}/${weaponEntry?.column}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 0b. Inline tables and nested commas.
+{
+  const parsed = parseToml(
+    [
+      'id = "t.inline"',
+      'nothing = { }',
+      'pair = { a = "x,y", b = 2, nested = { deep = true } }',
+      'list = ["a,b", "c"]',
+      '',
+    ].join(String.fromCharCode(10)),
+  );
+  const pair = parsed.values.pair as Record<string, unknown>;
+  ok(pair?.a === 'x,y' && pair?.b === 2, 'a comma inside a string is not a separator', JSON.stringify(pair));
+  ok((pair?.nested as Record<string, unknown>)?.deep === true, 'and a nested table reads');
+  ok(
+    JSON.stringify(parsed.values.list) === JSON.stringify(['a,b', 'c']),
+    'an array keeps a comma inside its items',
+    JSON.stringify(parsed.values.list),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 1. One weapon, its own entry.
+{
+  const { weapon } = query(
+    {
+      'mod.toml': `id = "t.one"
+[[components]]
+id = "t.one.a"
+type = "weapon"
+entry = "weapons/a.lua"
+`,
+      'weapons/a.lua': `wa.weapons.replace{ id = "t.one.a", copy_from = "stock.grenade",
+  missile = { sprite = 100 } }`,
+    },
+    't.one.a',
+  );
+  ok(!!weapon?.record, 'a unique entry is the weapon module');
+  ok(weapon?.resolvedVia === 'entry', 'route is entry', weapon?.resolvedVia);
+  ok(!!weapon?.record?.missile, 'the record groups are kept');
+  ok(weapon?.modulePath === 'weapons/a.lua', 'module path', weapon?.modulePath);
+}
+
+// ---------------------------------------------------------------------------
+// 2. A shared loader entry, with the index naming the real module.
+{
+  const { weapons } = query(
+    {
+      'mod.toml': `id = "t.shared"
+[[components]]
+id = "t.shared.a"
+type = "weapon"
+entry = "components/weapon.lua"
+[[components]]
+id = "t.shared.b"
+type = "weapon"
+entry = "components/weapon.lua"
+`,
+      'components/weapon.lua': `return { install = function(ctx) require("components/loader").install(ctx) end }`,
+      'weapons/index.lua': `return {
+  ["t.shared.a"] = "weapons/a",
+  ["t.shared.b"] = "weapons/b",
+}`,
+      'weapons/a.lua': `local M = {}
+M.definition = { missile = { sprite = 11 } }
+return M`,
+      'weapons/b.lua': `local M = {}
+M.definition = { missile = { sprite = 12 } }
+return M`,
+    },
+    't.shared.a',
+  );
+  ok(weapons.length === 2, 'both components read');
+  ok(
+    weapons.every((weapon) => weapon.resolvedVia === 'index'),
+    'both resolve through the index',
+    weapons.map((weapon) => weapon.resolvedVia).join(','),
+  );
+  ok(
+    weapons.every((weapon) => weapon.record !== undefined),
+    'the index module is where the record is',
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 3. Two components over one real module (`px.bunker_buster`). The shared entry
+//    is still the module the engine runs, and it is read for both.
+{
+  const { weapons } = query(
+    {
+      'mod.toml': `id = "t.two"
+[[components]]
+id = "t.two.plain"
+type = "weapon"
+entry = "weapons/bonk.lua"
+[[components]]
+id = "t.two.super"
+type = "weapon"
+entry = "weapons/bonk.lua"
+`,
+      'weapons/bonk.lua': `wa.weapons.replace{ id = "t.two.plain", missile = { sprite = 7 } }`,
+    },
+    't.two.plain',
+  );
+  ok(weapons.length === 2, 'both components read');
+  ok(
+    weapons.every((weapon) => weapon.resolvedVia === 'entry'),
+    'a shared real module is still found by its entry',
+    weapons.map((weapon) => weapon.resolvedVia).join(','),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 4. The record is handed to a library (`lib/px_bunker.lua`).
+{
+  const { weapon } = query(
+    {
+      'mod.toml': `id = "t.lib"
+[[components]]
+id = "t.lib.a"
+type = "weapon"
+entry = "weapons/a.lua"
+`,
+      'weapons/a.lua': `local bunker = require("lib/px_bunker")
+return function(ctx) bunker.install(ctx) end`,
+      'lib/px_bunker.lua': `wa.weapons.replace{ missile = { sprite = 44 } }`,
+    },
+    't.lib.a',
+  );
+  ok(weapon?.resolvedVia === 'require', 'route is require', weapon?.resolvedVia);
+  ok(weapon?.modulePath === 'lib/px_bunker.lua', 'module path is the library', weapon?.modulePath);
+  ok((weapon?.requires ?? []).includes('lib/px_bunker.lua'), 'the library is in requires');
+  ok((weapon?.unresolvedRequires ?? []).length === 0, 'nothing unresolved');
+}
+
+// ---------------------------------------------------------------------------
+// 5. A weapon module under `lib/`, with no entry and no index to name it.
+{
+  const { weapon } = query(
+    {
+      'mod.toml': `id = "t.libloc"
+[[components]]
+id = "t.libloc.worm"
+type = "weapon"
+entry = "components/weapon.lua"
+`,
+      'components/weapon.lua': `return { install = function() end }`,
+      'lib/worm.lua': `wa.weapons.replace{ missile = { sprite = 9 } }`,
+    },
+    't.libloc.worm',
+  );
+  ok(weapon?.resolvedVia === 'lib', 'route is lib', weapon?.resolvedVia);
+}
+
+// ---------------------------------------------------------------------------
+// 6. `wf-lib/<name>` resolves through a declared dependency's `[exports]`, in
+//    the exporting bundle's folder.
+{
+  const { weapon } = query(
+    {
+      'lib_sdk/mod.toml': `id = "wf.sdk"
+api_version = 4
+format_version = 2
+[exports]
+"wf-lib/px_sprite_builder" = "px_sprite_builder.lua"
+`,
+      'lib_sdk/px_sprite_builder.lua': `return { flight = function() end }`,
+      'bundle/mod.toml': `id = "t.user"
+dependencies = ["wf.sdk"]
+[[components]]
+id = "t.user.a"
+type = "weapon"
+entry = "weapons/a.lua"
+`,
+      'bundle/weapons/a.lua': `local sb = require("wf-lib/px_sprite_builder")
+wa.weapons.replace{ missile = { sprite = 3 } }`,
+    },
+    't.user.a',
+  );
+  ok(weapon?.resolvedVia === 'entry', 'the weapon module is its entry');
+  ok(
+    (weapon?.requires ?? []).includes('lib_sdk/px_sprite_builder.lua'),
+    'wf-lib resolves into the exporting bundle',
+    (weapon?.requires ?? []).join(','),
+  );
+  ok((weapon?.unresolvedRequires ?? []).length === 0, 'nothing unresolved');
+  ok((weapon?.localLibraryRequires ?? []).length === 0, 'not reported as a legacy local');
+}
+
+// ---------------------------------------------------------------------------
+// 7. The legacy shape: a `wf-lib/` name the bundle satisfies from its own
+//    `lib/`. Followed so the code can be read, and reported (`px_buffalo`).
+{
+  const { weapon } = query(
+    {
+      'mod.toml': `id = "t.legacy"
+dependencies = ["wf.sdk"]
+[[components]]
+id = "t.legacy.a"
+type = "weapon"
+entry = "weapons/a.lua"
+`,
+      'weapons/a.lua': `local sb = require("wf-lib/px_sprite_builder")
+wa.weapons.replace{ missile = { sprite = 3 } }`,
+      'lib/px_sprite_builder.lua': `return {}`,
+    },
+    't.legacy.a',
+  );
+  ok(
+    (weapon?.localLibraryRequires ?? []).includes('wf-lib/px_sprite_builder'),
+    'the legacy local is reported',
+    JSON.stringify(weapon?.localLibraryRequires),
+  );
+  ok((weapon?.requires ?? []).includes('lib/px_sprite_builder.lua'), 'and it is followed');
+  ok((weapon?.unresolvedRequires ?? []).length === 0, 'so it is not counted as missing');
+}
+
+// ---------------------------------------------------------------------------
+// 8. A module in another bundle resolves its plain requires in *its* bundle
+//    (`wf-lib/sdk/parkour.lua` requiring `own_time`, reached from `px.parkour`).
+{
+  const { weapon } = query(
+    {
+      'sdk/mod.toml': `id = "wf.sdk"
+api_version = 4
+format_version = 2
+[exports]
+"wf-lib/px_sprite_builder" = "px_sprite_builder.lua"
+"wf-lib/parkour" = "parkour.lua"
+`,
+      'sdk/parkour.lua': `local own_time = require("own_time")
+return { frames = own_time.frames }`,
+      'sdk/own_time.lua': `return { frames = function() return 1 end }`,
+      'bundle/mod.toml': `id = "t.cross"
+dependencies = ["wf.sdk"]
+[[components]]
+id = "t.cross.parkour"
+type = "weapon"
+entry = "weapons/parkour.lua"
+`,
+      'bundle/weapons/parkour.lua': `local parkour = require("wf-lib/parkour")
+wa.weapons.replace{ missile = { sprite = 3 } }`,
+    },
+    't.cross.parkour',
+  );
+  ok((weapon?.unresolvedRequires ?? []).length === 0, '`own_time` resolves in the sdk bundle');
+  ok(
+    (weapon?.requires ?? []).includes('sdk/own_time.lua'),
+    'and comes from the sdk folder',
+    (weapon?.requires ?? []).join(','),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 9. `[[components.options]]` belongs to the component above it.
+{
+  const doc = parseToml(`id = "t.opts"
+[[components]]
+id = "t.opts.a"
+type = "weapon"
+entry = "a.lua"
+[[components.options]]
+key = "placement_range"
+type = "int"
+default = 0
+min = 0
+max = 65535
+label = "Placement range (px)"
+data = true
+[[components.options]]
+key = "direction"
+type = "choice"
+choices = ["straight", "opposite", "random"]
+default = "straight"
+label = "Direction"
+[components.suggests."hl.rules"]
+pool = "movement"
+[[components]]
+id = "t.opts.b"
+type = "weapon"
+entry = "b.lua"
+`);
+  ok(doc.components.length === 2, 'no phantom component', String(doc.components.length));
+  const options = doc.components[0].options as unknown as Record<string, unknown>[];
+  ok(Array.isArray(options) && options.length === 2, 'both options attached', String(options?.length));
+  ok(options?.[0]?.key === 'placement_range', 'first option key');
+  ok(options?.[0]?.data === true, 'data = true is kept');
+  ok(options?.[1]?.choices instanceof Array, 'choices are kept', JSON.stringify(options?.[1]?.choices));
+  const suggests = doc.components[0].suggests as Record<string, Record<string, unknown>> | undefined;
+  ok(suggests?.['hl.rules']?.pool === 'movement', 'suggests attaches to the component');
+  ok(doc.components[1].options === undefined, 'the second component has no options');
+}
+
+// ---------------------------------------------------------------------------
+// 10. `[exports]` is read, and stays out of the scalars.
+{
+  const doc = parseToml(`id = "t.exp"
+[exports]
+"wf-lib/a" = "a.lua"
+'wf-lib/b' = "b.lua"
+`);
+  ok(doc.exports['wf-lib/a'] === 'a.lua', 'quoted export name', JSON.stringify(doc.exports));
+  ok(doc.exports['wf-lib/b'] === 'b.lua', 'single quoted export name');
+  ok(doc.values.id === 't.exp', 'the manifest id is still a scalar');
+}
+
+// ---------------------------------------------------------------------------
+// 11. Option reads, and the shape of a miss.
+{
+  const { weapon } = query(
+    {
+      'mod.toml': `id = "t.read"
+[[components]]
+id = "t.read.a"
+type = "weapon"
+entry = "weapons/a.lua"
+`,
+      'weapons/a.lua': `local mode = ctx.option("direction") or "straight"
+local bullets = ctx.option('bullets')
+wa.weapons.replace{ missile = { sprite = 3 } }`,
+    },
+    't.read.a',
+  );
+  ok(
+    JSON.stringify(weapon?.optionReads) === JSON.stringify(['direction', 'bullets']),
+    'option reads are collected',
+    JSON.stringify(weapon?.optionReads),
+  );
+
+  const miss = query(
+    {
+      'mod.toml': `id = "t.miss"
+[[components]]
+id = "t.miss.a"
+type = "weapon"
+name = "A Weapon"
+entry = "components/weapon.lua"
+`,
+      'components/weapon.lua': `return { install = function() end }`,
+    },
+    't.miss.a',
+  );
+  ok(!!miss.weapon?.error, 'a miss is an error');
+  ok(
+    (miss.weapon?.error ?? '').includes('looked in'),
+    'the error names what was looked in',
+    miss.weapon?.error,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 12. An index key has to be dotted, so an ordinary `["name"] = "value"` table
+//     is not mistaken for one.
+{
+  const { weapon } = query(
+    {
+      'mod.toml': `id = "t.sound"
+[[components]]
+id = "t.sound.a"
+type = "weapon"
+entry = "weapons/a.lua"
+`,
+      'weapons/a.lua': `local SOUNDS = { ["hit"] = "sounds/hit.wav" }
+wa.weapons.replace{ missile = { sprite = 3 } }`,
+    },
+    't.sound.a',
+  );
+  ok(weapon?.resolvedVia === 'entry', 'a plain map is not an index', weapon?.resolvedVia);
+}
+
+// ---------------------------------------------------------------------------
+// The real corpus, when it is mounted.
+const MODS = 'D:/Worms Armageddon/WormForge/Mods';
+function walk(dir: string, out: string[] = []): string[] {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) walk(full, out);
+    else if (/\.(lua|toml)$/i.test(entry.name)) out.push(full);
+  }
+  return out;
+}
+async function corpus(): Promise<ModFile[] | null> {
+  try {
+    statSync(MODS);
+  } catch {
+    return null;
+  }
+  const all: ModFile[] = [];
+  for (const full of walk(MODS)) {
+    const path = relative(MODS, full).split(sep).join('/');
+    all.push({ path, text: readFileSync(full, 'utf8') });
+  }
+  for (const entry of readdirSync(MODS, { withFileTypes: true })) {
+    if (!entry.isFile() || !/\.zip$/i.test(entry.name)) continue;
+    const zip = await JSZip.loadAsync(readFileSync(join(MODS, entry.name)));
+    for (const [name, file] of Object.entries(zip.files)) {
+      if (file.dir || !/\.(lua|toml)$/i.test(name)) continue;
+      all.push({ path: `${entry.name}/${name}`, text: await file.async('string') });
+    }
+  }
+  return all;
+}
+
+const all = await corpus();
+if (!all) {
+  console.log('  (Mods folder not mounted, corpus checks skipped)');
+} else {
+  const bundles = readBundles(all);
+  const weapons = readWeapons(bundles, all);
+  // The same bundle can be installed twice (a development copy and the
+  // catalogue's), and the engine refuses that; the reader reports both roots, so
+  // these counts are per folder.
+  const pxAll = weapons.filter((weapon) => weapon.bundleId === 'px.ports');
+  const pxDir = pxAll[0]?.bundleDir ?? '';
+  const px = pxAll.filter((weapon) => weapon.bundleDir === pxDir);
+  // The installed copy and the dev tree do not hold the same number of weapon
+  // components (101 components, 97 weapons here), so the corpus check pins the
+  // shape rather than an exact count.
+  ok(px.length >= 90, 'px.ports holds its weapon components', `${px.length} in ${pxDir}`);
+  ok(
+    px.filter((weapon) => weapon.record).length >= 85,
+    'most of px.ports resolves a record',
+    String(px.filter((weapon) => weapon.record).length),
+  );
+  ok(
+    px.some((weapon) => weapon.resolvedVia === 'index'),
+    'px.ports uses its index',
+  );
+  ok(
+    px.some((weapon) => weapon.resolvedVia === 'require'),
+    'px.ports hands some records to a library',
+  );
+  ok(
+    weapons.every((weapon) => (weapon.unresolvedRequires ?? []).length === 0),
+    'no require in the whole corpus is unresolved',
+    weapons
+      .flatMap((weapon) => weapon.unresolvedRequires ?? [])
+      .slice(0, 5)
+      .join(','),
+  );
+  ok(
+    weapons.every((weapon) => (weapon.localLibraryRequires ?? []).length === 0),
+    'and none relies on the legacy `wf-lib/` local',
+    weapons
+      .flatMap((weapon) => weapon.localLibraryRequires ?? [])
+      .slice(0, 5)
+      .join(','),
+  );
+  // `px.bunker_buster` and `px.super_bunker_buster` are two components over one
+  // module: both must be read.
+  ok(
+    ['px.bunker_buster', 'px.super_bunker_buster'].every(
+      (id) => weapons.find((weapon) => weapon.componentId === id)?.record,
+    ),
+    'two components over one module are both read',
+  );
+  const buffalo = weapons.find((weapon) => weapon.componentId === 'px.buffalo_of_lies');
+  ok(!!buffalo?.record, 'the buffalo benchmark reads its record');
+  ok(
+    (buffalo?.optionReads ?? []).includes('direction'),
+    'and its `ctx.option("direction")` is seen',
+    JSON.stringify(buffalo?.optionReads),
+  );
+  const misses = weapons.filter((weapon) => !weapon.record && !weapon.wepPath);
+  ok(
+    misses.every((weapon) => !!weapon.error),
+    'every miss says why',
+    misses.filter((weapon) => !weapon.error).map((weapon) => weapon.componentId).join(','),
+  );
+}
+
+console.log(
+  failures === 0
+    ? `module scan: all checks passed (${checks} cases)`
+    : `module scan: ${failures} failure(s) of ${checks} cases`,
+);
+process.exit(failures === 0 ? 0 : 1);

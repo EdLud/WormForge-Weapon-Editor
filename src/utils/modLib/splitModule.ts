@@ -36,6 +36,23 @@ export interface LuaBlock {
   declares: string[];
   /** Bundle module ids this block requires. */
   requires: string[];
+  /**
+   * The scopes this block sits in, innermost first. Each scope is the statement
+   * list of one enclosing block (`do` / `function` / `for` / `while`), so a local
+   * declared inside `function weapon.setup() do … end` is findable from a
+   * callback registered there. Empty for a module-level or `install`-body block.
+   */
+  enclosing?: LuaBlock[][];
+  /**
+   * The statement list this block belongs to, so a declaration in the same
+   * block (`local SWIM_CAP` beside the `local function swim_push` that reads it)
+   * is in scope for it.
+   */
+  scope?: LuaBlock[];
+  /** Offset of the block's first character, for the scope walk. */
+  start?: number;
+  /** Offset just past the block's last character. */
+  end?: number;
 }
 
 export interface LuaRegistration {
@@ -53,6 +70,8 @@ export interface LuaRegistration {
    */
   options: string | null;
   line: number;
+  /** The scopes the call sits in, innermost first (see `LuaBlock.enclosing`). */
+  enclosing?: LuaBlock[][];
 }
 
 export interface LuaInstall {
@@ -77,6 +96,16 @@ export interface SplitModule {
   hooks: Partial<Record<ClaimHookKey, string>>;
   /** 1-based line each hook starts on, for the notes and the panel. */
   hookLines: Partial<Record<ClaimHookKey, number>>;
+  /** The scopes each hook body sits in, innermost first. */
+  hookScopes: Partial<Record<ClaimHookKey, LuaBlock[][]>>;
+  /**
+   * Hooks whose body sits **inside another hook's body**: PX's `fire_seq` burst
+   * passes `on_done` (and `on_shot`) as a value in the options table of the call
+   * it makes from `on_fire`, so those read `on_fire`'s locals. They are not claim
+   * keys of their own, they travel inside `on_fire`'s text, and carrying one as a
+   * separate key would move it out of the scope it was written in.
+   */
+  nestedHooks: ClaimHookKey[];
   /** Every `require("…")` id in the file, in order, deduped. */
   requires: string[];
   /** Why a block could not be read whole. Never a reason to guess. */
@@ -243,6 +272,7 @@ function statements(
   to: number,
   notes: string[],
   limit: number,
+  enclosing: LuaBlock[][] = [],
 ): LuaBlock[] {
   const out: LuaBlock[] = [];
   let i = from;
@@ -263,16 +293,88 @@ function statements(
     const text = code.slice(i, end);
     const maskedText = masked.slice(i, end);
     const { kind, declares } = classify(maskedText);
-    out.push({
+    const block: LuaBlock = {
       kind,
       text,
       line: lineAt(code, i),
       declares,
       requires: requiresIn(text, maskedText),
-    });
+      enclosing,
+      scope: out,
+      start: i,
+      end,
+    };
+    out.push(block);
     i = end;
   }
   return out;
+}
+
+/**
+ * The inner region of a block statement, or null when it has none this reader
+ * can walk: a table, an expression, or an `if` with `elseif`/`else` branches
+ * (whose bodies would be read as one list, so it is left opaque rather than
+ * guessed at).
+ */
+function bodyRegion(
+  masked: string,
+  start: number,
+  end: number,
+): { start: number; end: number } | null {
+  const head = masked.slice(start, Math.min(end, start + 240));
+  // A function's body starts after its parameter list, and only a statement that
+  // *is* a function has one: a table (`return { on_explode = function ... end }`)
+  // contains functions but is not one, and recursing into it would read the
+  // hook's own body as a scope of the hook.
+  if (/^\s*(?:local\s+function\b|function\b|[A-Za-z_][A-Za-z0-9_.]*\s*=\s*function\b)/.test(head)) {
+    const open = parenAfter(masked, start + head.indexOf('function'));
+    if (open === -1) return null;
+    const close = closeParen(masked, open);
+    if (close === -1 || close >= end) return null;
+    return { start: close, end };
+  }
+  if (/^\s*repeat\b/.test(head)) {
+    const until = masked.lastIndexOf('until', end);
+    return until > start ? { start: start + head.indexOf('repeat') + 'repeat'.length, end: until } : null;
+  }
+  const header = /^\s*(do|for|while|if)\b/.exec(head);
+  if (!header) return null;
+  // An `if` with a second branch is not one statement list.
+  if (header[1] === 'if' && /\b(?:else|elseif)\b/.test(masked.slice(start, end))) return null;
+  const opener = header[1] === 'do' ? /\bdo\b/ : /\b(?:then|do)\b/;
+  const at = opener.exec(head);
+  if (!at) return null;
+  return { start: start + at.index + at[0].length, end };
+}
+
+/**
+ * The scopes containing `offset`, innermost first, given the statement list of
+ * the region it is in.
+ *
+ * Lua resolves a name through the enclosing blocks, not just the module, and PX
+ * declares its state inside `function weapon.setup() … end` (swim suit, portal
+ * gun, nuke rocket): a callback registered there closes over those locals, and a
+ * carry that only reads the module level and `install` sees 44 of 89 weapons
+ * with names nothing declares.
+ */
+function scopesAt(
+  code: string,
+  masked: string,
+  blocks: LuaBlock[],
+  offset: number,
+  notes: string[],
+  limit: number,
+  outer: LuaBlock[][] = [],
+): LuaBlock[][] {
+  const chain: LuaBlock[][] = [blocks, ...outer];
+  const hit = blocks.find(
+    (block) => block.start !== undefined && block.end !== undefined && offset >= block.start && offset < block.end,
+  );
+  if (!hit || hit.start === undefined || hit.end === undefined) return chain;
+  const body = bodyRegion(masked, hit.start, hit.end);
+  if (!body) return chain;
+  const inner = statements(code, masked, body.start, body.end, notes, limit, chain);
+  return scopesAt(code, masked, inner, offset, notes, limit, chain);
 }
 
 /** Index of the `(` that follows the word at `from`, or -1. */
@@ -366,6 +468,8 @@ export function splitModule(code: string): SplitModule {
     registrations: [],
     hooks: {},
     hookLines: {},
+    hookScopes: {},
+    nestedHooks: [],
     requires: [],
     notes,
   };
@@ -393,6 +497,42 @@ export function splitModule(code: string): SplitModule {
     );
   }
 
+  /**
+   * The scopes of a point in the file: the install body's statements when it is
+   * in `install`, otherwise the file's own top-level statements.
+   *
+   * A bundle can register its hooks in a helper the loader calls before install
+   * (`function weapon.setup() … end`, which PX's swim suit, portal gun and nuke
+   * rocket all do), and its state lives in that helper's `do … end` block. The
+   * install body alone never reaches it, so the carry saw 44 of 89 weapons with
+   * names nothing declares.
+   */
+  // The install function's own header, as one block: `function M.install(ctx,
+  // spec)` binds `spec` from its caller, and a hook inside it closes over that
+  // parameter. Without the header the scope chain cannot say where the name came
+  // from (it is not a statement in any list).
+  const installHeader: LuaBlock[] = installAt
+    ? [
+        {
+          kind: 'function',
+          text: code.slice(installAt.at, installAt.bodyStart),
+          line: lineAt(code, installAt.at),
+          declares: [],
+          requires: [],
+        },
+      ]
+    : [];
+  let fieldScope: LuaBlock[] | null = null;
+  const scopesOf = (offset: number): LuaBlock[][] => {
+    if (installAt && offset >= installAt.bodyStart && offset < installAt.bodyEnd) {
+      return [...scopesAt(code, masked, split.install!.statements, offset, notes, limit), installHeader];
+    }
+    // The whole file's statement list, read once and only when a hook or a
+    // registration turns out to sit outside `install`.
+    fieldScope ??= statements(code, masked, 0, code.length, notes, limit);
+    return scopesAt(code, masked, fieldScope, offset, notes, limit);
+  };
+
   // ---- wa.on.* registrations -----------------------------------------------
   const regionFrom = installAt ? installAt.bodyStart : 0;
   const regionTo = installAt ? installAt.bodyEnd : code.length;
@@ -408,6 +548,7 @@ export function splitModule(code: string): SplitModule {
     }
     const args = splitArgs(code.slice(open + 1, close - 1));
     split.registrations.push({
+      enclosing: scopesOf(m.index + m[1].length),
       event: m[2],
       text: code.slice(m.index + m[1].length, close),
       args,
@@ -420,6 +561,7 @@ export function splitModule(code: string): SplitModule {
 
   // ---- claim hooks ---------------------------------------------------------
   // Both shapes the engine reads: `on_x = function(ev)` and `on_x = { on = … }`.
+  const hookRanges: { key: ClaimHookKey; from: number; to: number }[] = [];
   for (const key of CLAIM_HOOK_KEYS) {
     const hook = new RegExp(
       `(^|[^A-Za-z0-9_.])${key}\\s*=\\s*(function|\\{\\s*on\\s*=\\s*function)`,
@@ -434,10 +576,26 @@ export function splitModule(code: string): SplitModule {
     const stop = masked.startsWith('until', end) ? end + 5 : end + 3;
     split.hooks[key] = code.slice(fnAt, stop);
     split.hookLines[key] = lineAt(code, hook.index);
+    split.hookScopes[key] = scopesOf(hook.index);
+    hookRanges.push({ key, from: fnAt, to: stop });
   }
+
+  // A hook written inside another hook is part of that text, not a key of its
+  // own: `seq.fire_seq_mis{ on_done = function(ww) … last … end }` in `on_fire`
+  // closes over `on_fire`'s locals, so hoisting it to the claim table would read
+  // them as nils.
+  split.nestedHooks = hookRanges
+    .filter((inner) =>
+      hookRanges.some((outer) => outer.key !== inner.key && inner.from >= outer.from && inner.to <= outer.to),
+    )
+    .map((inner) => inner.key);
 
   // ---- every require in the file -------------------------------------------
   split.requires = requiresIn(code, masked);
+
+  // The scope walk reads a region once per hook, so one unclosable statement is
+  // reported once rather than once per lookup.
+  split.notes = [...new Set(notes)];
 
   return split;
 }

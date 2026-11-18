@@ -238,6 +238,45 @@ const lines = (...rows: string[]) => rows.join(nl);
   );
 }
 
+// ---- a hook written inside another hook ---------------------------------
+{
+  // PX's `fire_seq` burst passes `on_done` (and `on_shot`) as a value in the
+  // options table of the call `on_fire` makes, so those close over `on_fire`'s
+  // locals. They are not claim keys of their own: carrying one as a separate key
+  // would hoist it out of the scope it was written in.
+  const module = lines(
+    'local BURSTS = 4',
+    'return {',
+    '  install = function(ctx)',
+    '    wa.weapons.replace{',
+    '      on_fire = function(ev)',
+    '        local fired = 0',
+    '        local last = fired == BURSTS - 1',
+    '        seq.fire_seq_mis({',
+    '          count = 3,',
+    '          on_done = function(ww)',
+    '            if last then wa.sound.play(ww, "sounds/famas-2.wav", 8) end',
+    '          end,',
+    '        })',
+    '      end,',
+    '    }',
+    '  end,',
+    '}',
+  );
+  const split = splitModule(module);
+  check('both hooks are found', !!split.hooks.on_fire && !!split.hooks.on_done);
+  check(
+    'the one written inside the other is reported as nested',
+    split.nestedHooks.includes('on_done' as (typeof split.nestedHooks)[number]),
+    split.nestedHooks.join(', '),
+  );
+  check('and the parent is not', !split.nestedHooks.includes('on_fire' as (typeof split.nestedHooks)[number]));
+  check(
+    'the nested body is still part of the parent text',
+    split.hooks.on_fire?.includes('on_done = function(ww)') === true,
+  );
+}
+
 // ---- bodies that look like closers --------------------------------------
 {
   const module = lines(
@@ -466,14 +505,26 @@ const lines = (...rows: string[]) => rows.join(nl);
     const bad: string[] = [];
     let withCalls = 0;
     let withRegistrations = 0;
+    let withCarried = 0;
     for (const file of files) {
       const code = readFileSync(join(PACK, file), 'utf8');
       const split = splitModule(code);
       const own = ownOutputOf(split);
       if (code.includes('wa.on.')) withCalls += 1;
       if (split.registrations.length > 0) withRegistrations += 1;
-      if (own.foreign.length > 0) {
-        bad.push(`${file}: not recognised ${own.foreign.map((r) => r.event).join(',')}`);
+      // A carried registration is a bundle's, not ours: the pack has two weapons
+      // written to prove the carry works (WF 57's `wa.on.hurt`, and the emitter's
+      // own two which must stay ours). Everything the editor *generated* has to
+      // be recognised, so the rule is per region: the carried ones are the calls
+      // after the header the generator writes for them.
+      const carriedAt = code.indexOf('-- Carried from the source bundle: its own');
+      const lineOf = (offset: number) => code.slice(0, offset).split(String.fromCharCode(10)).length;
+      const carriedFrom = carriedAt < 0 ? Number.POSITIVE_INFINITY : lineOf(carriedAt);
+      const generatedOnly = own.foreign.filter((entry) => entry.line < carriedFrom);
+      const carriedHere = own.foreign.filter((entry) => entry.line >= carriedFrom);
+      if (carriedHere.length > 0) withCarried += 1;
+      if (generatedOnly.length > 0) {
+        bad.push(`${file}: not recognised ${generatedOnly.map((r) => r.event).join(',')}`);
       }
       const unknown = split.registrations.find(
         (registration) => !WA_ON_EVENT_NAMES.includes(registration.event),
@@ -491,6 +542,11 @@ const lines = (...rows: string[]) => rows.join(nl);
       'every generated file that registers a hook is found',
       withCalls > 0 && withCalls === withRegistrations,
       `${withRegistrations} read, ${withCalls} contain wa.on.`,
+    );
+    check(
+      'and the pack has a weapon carrying a handler of its own',
+      withCarried > 0,
+      `${withCarried} with a carried registration`,
     );
   }
 }

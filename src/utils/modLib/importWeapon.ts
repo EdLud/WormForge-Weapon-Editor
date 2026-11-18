@@ -13,8 +13,9 @@
  */
 import type { CarriedLua, CarriedLuaArt, WeaponProject } from '../../types/weapon';
 import { checkLua } from '../luaCheck';
+import { stripNotGeneratedMarkers } from '../luaText';
 import { parseWepBinary } from '../wepParser';
-import { withWfwsPrefix } from '../weaponId';
+import { copyNamespace, slugId } from '../weaponId';
 import { mapRecord } from './mapRecord';
 import { splitModule } from './splitModule';
 import { ownOutputOf } from './ownOutput';
@@ -93,7 +94,12 @@ export async function importBundleWeapon(
 ): Promise<BundleImport> {
   const notes: string[] = [];
   const name = weapon.name || weapon.componentId;
-  const id = withWfwsPrefix(name);
+  // The id is derived from the bundle the weapon came out of, never from a fixed
+  // namespace: the copy takes the source's own id with `.import` after it, so a
+  // Project X bundle stays recognisable and cannot claim an installed one's ids
+  // (`px.ports.import.pyro_grenade`). A bundle of one weapon is that weapon, so
+  // the export's bundle id is this same id, and the author edits it whole.
+  const id = `${copyNamespace(weapon.bundleId)}.${slugId(name)}`;
   // A module whose `copy_from` is not a literal (PX builds its claim table at
   // load: `require("lib/weapon").merge(record, {...})`) leaves the reader with no
   // donor, and the record then starts from the editor's Grenade values. Saying
@@ -222,9 +228,22 @@ export async function importBundleWeapon(
   // "not carried" note so that note stays honest: a key we carry is absorbed,
   // one we cannot place is reported.
   const split = splitModule(moduleText);
-  const carriedHookList = [...features.carriedHooks];
+  // A hook written inside another hook belongs to that hook's text: PX's
+  // `fire_seq` burst passes `on_done = function(ww) … end` in the options table
+  // of the call `on_fire` makes, and that closure reads `on_fire`'s locals. As a
+  // claim key of its own it would be hoisted out of the scope it was written in
+  // and read them as nils.
+  const nested = new Set<string>(split.nestedHooks ?? []);
+  const carriedHookList = features.carriedHooks.filter((hook) => !nested.has(hook.key));
+  if (nested.size > 0) {
+    notes.push(
+      `carried inside their parent hook, not as claim keys: ${[...nested].join(', ')} (${[...nested]
+        .map((key) => split.hookLines?.[key as keyof typeof split.hookLines] ?? 0)
+        .join(', ')} inside ${split.hooks.on_fire ? 'on_fire' : 'another hook'})`,
+    );
+  }
   const claimAbsorbed = ['on_explode', 'on_fire'];
-  if (split.hooks.on_fire && !features.project.fireSequence?.enabled) {
+  if (split.hooks.on_fire && !nested.has('on_fire') && !features.project.fireSequence?.enabled) {
     const body = hookBodyOf(split.hooks.on_fire);
     // Our own launch-WAV `on_fire` is one `wa.sound.play` of the launch sheet:
     // the launch role writes that call back on export, so carrying it would play
@@ -252,6 +271,7 @@ export async function importBundleWeapon(
   }
   for (const [key, text] of Object.entries(split.hooks) as [string, string | undefined][]) {
     if (key === 'on_explode' || key === 'on_fire' || !text) continue;
+    if (nested.has(key)) continue;
     if (key === 'on_shot' && features.project.fireSequence?.enabled) {
       // `fire_seq` writes its own `on_shot` inside the burst; a second one would
       // replace it in the claim table.
@@ -284,6 +304,16 @@ export async function importBundleWeapon(
       `lua: ${luaFindings.length} finding${luaFindings.length === 1 ? '' : 's'}, ${
         blocking > 0 ? `${blocking} blocking` : 'nothing blocking'
       } (${kinds})`,
+    );
+  }
+  // `ctx.option("k")` on a key the component does not declare raises
+  // `"<id> has no option <k>"` and the whole bundle fails to load, so it is worth
+  // naming at import rather than discovering in game.
+  const declaredOptions = new Set((weapon.options ?? []).map((option) => option.key));
+  const undeclaredReads = (weapon.optionReads ?? []).filter((key) => !declaredOptions.has(key));
+  if (undeclaredReads.length > 0) {
+    notes.push(
+      `ctx.option reads ${undeclaredReads.join(', ')}, which ${weapon.componentId} does not declare: the engine raises "has no option" and the weapon fails to load`,
     );
   }
   const unmodelled = unmodelledClaimKeys(weapon.source, [
@@ -363,6 +393,22 @@ export async function importBundleWeapon(
       // The decoded `.wep` is the diff base; without one the donor is.
       wepBaseline: baseline,
       donorBaseline,
+      // The component's `ctx.option` settings. `ctx.option` is an error for a
+      // key the manifest does not declare, so the declarations are kept in
+      // declaration order and written back unchanged; the values themselves
+      // belong to the player's profile, so an import starts from the defaults.
+      options: (weapon.options ?? []).map((option) => ({
+        key: option.key,
+        kind: option.kind || 'bool',
+        label: option.label,
+        description: option.description,
+        default: option.default,
+        choices: option.choices,
+        min: option.min,
+        max: option.max,
+        fromBool: option.fromBool,
+        data: option.data,
+      })),
       // The module's own callbacks are not carried (`features.project` only
       // extracts the custom part of `on_explode`); anything else would need
       // that bundle's libraries to run.
@@ -384,12 +430,34 @@ export async function importBundleWeapon(
   // Art paths the carried text names, each with the path it came from, so the
   // file can be read out of the bundle it was in.
   const carriedPaths: { source: string; target: string }[] = [];
-  if (carriedHookList.length > 0) {
+  let carriedSummary = '';
+  // A registration is code too: a bundle whose only foreign code is a
+  // `wa.on.hurt` (WF 57) has no claim hook to seed the carry, and gating on the
+  // hook list alone dropped its handler without a word.
+  if (carriedHookList.length > 0 || carriedRegistrations.length > 0) {
+    // A hook or a registration is a point of use, so its own enclosing scopes go
+    // with it: PX declares its state inside `function weapon.setup() do … end`,
+    // and a callback registered there closes over those locals (L2).
+    // The chain comes from the module's own hook when it has one: an `on_explode`
+    // the feature reader rebuilt keeps only the author's lines, so its line
+    // number is not the module's, but the scope it sits in is still the module's.
+    const hookScope = (key: string, line: number) => {
+      const at = split.hookLines?.[key as keyof typeof split.hookLines];
+      if (at !== undefined && line !== 0 && at !== line) return undefined;
+      return split.hookScopes?.[key as keyof typeof split.hookScopes];
+    };
     const seeds = [
-      ...carriedHookList.map((hook) => ({ label: hook.key, text: hook.text })),
+      ...carriedHookList.map((hook) => ({
+        label: hook.key,
+        text: hook.text,
+        enclosing: hookScope(hook.key, hook.line),
+      })),
       ...carriedRegistrations.map((registration) => ({
         label: `wa.on.${registration.event}`,
         text: registration.text,
+        enclosing: split.registrations.find(
+          (entry) => entry.event === registration.event && entry.line === registration.line,
+        )?.enclosing,
       })),
     ];
     let reserved = new Map<string, string>();
@@ -417,22 +485,35 @@ export async function importBundleWeapon(
       prologue: carried.prologue,
       hooks: carriedHookList.map((hook) => ({
         ...hook,
-        text: carried.transform(hook.text).text,
+        text: carried.transform(stripNotGeneratedMarkers(hook.text)).text,
       })),
       registrations: carriedRegistrations.map((registration) => ({
         ...registration,
-        text: carried.transform(registration.text).text,
+        text: carried.transform(stripNotGeneratedMarkers(registration.text)).text,
       })),
       unresolved: carried.unresolved,
       origin: weapon.bundleId,
     };
+    // The import summary in the shape the plan asks for: the hooks, the handlers,
+    // then the declarations and requires the hidden one closes over. The art
+    // counts are added once the files have been read, below, so one line says
+    // everything that arrived. `check_carried_lua.ts` pins the shape.
     const requires = carried.preamble.reduce((sum, block) => sum + block.requires.length, 0);
     const helpers = carried.preamble.length + carried.prologue.length - requires;
-    if (helpers > 0 || requires > 0) {
-      notes.push(
-        `carried: ${helpers} declaration(s)${requires > 0 ? `, ${requires} require(s)` : ''} the hook closes over`,
-      );
-    }
+    const count = (n: number, one: string) => `${n} ${n === 1 ? one : `${one}s`}`;
+    carriedSummary = [
+      carriedHookList.length > 0
+        ? `${count(carriedHookList.length, 'hook')} (${carriedHookList.map((hook) => hook.key).join(', ')})`
+        : '',
+      carriedRegistrations.length > 0
+        ? `${count(carriedRegistrations.length, 'registration')} (${carriedRegistrations.map((registration) => `wa.on.${registration.event}`).join(', ')})`
+        : '',
+      helpers > 0 ? count(helpers, 'declaration') : '',
+      requires > 0 ? count(requires, 'require') : '',
+      carried.refused.length > 0 ? `${count(carried.refused.length, 'refusal')}` : '',
+    ]
+      .filter(Boolean)
+      .join(', ');
     if (carried.renames.length > 0) {
       notes.push(
         `renamed in carried code: ${carried.renames
@@ -526,12 +607,19 @@ export async function importBundleWeapon(
     }
     if (soundFiles.length > 0) art.soundFiles = soundFiles;
     nextProject.carriedLua = { ...nextProject.carriedLua!, art };
-    if (art.sprites.length > 0 || art.sounds.length > 0) {
-      notes.push(
-        `carried art: ${art.sprites.length} sheet(s), ${art.sounds.length} sound(s) declared for the claim`,
-      );
+    const artParts = [
+      art.sprites.length > 0
+        ? `${art.sprites.length} sheet${art.sprites.length === 1 ? '' : 's'}`
+        : '',
+      art.sounds.length > 0 ? `${art.sounds.length} sound${art.sounds.length === 1 ? '' : 's'}` : '',
+    ].filter(Boolean);
+    if (artParts.length > 0) {
+      carriedSummary = carriedSummary
+        ? `${carriedSummary}, ${artParts.join(', ')}`
+        : artParts.join(', ');
     }
   }
+  if (carriedSummary) notes.push(`carried: ${carriedSummary}`);
 
   return { replaceProject: true, project: nextProject, notes };
 }
