@@ -477,6 +477,10 @@ export interface RoamSheetAsset {
   preview?: string;
   /** Vertical frames in the sheet (32 = a full turn, WA's `airmisl` order). */
   frames?: number;
+  /** Playback rate from `[sprites."..."]` (`fps`), defaulting to 15 on emit. */
+  fps?: number;
+  /** Playback loop mode from `[sprites."..."]`. */
+  play?: 'loop' | 'pingpong';
   /** Set when the app baked the rotation strip from `sourceFile`. */
   rotationFrames?: number;
   /** The single frame a rotation sheet was built from, for "use original". */
@@ -1129,6 +1133,11 @@ export interface WeaponProject {
    * never dropped.
    */
   options?: WeaponOptionConfig[];
+  /**
+   * `[components.suggests."<feature>"]` tables from an imported manifest,
+   * passed through untouched on export.
+   */
+  suggests?: Record<string, Record<string, unknown>>;
 }
 
 /**

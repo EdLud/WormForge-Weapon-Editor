@@ -13,7 +13,7 @@
  */
 import type { CarriedLua, CarriedLuaArt, WeaponProject } from '../../types/weapon';
 import { checkLua } from '../luaCheck';
-import { stripNotGeneratedMarkers } from '../luaText';
+import { maskLuaCode, stripNotGeneratedMarkers } from '../luaText';
 import { parseWepBinary } from '../wepParser';
 import { copyNamespace, slugId } from '../weaponId';
 import { mapRecord } from './mapRecord';
@@ -29,8 +29,9 @@ import {
 } from '../luaGenerator';
 import { readAsset, readBundleFeatures, unmodelledClaimKeys } from './importFeatures';
 import { DEFAULT_BODY, DEFAULT_DIG, DEFAULT_FIRE, DEFAULT_ROAM } from '../../data/defaults';
+import { CLAIM_FLAG_KEYS } from '../../data/luaHooks';
 import { stockDonor, stockDonorBaseline } from '../../data/stockDonors';
-import type { LuaTable } from './luaTable';
+import { isTable, type LuaTable } from './luaTable';
 import type { ModFile, ModWeapon } from './scan';
 
 export interface BundleImport {
@@ -74,18 +75,47 @@ function defaultsFrom(table: LuaTable | undefined): Partial<WeaponProject['defau
   return out;
 }
 
+const MODELLED_DEFAULTS = new Set(['ammo', 'delay', 'crate', 'after_use']);
+const AMMO_UNMODELLED = ['turn_start', 'crate_collect', 'stockpiling'] as const;
+
+/** Keys on `weapon.defaults` (or nested `ammo`) that the editor does not model. */
+function unmodelledDefaultKeys(table: LuaTable | undefined): string[] {
+  if (!table) return [];
+  const out: string[] = [];
+  for (const key of Object.keys(table)) {
+    if (!MODELLED_DEFAULTS.has(key)) out.push(key);
+  }
+  if (isTable(table.ammo)) {
+    for (const sub of AMMO_UNMODELLED) {
+      if (table.ammo[sub] !== undefined) out.push(`ammo.${sub}`);
+    }
+  }
+  return out;
+}
+
 /**
  * Which fire family a record's own tables describe. `missile` is checked before
  * `strike`: PX's records often keep a `strike` group beside the missile body
  * (the same weapon fired from a plane), and the missile is the weapon itself.
  */
-function fireTypeOf(record: LuaTable | undefined): WeaponProject['fireType'] {
-  if (!record) return 'power';
+function fireTypeOf(record: LuaTable | undefined): WeaponProject['fireType'] | undefined {
+  if (!record) return undefined;
   if (record.gun) return 'hitscan';
   if (record.mine) return 'drop';
   if (record.missile) return 'power';
   if (record.strike) return 'cursor';
-  return 'power';
+  if (record.arrow) return 'arrow';
+  if (
+    record.baseball_bat ||
+    record.fire_punch ||
+    record.drill ||
+    record.jet_pack ||
+    record.parachute ||
+    record.utility
+  ) {
+    return 'special';
+  }
+  return undefined;
 }
 
 export async function importBundleWeapon(
@@ -153,7 +183,7 @@ export async function importBundleWeapon(
       ...donorRecord,
       slot: donor,
       based_on: donor,
-      fireType: fireTypeOf(weapon.record) ?? donorRecord.fireType,
+      fireType: fireTypeOf(weapon.record) ?? donorRecord.fireType ?? 'power',
       useWepFile: false,
       wepFile: undefined,
       wepFileName: undefined,
@@ -243,6 +273,42 @@ export async function importBundleWeapon(
     );
   }
   const claimAbsorbed = ['on_explode', 'on_fire'];
+  if (split.hooks.on_fire && !nested.has('on_fire') && features.project.fireSequence?.enabled) {
+    const body = hookBodyOf(split.hooks.on_fire).body;
+    // Detect custom logic inside `on_fire` besides the sequential-fire call
+    // and optional `wa.sound.play(...)` calls so extra behavior is flagged.
+    let remainder = body;
+    const seqCallMatch = /seq\.(?:fire_seq_mis|fire_sequential_actor)\s*([({])/.exec(remainder);
+    if (seqCallMatch) {
+      const openIdx = seqCallMatch.index + seqCallMatch[0].length - 1;
+      const openCh = seqCallMatch[1];
+      const closeCh = openCh === '(' ? ')' : '}';
+      let depth = 0;
+      let endIdx = -1;
+      for (let i = openIdx; i < remainder.length; i += 1) {
+        if (remainder[i] === openCh) depth += 1;
+        else if (remainder[i] === closeCh) {
+          depth -= 1;
+          if (depth === 0) {
+            endIdx = i + 1;
+            break;
+          }
+        }
+      }
+      if (endIdx > openIdx) {
+        remainder = remainder.slice(0, seqCallMatch.index) + remainder.slice(endIdx);
+      }
+    }
+    const stripped = remainder
+      .replace(/--[^\n]*/g, '')
+      .replace(/wa\.sound\.play\([^)]*\)/g, '')
+      .trim();
+    if (stripped.length > 0) {
+      notes.push(
+        'on_fire has custom code beyond the sequential-fire burst, which is replaced by sequential fire on export',
+      );
+    }
+  }
   if (split.hooks.on_fire && !nested.has('on_fire') && !features.project.fireSequence?.enabled) {
     const body = hookBodyOf(split.hooks.on_fire);
     // Our own launch-WAV `on_fire` is one `wa.sound.play` of the launch sheet:
@@ -268,6 +334,18 @@ export async function importBundleWeapon(
         line: split.hookLines?.on_fire ?? 0,
       });
     }
+  }
+  if (
+    split.hooks.on_explode &&
+    !nested.has('on_explode') &&
+    split.namedHooks?.includes('on_explode') &&
+    !carriedHookList.some((hook) => hook.key === 'on_explode')
+  ) {
+    carriedHookList.push({
+      key: 'on_explode',
+      text: split.hooks.on_explode,
+      line: split.hookLines?.on_explode ?? 0,
+    });
   }
   for (const [key, text] of Object.entries(split.hooks) as [string, string | undefined][]) {
     if (key === 'on_explode' || key === 'on_fire' || !text) continue;
@@ -316,6 +394,11 @@ export async function importBundleWeapon(
       `ctx.option reads ${undeclaredReads.join(', ')}, which ${weapon.componentId} does not declare: the engine raises "has no option" and the weapon fails to load`,
     );
   }
+  if (weapon.weaponOptions && weapon.weaponOptions.length > 0) {
+    notes.push(
+      `weapon_options (${weapon.weaponOptions.map((option) => option.key).join(', ')}): per-placed-weapon feature settings are not authored here`,
+    );
+  }
   const unmodelled = unmodelledClaimKeys(weapon.source, [
     // The sequential-fire reader reconstructs the burst inside `on_fire`, and
     // M5/M6 carry the hooks themselves: a key either travels with the weapon or
@@ -326,6 +409,30 @@ export async function importBundleWeapon(
   ]);
   if (unmodelled.length > 0) {
     notes.push(`not carried: ${unmodelled.join(', ')}`);
+  }
+  const claimFlags = CLAIM_FLAG_KEYS.filter(
+    (flag) => weapon.source && weapon.source[flag] !== undefined,
+  );
+  if (claimFlags.length > 0) {
+    notes.push(`claim flags not re-emitted: ${claimFlags.join(', ')}`);
+  }
+  const extraDefaults = unmodelledDefaultKeys(weapon.defaults);
+  if (extraDefaults.length > 0) {
+    notes.push(`unmodelled defaults: ${extraDefaults.join(', ')}`);
+  }
+  const maskedModule = maskLuaCode(moduleText);
+  if (/\bfunction\s+[A-Za-z_][A-Za-z0-9_.]*\.configure\b|\bconfigure\s*=\s*function\b/.test(maskedModule)) {
+    notes.push(
+      /\bspec\s*[.\[]/.test(maskedModule)
+        ? 'uses weapon.configure(ctx, spec) to mutate record spec at load'
+        : 'uses weapon.configure(ctx) to apply option settings at load',
+    );
+  }
+  const ctxStateReads = (['ctx.placed', 'ctx.weapons', 'ctx.data'] as const).filter((expr) =>
+    new RegExp(`\\b${expr.replace('.', '\\s*\\.\\s*')}\\b`).test(maskedModule),
+  );
+  if (ctxStateReads.length > 0) {
+    notes.push(`reads pack/match state (${ctxStateReads.join(', ')})`);
   }
   // What the module is made of, so "the record came across, the code did not"
   // has a size instead of being a suspicion, and so the part that is *not* lost
@@ -409,6 +516,9 @@ export async function importBundleWeapon(
         fromBool: option.fromBool,
         data: option.data,
       })),
+      ...(weapon.suggests && Object.keys(weapon.suggests).length > 0
+        ? { suggests: weapon.suggests }
+        : {}),
       // The module's own callbacks are not carried (`features.project` only
       // extracts the custom part of `on_explode`); anything else would need
       // that bundle's libraries to run.

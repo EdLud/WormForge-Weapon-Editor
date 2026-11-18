@@ -18,6 +18,11 @@ that changed SDK behaviour:
   - B11: `bits = "inherit"` keeps the primary's art but still classifies a frag
     as a bit, which is what an effect's `target` reads.
 
+It also pins the bit identity the old `m.sprite` test got wrong: a round that
+carries the cluster sprite (the banana cluster case) is a round, its burst's
+missiles are bits, a fire-sequence round stays a round, and `bit_window` /
+`bit_radius` are honoured.
+
 It is a development aid, not part of `bun run lint` / `build`: `lupa` is not a
 project dependency.
 """
@@ -49,7 +54,9 @@ wa.worms.all = lambda: lua.table()
 wa.math = lua.table()
 wa.math.sin = math.sin
 wa.math.cos = math.cos
-wa.math.atan = math.atan
+# The engine's `wa.math.atan(y, x)` is atan2 (the builder's track angle calls
+# it with the velocity pair); Python's `math.atan` takes one argument.
+wa.math.atan = lambda y, x: math.atan2(y, x)
 wa.draw = lua.table()
 wa.draw.quad = lambda *a: None
 wa.on = lua.table()
@@ -89,25 +96,39 @@ def counter(m):
     return False
 
 
-def missile(mid, sprite, weapon):
+def missile(mid, sprite, weapon, x=1000.0, y=1000.0):
     m = lua.table()
     m.id = mid
     m.weapon = weapon
     m.sprite = sprite
-    m.x, m.y, m.vx, m.vy = 1000.0, 1000.0, 0.0, 0.0
+    m.x, m.y, m.vx, m.vy = x, y, 0.0, 0.0
     m.phase = "pre"
     m.despawn = lambda *a: None
     return m
 
 
-def step(mid, sprite, weapon):
-    """One 50 Hz frame: WA delivers the missile to both its phases."""
-    WORLD["frame"] += 1
+def call(mid, sprite, weapon, x=1000.0, y=1000.0):
+    """Both phases of the current frame, without advancing the clock."""
     for phase in ("pre", "post"):
         for fn in FRAMES:
-            m = missile(mid, sprite, weapon)
+            m = missile(mid, sprite, weapon, x, y)
             m.phase = phase
             fn(m)
+
+
+def step(mid, sprite, weapon, x=1000.0, y=1000.0):
+    """One 50 Hz frame: WA delivers the missile to both its phases."""
+    WORLD["frame"] += 1
+    call(mid, sprite, weapon, x, y)
+
+
+def advance(n=1):
+    """A frame with no missile in it (the gap between two turns)."""
+    WORLD["frame"] += n
+
+
+def bits_table():
+    return lua.table_from({"sheet": "sprites/test/bit.png", "anim": "track"})
 
 
 def flight(weapon, track=True, **opts):
@@ -170,17 +191,87 @@ check("its role is still answered", sb.role(9) == "main", repr(sb.role(9)))
 
 # ---- B11: `bits = "inherit"` keeps the art but not the identity --------------
 # The generator never writes `inherit`; a hand-written bundle does, and a trail
-# or burst with `target = "bit"` reads this answer.
+# or burst with `target = "bit"` reads this answer. Identity is timing now: the
+# first missile is the round, the one built by its burst is a bit.
 flight("test.inherit", track=False, bits="inherit")
 step(11, 500, "test.inherit")
-check("a frag of an inheriting role is a bit", sb.role(11) == "bit", repr(sb.role(11)))
+check("the first missile of an inheriting weapon is the round", sb.role(11) == "main", repr(sb.role(11)))
+step(12, 500, "test.inherit")
+check("the missile built by its burst is a bit", sb.role(12) == "bit", repr(sb.role(12)))
+
 flight("test.nobits", track=False)
-step(12, 500, "test.nobits")
+step(13, 500, "test.nobits")
 check(
     "and a round of a plain weapon is still the round",
-    sb.role(12) == "main",
-    repr(sb.role(12)),
+    sb.role(13) == "main",
+    repr(sb.role(13)),
 )
+
+# ---- The banana cluster regression -----------------------------------------
+# WA can put the cluster sprite in the round's render slot (`clustlet`): the
+# main missile of a cluster record came out with a nonzero `m.sprite` and was
+# classified as a bit, while its bits carried 0 and were called rounds. Timing
+# must get both right without reading the sprite at all.
+flight("test.cluster", track=False, bits=bits_table())
+step(20, 54, "test.cluster")          # the round, carrying clustlet's id
+check("a round carrying the cluster sprite is still the round", sb.role(20) == "main", repr(sb.role(20)))
+step(21, 0, "test.cluster")           # the burst
+step(22, 0, "test.cluster")
+check("the frags built by its burst are bits", sb.role(21) == "bit" and sb.role(22) == "bit", f"{sb.role(21)}, {sb.role(22)}")
+# A later turn is far outside the burst window, so its shot is a round again.
+advance(10)
+step(23, 54, "test.cluster")
+check("a shot after the burst window is a new round", sb.role(23) == "main", repr(sb.role(23)))
+
+# The engine can build the burst on the frame the round was last seen and list
+# the new bits before it drops the round. That same-frame sighting is still a
+# bit because it is at the round's position; a shot from the muzzle is not.
+flight("test.same", track=False, bits=bits_table())
+WORLD["frame"] += 1
+call(60, 54, "test.same", 1000, 1000)
+call(61, 0, "test.same", 1000, 1000)
+# The same-frame sighting is ambiguous, so it is decided next frame, when the
+# round is gone.
+WORLD["frame"] += 1
+call(61, 0, "test.same", 1000, 1000)
+check("a burst on the round's own frame is a bit", sb.role(61) == "bit", repr(sb.role(61)))
+call(62, 54, "test.same", 500, 500)
+check("a shot from the muzzle on that frame is a round", sb.role(62) == "main", repr(sb.role(62)))
+
+# A fire sequence fires a second round while the first is still in the air.
+# That is a round, not a frag, even when both are seen on the same frame; the
+# ambiguous frame is decided when the first round is still alive.
+flight("test.seq", track=False, bits=bits_table())
+WORLD["frame"] += 1
+call(30, 54, "test.seq")
+call(31, 54, "test.seq")
+WORLD["frame"] += 1
+call(30, 54, "test.seq")
+call(31, 54, "test.seq")
+check("a second shot while the round is alive is a round", sb.role(31) == "main", repr(sb.role(31)))
+step(32, 0, "test.seq")
+check("and only the burst's missiles are bits", sb.role(32) == "bit", repr(sb.role(32)))
+
+# The burst is at the round's position; a shot leaves the muzzle. A new round
+# that appears inside the burst window but far from the dead round is a round,
+# which keeps a fire sequence of cluster rounds apart.
+flight("test.place", track=False, bits=bits_table())
+step(50, 54, "test.place", 1000, 1000)
+step(51, 0, "test.place", 1032, 1000)
+check("a frag at the round's position is a bit", sb.role(51) == "bit", repr(sb.role(51)))
+step(52, 54, "test.place", 500, 500)
+check("a shot far from the dead round is a round", sb.role(52) == "main", repr(sb.role(52)))
+
+# A window of zero is the exact burst frame only; the harness's step gives the
+# bits one frame of slack, so use a weapon with `bit_window = 1` to prove the
+# option is read, then a far shot stays a round.
+flight("test.window", track=False, bits=bits_table(), bit_window=1)
+step(40, 54, "test.window")
+step(41, 0, "test.window")
+check("bit_window = 1 still catches the burst", sb.role(41) == "bit", repr(sb.role(41)))
+advance(4)
+step(42, 54, "test.window")
+check("bit_window = 1 ends before the next shot", sb.role(42) == "main", repr(sb.role(42)))
 
 if fails > 0:
     print(f"\n{fails} check(s) failed")

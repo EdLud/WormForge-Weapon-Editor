@@ -314,7 +314,7 @@ export function carryClosure(
       entry.neededBy.push(from);
       continue;
     }
-    const origin = preambleAll.includes(block) ? 'preamble' : 'prologue';
+    const origin = preambleAll.some((other) => sameBlock(other, block)) ? 'preamble' : 'prologue';
     // Two *locals* of one name would collide once both are hoisted into install;
     // a `local x` and the `x = …` that follows it are one binding (lesson 21's
     // shape), so only two `local` declarations clash.
@@ -543,21 +543,30 @@ export function rewriteBundlePaths(
   // sees) is recorded too: that is how a carried sheet stays declared and
   // written on the second pass instead of quietly leaving the zip.
   const seen = new Set<string>();
-  const out = text.replace(
-    /(["'])((?:sprites|sounds)\/[^/"']+\/[^"']+)(["'])/g,
-    (whole, quote: string, path: string, close: string) => {
-      const slash = path.indexOf('/');
-      const kind = path.slice(0, slash);
-      const file = path.slice(path.indexOf('/', slash + 1) + 1);
-      const target = `${kind}/${folder}/${file}`;
-      // A path can contain neither a comma nor a newline, so the pair is a key.
-      const key = `${path},${target}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        moves.push({ source: path, target });
-      }
-      return target === path ? whole : `${quote}${target}${close}`;
-    },
-  );
+  const out = text
+    .replace(
+      /(["'])((?:sprites|sounds)\/[^/"']+\/[^"']+)(["'])/g,
+      (whole, quote: string, path: string, close: string) => {
+        const slash = path.indexOf('/');
+        const kind = path.slice(0, slash);
+        const file = path.slice(path.indexOf('/', slash + 1) + 1);
+        const target = `${kind}/${folder}/${file}`;
+        // A path can contain neither a comma nor a newline, so the pair is a key.
+        const key = `${path},${target}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          moves.push({ source: path, target });
+        }
+        return target === path ? whole : `${quote}${target}${close}`;
+      },
+    )
+    .replace(
+      /(["'])((?:sprites|sounds)\/[^/"']+\/)(["'])/g,
+      (whole, quote: string, prefix: string, close: string) => {
+        const kind = prefix.slice(0, prefix.indexOf('/'));
+        const target = `${kind}/${folder}/`;
+        return target === prefix ? whole : `${quote}${target}${close}`;
+      },
+    );
   return { text: out, moves };
 }

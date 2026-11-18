@@ -56,15 +56,42 @@ export const CLAIM_KEYS_MODELLED = [
   'copy_from',
   'wep',
   'panel_icon',
+  'panel_icons',
+  'icon',
   'sprites',
+  'sprite_overrides',
   'sounds',
   'params',
+  'truecolor',
   'cluster',
   'sprite',
   'sheep_sprites',
   'worm_sprites',
+  'worm_sprites_animate',
+  'worm_sprites_toggle',
+  'worm_sprites_team_tint',
+  'gpu_worm_sprites',
+  'worm_art',
+  'mole_dig_rotation',
   'hold',
   'fires',
+] as const;
+
+/**
+ * Claim behaviour flags (`spec/lua_sdk/verbs.md`) that affect runtime selection,
+ * firing or cave availability without carrying a callback body or record table.
+ * The generator does not re-emit these keys on Claim, so imports surface them.
+ */
+export const CLAIM_FLAG_KEYS = [
+  'actor',
+  'eat_fire',
+  'click_finish',
+  'click',
+  'fire_repeat',
+  'stock_fire_choice',
+  'airborne',
+  'available_in_caves',
+  'is_weapon',
 ] as const;
 
 /**

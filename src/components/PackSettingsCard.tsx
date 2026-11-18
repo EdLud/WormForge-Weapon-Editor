@@ -1,5 +1,5 @@
 import React from 'react';
-import { Boxes, Info, Trash2 } from 'lucide-react';
+import { Boxes, Trash2 } from 'lucide-react';
 import type { PackProject } from '../types/weapon';
 import { sanitizeModFolder } from '../utils/luaGenerator';
 import { renamespaceWeapons } from '../utils/pack';
@@ -66,17 +66,6 @@ export const PackSettingsCard: React.FC<PackSettingsCardProps> = ({
       </div>
 
       <div className="space-y-3 p-4">
-        {!many && (
-          <p className="flex items-start gap-2 rounded-lg border border-sky-200 bg-sky-50/70 px-3 py-2 text-[11px] leading-relaxed text-sky-900 dark:border-sky-900/60 dark:bg-sky-950/30 dark:text-sky-200">
-            <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-            <span>
-              This bundle holds one weapon, so it <em>is</em> that weapon: its id, name, author and
-              version are the weapon&apos;s, and the export stays{' '}
-              <span className="font-mono">{folder}.zip</span>. Add a second weapon to the bundle to
-              give the bundle its own id and name.
-            </span>
-          </p>
-        )}
 
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="block">
@@ -161,12 +150,24 @@ export const PackSettingsCard: React.FC<PackSettingsCardProps> = ({
               }
             />
           </label>
+          <label className="block sm:col-span-2">
+            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-stone-500 dark:text-stone-400">
+              Bundle description
+            </span>
+            <input
+              className={inputClass}
+              value={pack.description ?? ''}
+              placeholder={`${pack.name} test profile.`}
+              title="Profile description written into the bundle's shared profile TOML."
+              onChange={(event) => onChange({ description: event.target.value })}
+            />
+          </label>
         </div>
 
         <p className="text-[11px] leading-relaxed text-stone-500 dark:text-stone-400">
           Every weapon keeps its own component block, its own Lua module and its own art folder, so
-          editing one weapon never moves another&apos;s files. Renaming the bundle does not rename
-          the weapons: an id is allocated once, so a rename never moves a weapon&apos;s art. The
+          editing one weapon never moves another&apos;s files. Renaming the bundle re-namespaces
+          matching weapon ids underneath it while keeping each weapon&apos;s art folder intact. The
           dependencies are the union of what the weapons need, and one profile places all of them.
         </p>
 

@@ -81,6 +81,9 @@ export async function createDefaultHoldSheet(
   project: WeaponProject,
   frames: number
 ): Promise<Blob> {
+  if (typeof document === 'undefined') {
+    return new Blob([SILENT_PNG], { type: 'image/png' });
+  }
   try {
     const img = await loadImage(defaultArtFor(project).url);
     return await stackFrames(img, frames);
@@ -95,6 +98,9 @@ export async function createDefaultMissileSheet(
   anim: MissileAnimType,
   frames: number
 ): Promise<Blob> {
+  if (typeof document === 'undefined') {
+    return new Blob([SILENT_PNG], { type: 'image/png' });
+  }
   try {
     const img = await loadImage(defaultArtFor(project).url);
     return await stackFrames(img, frames);

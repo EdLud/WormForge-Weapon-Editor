@@ -1,12 +1,14 @@
 import React, { useMemo, useState } from 'react';
 import { PackProject, WeaponProject } from '../types/weapon';
 import {
+  availableRequiresForCheck,
   generateLuaCode,
   generateModToml,
   generatePackProfile,
   generatePackToml,
   generateProfileToml,
   sanitizeModFolder,
+  weaponManifestPart,
 } from '../utils/luaGenerator';
 import { Copy, Check, FileCode2, Settings, UserCheck, X } from 'lucide-react';
 import { checkLua } from '../utils/luaCheck';
@@ -60,7 +62,13 @@ export const LuaPreviewModal: React.FC<LuaPreviewModalProps> = ({
   // `start_vortex`, a `math.sin` that is not lockstep safe, a block left open.
   // The report is on the file, not on the text box, and a finding inside the
   // marked custom block is tagged as such by `LuaFindings`.
-  const luaFindings = useMemo(() => checkLua(luaCode, { mode: 'fragment' }), [luaCode]);
+  const luaFindings = useMemo(() => {
+    const deps = many
+      ? [...new Set(pack!.weapons.flatMap((weapon) => weaponManifestPart(weapon).dependencies))]
+      : weaponManifestPart(shown).dependencies;
+    const availableRequires = availableRequiresForCheck(luaCode, deps);
+    return checkLua(luaCode, { mode: 'module', availableRequires });
+  }, [luaCode, many, pack, shown]);
 
   const getActiveContent = () => {
     if (activeFile === 'lua') return luaCode;

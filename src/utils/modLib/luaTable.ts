@@ -19,6 +19,12 @@ export interface LuaTable {
   [key: string]: LuaValue;
 }
 
+export interface MergeCall {
+  baseRef?: string;
+  baseTable?: LuaTable;
+  overrides: LuaTable;
+}
+
 export interface LuaScan {
   /** `a.b = { … }` assignments, by dotted path (`weapon.record`, `defaults`). */
   assignments: Record<string, LuaTable>;
@@ -30,6 +36,8 @@ export interface LuaScan {
    * which is how a module that assembles its record in a local is read.
    */
   callRefs: Record<string, string>;
+  /** `merge(base, { … })` / `weapon.merge(base, { … })` table merges, in file order. */
+  merges: MergeCall[];
   /** The file's `return { … }` table, if it has one. */
   returned?: LuaTable;
 }
@@ -361,7 +369,7 @@ const SKIP = Symbol('skip');
 export function scanLua(code: string): LuaScan {
   const { tokens } = tokenize(code);
   const reader = new Reader(tokens);
-  const scan: LuaScan = { assignments: {}, calls: {}, callRefs: {} };
+  const scan: LuaScan = { assignments: {}, calls: {}, callRefs: {}, merges: [] };
 
   while (!reader.atEnd()) {
     const token = reader.peek()!;
@@ -388,6 +396,26 @@ export function scanLua(code: string): LuaScan {
           reader.next();
           scan.assignments[path] = reader.table();
           continue;
+        }
+        // `*.merge(base, { … })` — PX's `require("lib/weapon").merge(weapon.record, { ... })`.
+        if ((path === 'merge' || path.endsWith('.merge')) && reader.isPunct('(')) {
+          const save = reader.position;
+          reader.next();
+          const baseTable = reader.isPunct('{') ? reader.table() : undefined;
+          const baseRef = baseTable ? undefined : (reader.dottedPath() ?? undefined);
+          if ((baseTable || baseRef) && reader.isPunct(',')) {
+            reader.next();
+            if (reader.isPunct('{')) {
+              const overrides = reader.table();
+              scan.merges.push({
+                ...(baseRef ? { baseRef } : {}),
+                ...(baseTable ? { baseTable } : {}),
+                overrides,
+              });
+              continue;
+            }
+          }
+          reader.seek(save);
         }
         // `a.b{ … }` -- table-call sugar, as `wa.weapons.replace{ … }` uses.
         if (reader.isPunct('{')) {

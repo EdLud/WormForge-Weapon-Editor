@@ -551,6 +551,43 @@ const lines = (...rows: string[]) => rows.join(nl);
   }
 }
 
+// ---- named claim hook bindings (on_fire = place, on_explode = detonate) --
+{
+  const module = lines(
+    'local function place(ev)',
+    '  wa.sound.play(ev.worm, 112)',
+    'end',
+    'local function detonate(ev)',
+    '  wa.world.blast{ x = ev.x, y = ev.y, power = 10 }',
+    'end',
+    'local weapon = {}',
+    'weapon.definition = {',
+    '  on_fire = place,',
+    '  on_explode = { on = detonate },',
+    '  on_click = false,',
+    '}',
+    'return weapon',
+  );
+  const split = splitModule(module);
+  check(
+    'named on_fire = place wraps into an event handler',
+    split.hooks.on_fire === 'function(ev)\n  return place(ev)\nend' &&
+      (split.namedHooks ?? []).includes('on_fire'),
+    split.hooks.on_fire ?? 'missing',
+  );
+  check(
+    'named on_explode = { on = detonate } wraps into an event handler',
+    split.hooks.on_explode === 'function(ev)\n  return detonate(ev)\nend' &&
+      (split.namedHooks ?? []).includes('on_explode'),
+    split.hooks.on_explode ?? 'missing',
+  );
+  check(
+    'boolean literal on_click = false is not treated as a named hook',
+    split.hooks.on_click === undefined,
+    split.hooks.on_click ?? 'none',
+  );
+}
+
 if (failed > 0) {
   console.error(`\n${failed} check(s) failed`);
   process.exit(1);

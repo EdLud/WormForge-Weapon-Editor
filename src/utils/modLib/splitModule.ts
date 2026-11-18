@@ -106,6 +106,12 @@ export interface SplitModule {
    * separate key would move it out of the scope it was written in.
    */
   nestedHooks: ClaimHookKey[];
+  /**
+   * Claim hooks bound to a named local/function (`on_fire = place`,
+   * `on_explode = detonate`) and normalized into `function(ev) return <name>(ev) end`
+   * so closure resolution carries the referenced helper.
+   */
+  namedHooks?: ClaimHookKey[];
   /** Every `require("…")` id in the file, in order, deduped. */
   requires: string[];
   /** Why a block could not be read whole. Never a reason to guess. */
@@ -470,6 +476,7 @@ export function splitModule(code: string): SplitModule {
     hookLines: {},
     hookScopes: {},
     nestedHooks: [],
+    namedHooks: [],
     requires: [],
     notes,
   };
@@ -522,7 +529,7 @@ export function splitModule(code: string): SplitModule {
         },
       ]
     : [];
-  let fieldScope: LuaBlock[] | null = null;
+  let fieldScope: LuaBlock[] | null = installAt ? null : split.preamble;
   const scopesOf = (offset: number): LuaBlock[][] => {
     if (installAt && offset >= installAt.bodyStart && offset < installAt.bodyEnd) {
       return [...scopesAt(code, masked, split.install!.statements, offset, notes, limit), installHeader];
@@ -560,24 +567,72 @@ export function splitModule(code: string): SplitModule {
   }
 
   // ---- claim hooks ---------------------------------------------------------
-  // Both shapes the engine reads: `on_x = function(ev)` and `on_x = { on = … }`.
+  // Inline shapes (`on_x = function(ev)` / `on_x = { on = function(ev) }`)
+  // and named bindings (`on_x = helper` / `on_x = { on = helper }`).
+  const LUA_KEYWORDS = new Set([
+    'true',
+    'false',
+    'nil',
+    'function',
+    'not',
+    'and',
+    'or',
+    'if',
+    'then',
+    'else',
+    'elseif',
+    'end',
+    'return',
+    'local',
+  ]);
   const hookRanges: { key: ClaimHookKey; from: number; to: number }[] = [];
   for (const key of CLAIM_HOOK_KEYS) {
     const hook = new RegExp(
       `(^|[^A-Za-z0-9_.])${key}\\s*=\\s*(function|\\{\\s*on\\s*=\\s*function)`,
     ).exec(masked);
-    if (!hook) continue;
-    const fnAt = masked.indexOf('function', hook.index);
-    const end = scanBlockEnd(masked, fnAt + 'function'.length);
-    if (end === -1) {
-      notes.push(`the ${key} body on line ${lineAt(code, fnAt)} could not be closed, so it was not read`);
+    if (hook) {
+      const fnAt = masked.indexOf('function', hook.index);
+      const end = scanBlockEnd(masked, fnAt + 'function'.length);
+      if (end === -1) {
+        notes.push(`the ${key} body on line ${lineAt(code, fnAt)} could not be closed, so it was not read`);
+        continue;
+      }
+      const stop = masked.startsWith('until', end) ? end + 5 : end + 3;
+      split.hooks[key] = code.slice(fnAt, stop);
+      split.hookLines[key] = lineAt(code, hook.index);
+      split.hookScopes[key] = scopesOf(hook.index);
+      hookRanges.push({ key, from: fnAt, to: stop });
       continue;
     }
-    const stop = masked.startsWith('until', end) ? end + 5 : end + 3;
-    split.hooks[key] = code.slice(fnAt, stop);
-    split.hookLines[key] = lineAt(code, hook.index);
-    split.hookScopes[key] = scopesOf(hook.index);
-    hookRanges.push({ key, from: fnAt, to: stop });
+
+    const namedPattern = new RegExp(
+      `(^|[^A-Za-z0-9_.])${key}\\s*=\\s*(\\{\\s*on\\s*=\\s*)?([A-Za-z_][A-Za-z0-9_.]*)`,
+      'g',
+    );
+    let named: RegExpExecArray | null;
+    while ((named = namedPattern.exec(masked)) !== null) {
+      const keyStart = named.index + named[1].length;
+      const before = masked.slice(Math.max(0, keyStart - 16), keyStart);
+      if (/\blocal\s+$/.test(before)) continue;
+      const target = named[3];
+      const root = target.split('.')[0];
+      if (LUA_KEYWORDS.has(root)) continue;
+      let after = named.index + named[0].length;
+      while (after < masked.length && (masked[after] === ' ' || masked[after] === '\t')) after += 1;
+      if (named[2]) {
+        if (masked[after] !== '}') continue;
+        after += 1;
+        while (after < masked.length && (masked[after] === ' ' || masked[after] === '\t')) after += 1;
+      }
+      const nextCh = masked[after] ?? '';
+      if (nextCh !== '' && !',};\r\n'.includes(nextCh)) continue;
+      split.hooks[key] = `function(ev)\n  return ${target}(ev)\nend`;
+      split.hookLines[key] = lineAt(code, keyStart);
+      split.hookScopes[key] = scopesOf(keyStart);
+      split.namedHooks!.push(key);
+      hookRanges.push({ key, from: keyStart, to: after });
+      break;
+    }
   }
 
   // A hook written inside another hook is part of that text, not a key of its

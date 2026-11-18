@@ -971,11 +971,62 @@ export async function readBundleFeatures(args: {
     if (project.aimClip) notes.push('space swing');
   }
 
+  // ---- local string sheet helpers ---------------------------------------
+  const collectLocalStrings = (): Map<string, string> => {
+    const localStrings = new Map<string, string>();
+    for (const match of moduleText.matchAll(
+      /\blocal\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*["']([^"']+)["']/g,
+    )) {
+      localStrings.set(match[1], match[2]);
+    }
+    for (const match of moduleText.matchAll(
+      /\blocal\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*\.\.\s*["']([^"']+)["']/g,
+    )) {
+      const baseVar = localStrings.get(match[2]);
+      if (baseVar) localStrings.set(match[1], `${baseVar}${match[3]}`);
+    }
+    return localStrings;
+  };
+  const resolveTopSheetInTable = (
+    tableText: string,
+    localStrings: Map<string, string>,
+  ): string | undefined => {
+    const masked = maskLuaCode(tableText);
+    const firstBrace = masked.indexOf('{');
+    if (firstBrace < 0) return undefined;
+    let depth = 0;
+    for (let i = firstBrace; i < masked.length; i += 1) {
+      const ch = masked[i];
+      if (ch === '{') depth += 1;
+      else if (ch === '}') {
+        depth -= 1;
+        if (depth <= 0) break;
+      } else if (depth === 1 && (i === 0 || !/[A-Za-z0-9_.]/.test(masked[i - 1]))) {
+        const rhs = /^sheet\s*=\s*/.exec(masked.slice(i));
+        if (rhs) {
+          const tail = tableText.slice(i + rhs[0].length);
+          const expr =
+            /^(?:["']([^"']+)["']|([A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\.\s*["']([^"']+)["'])?)/.exec(
+              tail,
+            );
+          if (expr) {
+            if (expr[1]) return expr[1];
+            if (expr[2]) {
+              const baseVar = localStrings.get(expr[2]);
+              if (baseVar) return expr[3] ? `${baseVar}${expr[3]}` : baseVar;
+            }
+          }
+        }
+      }
+    }
+    return undefined;
+  };
+
   // ---- sprite builder -----------------------------------------------------
   const flight = readCallTable(moduleText, 'sb.flight');
   if (flight) {
     const f = flight.table;
-    const sheetPath = str(f.sheet);
+    const sheetPath = str(f.sheet) ?? resolveTopSheetInTable(flight.text, collectLocalStrings());
     const sheet = await readAsset(files, bundleDir, sheetPath);
     const decl = spriteDecl(weapon, sheetPath);
     const missileBase = args.missileBase ?? DEFAULT_IMPORT_MISSILE;
@@ -1101,6 +1152,115 @@ export async function readBundleFeatures(args: {
       notes.push('legacy state art not imported');
     }
     notes.push('sprite builder');
+  } else {
+    // ---- PX runtime missile_sprite fallback ------------------------------
+    // PX ports declare `weapon.missile_sprite` (a single table or `{ primary,
+    // clustlet }`) consumed by `lib/missile_sprites.lua`. Read it when `sb.flight`
+    // is absent so imported PX flight art survives without reverting to stock.
+    const pxSprite =
+      firstTable(scan, 'weapon.missile_sprite', 'missile_sprite') ??
+      (isTable(scan.assignments['weapon']?.missile_sprite)
+        ? (scan.assignments['weapon']!.missile_sprite as LuaTable)
+        : undefined) ??
+      (isTable(scan.returned?.missile_sprite)
+        ? (scan.returned!.missile_sprite as LuaTable)
+        : undefined);
+    if (pxSprite) {
+      const entries: LuaTable[] = isTable(pxSprite['1'])
+        ? [pxSprite['1'], ...(isTable(pxSprite['2']) ? [pxSprite['2']] : [])]
+        : [pxSprite];
+      const primary = entries[0];
+      const bitEntry = entries[1];
+      if (primary) {
+        const localStrings = collectLocalStrings();
+        // Extract the brace-balanced `missile_sprite = { ... }` slice to resolve `ART .. "file.png"`.
+        let spriteBlock = '';
+        const maskedModule = maskLuaCode(moduleText);
+        const startMatch = /(?:weapon\s*\.\s*)?missile_sprite\s*=\s*\{/.exec(maskedModule);
+        if (startMatch) {
+          const openAt = startMatch.index + startMatch[0].length - 1;
+          let braceDepth = 0;
+          let closeAt = maskedModule.length;
+          for (let i = openAt; i < maskedModule.length; i += 1) {
+            if (maskedModule[i] === '{') braceDepth += 1;
+            else if (maskedModule[i] === '}') {
+              braceDepth -= 1;
+              if (braceDepth === 0) {
+                closeAt = i + 1;
+                break;
+              }
+            }
+          }
+          spriteBlock = moduleText.slice(openAt, closeAt);
+        }
+        const resolvedSheets: (string | undefined)[] = [];
+        for (const match of spriteBlock.matchAll(
+          /\bsheet\s*=\s*(?:["']([^"']+)["']|([A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\.\s*["']([^"']+)["'])?)/g,
+        )) {
+          if (match[1]) {
+            resolvedSheets.push(match[1]);
+          } else if (match[2]) {
+            const baseVar = localStrings.get(match[2]);
+            resolvedSheets.push(baseVar ? (match[3] ? `${baseVar}${match[3]}` : baseVar) : undefined);
+          }
+        }
+        const sheetFor = (table: LuaTable, idx: number): string | undefined =>
+          str(table.sheet) ?? resolvedSheets[idx];
+
+        const sheetPath = sheetFor(primary, 0);
+        const sheet = await readAsset(files, bundleDir, sheetPath);
+        const decl = spriteDecl(weapon, sheetPath);
+        const missileBase = args.missileBase ?? DEFAULT_IMPORT_MISSILE;
+        const frames = Math.max(1, Math.round(num(primary.frames) ?? 1));
+        const spin = primary.spin === true;
+        const upright = primary.upright === true;
+        project.missileSprite = {
+          ...missileBase,
+          enabled: true,
+          mode: 'custom',
+          sheet: sheetPath ?? missileBase.sheet,
+          sheetFile: sheet?.file,
+          sheetPreview: sheet?.preview,
+          anim: spin ? 'rotation' : upright ? 'none' : 'track',
+          frames,
+          animate: bool(primary.animate) ?? frames > 1,
+          spin,
+          fps: numFrom(decl?.fps) ?? missileBase.fps,
+          animSpeed: num(primary.anim_speed) ?? 1,
+          spinRate: num(primary.spin_speed) ?? (spin ? 0.5 : 1),
+          scale: num(primary.scale) ?? 1,
+          hideStock: bool(primary.hide) ?? false,
+        };
+        if (bitEntry) {
+          const bitSheetPath = sheetFor(bitEntry, 1);
+          const bitAsset = await readAsset(files, bundleDir, bitSheetPath);
+          const bitDecl = spriteDecl(weapon, bitSheetPath);
+          const bitFrames = Math.max(1, Math.round(num(bitEntry.frames) ?? 1));
+          const bitSpin = bitEntry.spin === true;
+          const bitUpright = bitEntry.upright === true;
+          project.bitFlight = {
+            ...DEFAULT_ROLE_ART,
+            mode: 'builder',
+            sheetFile: bitAsset?.file,
+            sheetPreview: bitAsset?.preview,
+            anim: bitSpin ? 'rotation' : bitUpright ? 'none' : 'track',
+            frames: bitFrames,
+            fps: numFrom(bitDecl?.fps) ?? DEFAULT_ROLE_ART.fps,
+            animSpeed: num(bitEntry.anim_speed) ?? 1,
+            spinRate: num(bitEntry.spin_speed) ?? (bitSpin ? 0.5 : 1),
+            scale: num(bitEntry.scale) ?? 1,
+          };
+        }
+        const extras: string[] = [];
+        if (entries.some((e) => e.first_sprite !== undefined)) extras.push('first_sprite');
+        if (entries.some((e) => e.sink_tint !== undefined)) extras.push('sink_tint');
+        notes.push(
+          extras.length > 0
+            ? `PX missile_sprite (${extras.join(', ')} not modelled in sb.flight)`
+            : 'PX missile_sprite',
+        );
+      }
+    }
   }
 
   // ---- ribbon trail -------------------------------------------------------
@@ -1620,6 +1780,8 @@ export async function readBundleFeatures(args: {
         fileName: path.split('/').pop(),
         preview: loaded?.preview,
         frames,
+        fps: numFrom(decl?.fps),
+        play: decl?.play === 'pingpong' ? 'pingpong' : decl?.play === 'loop' ? 'loop' : undefined,
       };
     };
     const first = await readSheet(sheep['1'] ?? sheep[1]);

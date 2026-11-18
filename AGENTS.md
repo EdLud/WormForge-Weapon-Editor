@@ -395,13 +395,21 @@ The editor ships `spec/lua_sdk/wfws_sdk/` (id `wfws.sdk`), exporting
   `missile.sprite` override may survive it. The one exception is a roaming animal
   whose walk pose WA can draw (`roamWalkPoseId()`), which is kept and passed back
   as `roam = { walk, fly }`.
-- **Identity is "a nonzero first-sight `m.sprite` is a bit"** (`classify`): WA's
-  missile constructor gives a fired round `missile.sprite` (0 here) and a cluster
-  bit `clusters.bit.sprite`, and it only applies when a `bits` table is configured
-  (`inherit` or no bits = everything is the primary). Never classify by spawn
-  order: that broke herd and `fire_seq` bursts. `is_bit` overrides it; a future
-  `m.bit` is used first. `log = true` prints the first three frames of each
-  missile (Hold page: **Log Identity**).
+- **Identity is decided by the burst, not by `m.sprite`** (`classify`): the first
+  missile of the weapon is the round; a missile that first appears within
+  `bit_window` frames (default 5) after the round was last seen and at the
+  round's last position (`bit_radius`, default 64 px) is one of its bits. A
+  cluster burst builds its bits in the round's own detonation, at the round's
+  position, while a fire-sequence shot leaves the muzzle and is another round.
+  A missile at a round seen on that same frame waits one frame, when the round
+  has either survived or gone, because the engine can list the burst before it
+  drops the round. `m.sprite` is WA's render slot and not the pellet index: a
+  round that hides its own art can carry the cluster sprite there (a cluster
+  grenade's main missile came out with `clustlet`), which is what made the old
+  `m.sprite ~= 0` test classify the main as a bit. The pellet flag
+  (`MissileEntity+0x150`) is not exposed to Lua. `is_bit` overrides the test; a
+  future `m.bit` is used first. `log = true` prints the first three frames of
+  each missile (Hold page: **Log Identity**).
 - `bits = { sheet, anim, cyclical, anim_speed, spin, scale, mirror, z }` for the
   bit role, `bits = "inherit"` for the primary art, no `bits` for native WA bits.
   When the builder owns the bits the generator forces a stock
@@ -1861,7 +1869,10 @@ it exists.
 
 The flight half drives `missile_frame` for both WA phases over a run of frames:
 the per-missile sweep (a walking animal WA draws itself is re-classified once a
-second, a round with a follower never), and the `bits = "inherit"` identity.
+second, a round with a follower never), the `bits = "inherit"` identity, and the
+timed bit classifier: a round carrying the cluster sprite is a round, its
+burst's missiles are bits, a fire-sequence round stays a round, and
+`bit_window`/`bit_radius` are honoured.
 
 It loads the real `spec/lua_sdk/wfws_sdk/lib/wfws_sprite_builder.lua` against a
 fake `wa` and walks the melee swing frame by frame: the aim draw, the Space take,
@@ -1981,8 +1992,11 @@ that `vite preview` at `/` hides).
     `updateOverrides(patch)` for multi-key edits.
 14. **A claim `on_explode` needs a weapon-table slot.** An air strike's bombs are
     built from the strike's own record copy, so the hook never fires for them.
-15. **The primary's `sprite = 0` is a classifier, not a cosmetic toggle**, and a
-    bit needs a nonzero stock sprite (`clustlet`, `sprite_count = 1`). Behaviour
+15. **Bits are timed, not read from `m.sprite`.** A cluster bit is built by the
+    round's burst, at the round's position, in the frames right after it stops
+    being seen; `m.sprite` is WA's render slot (the main can carry `clustlet`)
+    and the pellet flag is not exposed. A bit still needs a nonzero stock sprite
+    (`clustlet`, `sprite_count = 1`) so WA constructs it. Behaviour
     state ids must be distinct, real and positive (245+), and never a negative id.
 16. **`copy_from` diffs must use that donor's baseline** (§7, check 9).
 17. **Feature import inverts the generator, not the engine.** Lua expressions
@@ -2048,7 +2062,7 @@ emitter (muzzle or round, ring, bolts, own ribbon), terrain stamp with impact
 damage, sequential fire, custom WAVs, pack art, the bundle reader (`.wep` + Lua tables + this editor's own
 features **and the code it does not model**: a bundle's `on_explode` and `on_fire`,
 every other claim hook, every foreign `wa.on.*` registration, the closure each one
-reads and the art it names) and the exporter. `wfws.sdk` is 0.16.2 and ships
+reads and the art it names) and the exporter. `wfws.sdk` is 0.16.3 and ships
 inside every export.
 
 Validated by the full check set in §11: `lint`, `build`, `gen_test_pack` (58

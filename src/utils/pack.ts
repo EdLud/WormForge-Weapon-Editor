@@ -111,10 +111,20 @@ export function retargetWeaponArt(
   toFolder: string,
 ): WeaponProject {
   if (!fromFolder || fromFolder === toFolder) return project;
-  const from = `sprites/${fromFolder}/`;
-  const to = `sprites/${toFolder}/`;
-  const move = (path: string | undefined): string | undefined =>
-    typeof path === 'string' && path.startsWith(from) ? `${to}${path.slice(from.length)}` : path;
+  const fromSprites = `sprites/${fromFolder}/`;
+  const toSprites = `sprites/${toFolder}/`;
+  const fromSounds = `sounds/${fromFolder}/`;
+  const toSounds = `sounds/${toFolder}/`;
+  const move = (path: string | undefined): string | undefined => {
+    if (typeof path !== 'string') return path;
+    if (path.startsWith(fromSprites)) return `${toSprites}${path.slice(fromSprites.length)}`;
+    if (path.startsWith(fromSounds)) return `${toSounds}${path.slice(fromSounds.length)}`;
+    return path;
+  };
+  const escapedFrom = fromFolder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const literalPattern = new RegExp(`(["'])(sprites|sounds)/${escapedFrom}/([^"']*)\\1`, 'g');
+  const rewriteLuaPaths = (text: string): string =>
+    text.replace(literalPattern, (_whole, quote: string, kind: string, rest: string) => `${quote}${kind}/${toFolder}/${rest}${quote}`);
 
   const hold = project.hold ? { ...project.hold, sheet: move(project.hold.sheet) ?? project.hold.sheet } : project.hold;
   const missileSprite = project.missileSprite
@@ -130,14 +140,32 @@ export function retargetWeaponArt(
   const carriedLua = project.carriedLua
     ? {
         ...project.carriedLua,
-        art: {
-          sprites: (carriedArt?.sprites ?? []).map((path) => move(path) ?? path),
-          sounds: (carriedArt?.sounds ?? []).map((path) => move(path) ?? path),
-          soundFiles: carriedArt?.soundFiles?.map((entry) => ({
-            ...entry,
-            path: move(entry.path) ?? entry.path,
-          })),
-        },
+        preamble: project.carriedLua.preamble.map((block) => ({
+          ...block,
+          text: rewriteLuaPaths(block.text),
+        })),
+        prologue: project.carriedLua.prologue.map((block) => ({
+          ...block,
+          text: rewriteLuaPaths(block.text),
+        })),
+        hooks: project.carriedLua.hooks?.map((hook) => ({
+          ...hook,
+          text: rewriteLuaPaths(hook.text),
+        })),
+        registrations: project.carriedLua.registrations?.map((registration) => ({
+          ...registration,
+          text: rewriteLuaPaths(registration.text),
+        })),
+        art: carriedArt
+          ? {
+              sprites: (carriedArt.sprites ?? []).map((path) => move(path) ?? path),
+              sounds: (carriedArt.sounds ?? []).map((path) => move(path) ?? path),
+              soundFiles: carriedArt.soundFiles?.map((entry) => ({
+                ...entry,
+                path: move(entry.path) ?? entry.path,
+              })),
+            }
+          : undefined,
       }
     : project.carriedLua;
 

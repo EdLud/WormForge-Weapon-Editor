@@ -107,6 +107,10 @@ export interface ModWeapon {
   resolvedVia?: ModuleRoute;
   /** The component's declared settings (`ctx.option` reads these). */
   options?: ModOption[];
+  /** `[[components.weapon_options]]` entries parsed from the component. */
+  weaponOptions?: ModOption[];
+  /** `[components.suggests."<feature>"]` tables parsed from the component. */
+  suggests?: Record<string, Record<string, unknown>>;
   /** `ctx.option("k")` / `ctx.options.k` keys the module reads, in file order. */
   optionReads?: string[];
   /** Modules the weapon's own module requires, bundle-relative where resolved. */
@@ -312,14 +316,45 @@ const RECORD_GROUPS = [
 /** True when a table looks like a weapon record rather than a config blob. */
 function looksLikeRecord(table: LuaTable | undefined): boolean {
   if (!table) return false;
-  return RECORD_KEYS.some((key) => isTable(table[key]));
+  return RECORD_GROUPS.some((key) => isTable(table[key]));
+}
+
+/** `require("lib/weapon").merge(base, overrides)` in TS. */
+function mergeLuaTables(base: LuaTable | undefined, overrides: LuaTable): LuaTable {
+  const out: LuaTable = {};
+  if (base) {
+    for (const [k, v] of Object.entries(base)) {
+      out[k] = isTable(v) ? mergeLuaTables(v, {}) : v;
+    }
+  }
+  for (const [k, v] of Object.entries(overrides)) {
+    if (isTable(v)) {
+      const prev = out[k];
+      out[k] = mergeLuaTables(isTable(prev) ? prev : undefined, v);
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
 }
 
 /** The first table anywhere in the scan that has a record's shape. */
 function findRecordLike(scan: ReturnType<typeof scanLua>): LuaTable | undefined {
+  const nested: LuaTable[] = [];
+  for (const table of Object.values(scan.assignments)) {
+    // Nested `weapon = { definition = { ... } }` or `weapon = { record = { ... } }`:
+    // check named subtables before generic nested tables so `defaults` or config
+    // helpers inside `weapon` cannot shadow the definition table.
+    if (isTable(table.definition)) nested.push(table.definition);
+    if (isTable(table.record)) nested.push(table.record);
+    for (const [k, v] of Object.entries(table)) {
+      if (k !== 'definition' && k !== 'record' && isTable(v)) nested.push(v);
+    }
+  }
   const candidates: LuaTable[] = [
     ...Object.values(scan.assignments),
     ...Object.values(scan.calls),
+    ...nested,
   ];
   const returned = scan.returned;
   if (returned) {
@@ -333,12 +368,19 @@ function findRecordLike(scan: ReturnType<typeof scanLua>): LuaTable | undefined 
   return candidates.find(looksLikeRecord);
 }
 
-/** `require("lib/x")` targets, in file order. */
+/** `require("lib/x")` targets plus `weapon.requires = { "lib/x" }` arrays, in file order. */
 function requiresOf(text: string): string[] {
   const out: string[] = [];
+  const push = (name: string) => {
+    if (name && !out.includes(name)) out.push(name);
+  };
   const pattern = /require\(\s*["']([^"']+)["']\s*\)/g;
   let match: RegExpExecArray | null;
-  while ((match = pattern.exec(text))) out.push(match[1]);
+  while ((match = pattern.exec(text))) push(match[1]);
+  const depArray = /(?:^|[^A-Za-z0-9_])(?:weapon\.)?requires\s*=\s*\{([^}]*)\}/g;
+  while ((match = depArray.exec(text))) {
+    for (const item of match[1].matchAll(/["']([^"']+)["']/g)) push(item[1]);
+  }
   return out;
 }
 
@@ -362,14 +404,47 @@ function readRecord(text: string): {
   const replace =
     scan.calls['wa.weapons.replace'] ?? (ref ? firstTable(scan, ref) : undefined);
   const assigned = firstTable(scan, 'record', 'weapon.record');
+  const definition =
+    firstTable(scan, 'definition', 'weapon.definition') ??
+    (isTable(scan.assignments['weapon']?.definition)
+      ? (scan.assignments['weapon']!.definition as LuaTable)
+      : undefined);
   const returned = scan.returned;
   const returnedRecord = isTable(returned?.record) ? (returned!.record as LuaTable) : undefined;
 
+  // `require("lib/weapon").merge(weapon.record, { copy_from = "...", ... })`:
+  // combine the base record with the override table when present so claim keys
+  // (`copy_from`, `wep`, `hold`, `worm_sprites`, callbacks) travel with it.
+  let merged: LuaTable | undefined;
+  for (const call of scan.merges) {
+    const base =
+      call.baseTable ??
+      (call.baseRef ? (firstTable(scan, call.baseRef) ?? scan.assignments[call.baseRef]) : undefined);
+    const candidate = mergeLuaTables(base, call.overrides);
+    if (
+      looksLikeRecord(candidate) ||
+      typeof candidate.copy_from === 'string' ||
+      typeof candidate.wep === 'string'
+    ) {
+      merged = candidate;
+      break;
+    }
+  }
+
   const source =
-    replace ?? assigned ?? returnedRecord ?? (looksLikeRecord(returned) ? returned : undefined) ?? findRecordLike(scan);
+    replace ??
+    merged ??
+    definition ??
+    assigned ??
+    returnedRecord ??
+    (looksLikeRecord(returned) ? returned : undefined) ??
+    findRecordLike(scan);
   const defaults = isTable(returned?.defaults)
     ? (returned!.defaults as LuaTable)
-    : firstTable(scan, 'defaults', 'weapon.defaults');
+    : firstTable(scan, 'defaults', 'weapon.defaults') ??
+      (isTable(scan.assignments['weapon']?.defaults)
+        ? (scan.assignments['weapon']!.defaults as LuaTable)
+        : undefined);
 
   // A `.wep` filename is a string literal ending in `.wep` anywhere in the
   // module; PyroMan builds the path by concatenation (`M.WEP .. o.wep`), so the
@@ -394,6 +469,8 @@ function readRecord(text: string): {
   for (const group of RECORD_GROUPS) {
     if (source[group] !== undefined) record[group] = source[group];
   }
+  // Cursor selection flag (`on_select = { cursor = true }`), consumed by `mapRecord`.
+  if (isTable(source.on_select)) record.on_select = source.on_select;
 
   return { record, source, defaults, copyFrom, sprite, clusterSprite, wepNames };
 }
@@ -551,6 +628,8 @@ export function readWeapons(bundles: ModBundle[], files: ModFile[]): ModWeapon[]
         column: component.column,
         modulePath: '',
         options: component.options,
+        weaponOptions: component.weaponOptions.length > 0 ? component.weaponOptions : undefined,
+        suggests: Object.keys(component.suggests).length > 0 ? component.suggests : undefined,
       };
 
       // The weapon's own module is the first candidate that is a file; the

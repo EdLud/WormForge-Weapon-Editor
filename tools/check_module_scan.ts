@@ -17,9 +17,11 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import JSZip from 'jszip';
 import { readBundles, readWeapons, type ModFile } from '../src/utils/modLib/scan';
+import { importBundleWeapon } from '../src/utils/modLib/importWeapon';
 import { parseToml } from '../src/utils/modLib/modToml';
 import { generateModToml } from '../src/utils/luaGenerator';
 import { stockDonor } from '../src/data/stockDonors';
+import type { WeaponProject } from '../src/types/weapon';
 
 let failures = 0;
 let checks = 0;
@@ -571,6 +573,171 @@ if (!all) {
     'every miss says why',
     misses.filter((weapon) => !weapon.error).map((weapon) => weapon.componentId).join(','),
   );
+}
+
+// ---------------------------------------------------------------------------
+// 14. suggests pass-through and non-missile donor fireType fallback.
+{
+  const modFiles: ModFile[] = [
+    {
+      path: 'spray/mod.toml',
+      text: `id = "t.spray"
+name = "Spray Test"
+version = "1.0.0"
+[[components]]
+id = "t.spray.torch"
+type = "weapon"
+name = "Torch"
+entry = "weapons/torch.lua"
+[components.suggests."hl.rules"]
+pool = "movement"
+`,
+    },
+    {
+      path: 'spray/weapons/torch.lua',
+      text: `wa.weapons.replace{
+  copy_from = "stock.flame_thrower",
+  handling = { shots = 2 },
+}`,
+    },
+  ];
+  const bundles = readBundles(modFiles);
+  const weapons = readWeapons(bundles, modFiles);
+  const w = weapons[0];
+  ok(w?.suggests?.['hl.rules']?.pool === 'movement', 'ModWeapon carries suggests');
+  if (w) {
+    const imported = await importBundleWeapon(w, modFiles);
+    const project = imported.project as WeaponProject;
+    ok(
+      project.fireType === 'spray',
+      'Lua-only weapon without missile table keeps non-missile donor fireType',
+      String(project.fireType),
+    );
+    const toml = generateModToml(project);
+    ok(
+      toml.includes('[components.suggests."hl.rules"]') && toml.includes('pool = "movement"'),
+      'exported mod.toml re-emits suggests table',
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 15. PX .merge(), nested weapon.definition, utility/on_select, requires, missile_sprite.
+{
+  const pxFiles: ModFile[] = [
+    {
+      path: 'px/mod.toml',
+      text: `id = "px.ports"
+name = "Project X"
+version = "1.0.0"
+[[components]]
+id = "px.merge_bomb"
+type = "weapon"
+name = "Merge Bomb"
+entry = "weapons/merge_bomb.lua"
+[[components]]
+id = "px.nest_util"
+type = "weapon"
+name = "Nested Utility"
+entry = "weapons/nest_util.lua"
+`,
+    },
+    {
+      path: 'px/lib/weapon.lua',
+      text: `return { merge = function(a, b) return b end }`,
+    },
+    {
+      path: 'px/lib/shared.lua',
+      text: `return {}`,
+    },
+    {
+      path: 'px/weapons/merge_bomb.lua',
+      text: `local ART = "sprites/merge_bomb/"
+local weapon = {}
+weapon.requires = { "lib/shared" }
+weapon.record = { missile = { countdown = 4000 } }
+weapon.defaults = { auto_use = true, donor_card = true }
+weapon.missile_sprite = {
+  { sheet = ART .. "bomb.png", frames = 4, spin = true, spin_speed = 0.75, hide = true, first_sprite = 50 },
+  { sheet = ART .. "bit.png", frames = 1, upright = true, hide = true, first_sprite = 51 },
+}
+function weapon.definition()
+  return require("lib/weapon").merge(weapon.record, {
+    copy_from = "stock.mb_bomb",
+    name = "Merge Bomb",
+    airborne = true,
+  })
+end
+function weapon.configure(ctx, spec)
+  local _ = ctx.placed
+  spec.missile.fuse = 1000
+end
+return weapon`,
+    },
+    {
+      path: 'px/weapons/nest_util.lua',
+      text: `local weapon = {
+  definition = {
+    copy_from = "stock.double_turn_time",
+    utility = { effect = "scripted" },
+    on_select = { cursor = true },
+  },
+}
+return weapon`,
+    },
+  ];
+  const bundles = readBundles(pxFiles);
+  const weapons = readWeapons(bundles, pxFiles);
+  const mergeBomb = weapons.find((w) => w.componentId === 'px.merge_bomb');
+  const nestUtil = weapons.find((w) => w.componentId === 'px.nest_util');
+  ok(!!mergeBomb?.record && mergeBomb.copyFrom === 'stock.mb_bomb', 'merge() resolves record and copy_from');
+  ok(
+    (mergeBomb?.requires ?? []).includes('px/lib/shared.lua'),
+    'weapon.requires array is collected in module requires',
+    JSON.stringify(mergeBomb?.requires),
+  );
+  ok(
+    !!nestUtil?.record?.utility && !!nestUtil?.record?.on_select,
+    'nested weapon.definition resolves utility group and on_select table',
+  );
+  if (mergeBomb) {
+    const imported = await importBundleWeapon(mergeBomb, pxFiles);
+    ok(imported.project.slot === 'mb_bomb', 'mergeBomb keeps mb_bomb donor slot');
+    ok(
+      imported.project.missileSprite?.enabled === true &&
+        imported.project.missileSprite.sheet === 'sprites/merge_bomb/bomb.png' &&
+        imported.project.missileSprite.anim === 'rotation' &&
+        imported.project.missileSprite.spinRate === 0.75 &&
+        imported.project.missileSprite.frames === 4,
+      'PX missile_sprite resolves ART concat and spin settings',
+      JSON.stringify(imported.project.missileSprite),
+    );
+    ok(
+      imported.project.bitFlight?.mode === 'builder' &&
+        imported.project.bitFlight.anim === 'none',
+      'PX two-entry missile_sprite populates cluster bitFlight',
+    );
+    ok(
+      imported.notes.some((n) => n.includes('unmodelled defaults:') && n.includes('auto_use')),
+      'unmodelled weapon.defaults keys are reported',
+    );
+    ok(
+      imported.notes.some((n) => n.includes('claim flags not re-emitted:') && n.includes('airborne')),
+      'unmodelled Claim flags are reported',
+    );
+    ok(
+      imported.notes.some((n) => n.includes('weapon.configure(ctx, spec)')),
+      'weapon.configure(ctx, spec) override is reported',
+    );
+    ok(
+      imported.notes.some((n) => n.includes('ctx.placed')),
+      'ctx.placed match-state read is reported',
+    );
+  }
+  if (nestUtil) {
+    const imported = await importBundleWeapon(nestUtil, pxFiles);
+    ok(imported.project.fireType === 'special' && imported.project.teleport === true, 'utility + on_select cursor maps to special + teleport');
+  }
 }
 
 console.log(

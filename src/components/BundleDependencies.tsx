@@ -1,8 +1,7 @@
 import { useState } from 'react';
 import type { WeaponProject } from '../types/weapon';
 import { Boxes, Plus, X } from 'lucide-react';
-import { usesWfwsBuilder } from '../data/spriteBuilder';
-import { holdNeedsAimLayer } from '../utils/luaGenerator';
+import { autoDependenciesForProject } from '../utils/luaGenerator';
 
 interface BundleDependenciesProps {
   project: WeaponProject;
@@ -18,47 +17,7 @@ export function BundleDependencies({ project, onChange }: BundleDependenciesProp
   const [draft, setDraft] = useState('');
   const [error, setError] = useState<string | null>(null);
 
-  const auto: { id: string; reason: string }[] = [];
-  if (project.hold?.enabled) {
-    auto.push({ id: 'wf.sdk', reason: 'hold art builder' });
-  }
-  // The aim layer is `wfws.sdk`'s, so anything that forces the quads (an
-  // offset, a firing role, a swing, a strike, an aim clamp, a second hand)
-  // needs the library even when the flight builder is off.
-  if (usesWfwsBuilder(project)) {
-    auto.push({ id: 'wfws.sdk', reason: 'flight sprite builder' });
-  } else if (holdNeedsAimLayer(project)) {
-    auto.push({ id: 'wfws.sdk', reason: 'aim layer' });
-  }
-  const customOnExplode =
-    !!project.enableCustomLua &&
-    /^\s*on_explode\s*=/m.test(project.customLuaSnippet || '');
-  const ribbonTrail =
-    !!project.ribbonTrail?.enabled &&
-    (project.fireType === 'power' || (project.fireType === 'drop' && !!project.body.fuse));
-  const explosion =
-    !!project.explosionEffect?.enabled &&
-    !customOnExplode &&
-    (project.fireType === 'power' || project.fireType === 'drop');
-  // An electric blast hands custom_explosion the taze module from `px.electric`
-  // (`zap = require("wf-lib/electric/damage")`), so the library is a real
-  // dependency, not a nicety.
-  const electricBlast =
-    !!project.explosionEffect?.enabled &&
-    project.explosionEffect.mode === 'blast' &&
-    project.explosionEffect.damageType === 'electric' &&
-    (project.fireType === 'power' || project.fireType === 'drop');
-  if (ribbonTrail) auto.push({ id: 'effects.sdk', reason: 'ribbon trail' });
-  if (explosion) auto.push({ id: 'effects.sdk', reason: 'explosion burst' });
-  // The pierce arms its hit the same way, with or without a stamp or a burst.
-  // The pierce only runs with the stamp card on, so listing the library for an
-  // inert checkbox would be a lie.
-  const electricPierce =
-    !!project.terrainStamp?.enabled &&
-    !!project.terrainStamp?.impact?.enabled &&
-    project.terrainStamp.impact.kind === 'taze';
-  if (electricBlast) auto.push({ id: 'px.electric', reason: 'electric blast taze' });
-  if (electricPierce) auto.push({ id: 'px.electric', reason: 'electrical pierce taze' });
+  const auto = autoDependenciesForProject(project);
 
   // One row per id, with every feature that pulled it in.
   const autoById = new Map<string, string[]>();
@@ -203,6 +162,7 @@ export function BundleDependencies({ project, onChange }: BundleDependenciesProp
             { id: 'effects.sdk', hint: 'Project X effects (trail, bursts, emitters)' },
             { id: 'wf.sdk', hint: 'WormForge SDK (holds, shared sprites)' },
             { id: 'wfws.sdk', hint: 'WFWS flight sprite builder (primary, bits, states)' },
+            { id: 'px.fire_seq', hint: 'Sequential-fire burst library (wf-lib/fire_seq)' },
             { id: 'px.electric', hint: 'Project X electric hold (tazed blast, electric weapons)' },
           ].map((entry) => (
             <button

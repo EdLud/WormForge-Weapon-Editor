@@ -13,6 +13,7 @@ import {
   generatePackProfile,
   generatePackToml,
   singleWeaponPack,
+  availableRequiresForCheck,
   bitFlightSheetPath,
   behaviorStateSheetPath,
   customSoundPath,
@@ -41,7 +42,7 @@ import {
   dedupeSheets,
 } from './sheetDedupe';
 import { checkLua } from './luaCheck';
-import { isUnderNamespace } from './weaponId';
+import { ID_MAX, isUnderNamespace } from './weaponId';
 import {
   createDefaultHoldSheet,
   createDefaultMissileSheet,
@@ -438,9 +439,22 @@ export function validateBundle(
   const problems: string[] = [];
   const present = (path: string) => files.has(`${folder}/${safeBundlePath(path) ?? path}`);
   const seen = new Set<string>();
+  const seenFolders = new Map<string, string>();
   for (const project of pack.weapons) {
     if (seen.has(project.id)) problems.push(`${project.id} is declared twice`);
     seen.add(project.id);
+    if (project.id.length > ID_MAX) {
+      problems.push(`${project.id} exceeds ${ID_MAX} characters`);
+    }
+    const weaponDir = sanitizeModFolder(project.id).toLowerCase();
+    const existingOwner = seenFolders.get(weaponDir);
+    if (existingOwner && existingOwner !== project.id) {
+      problems.push(
+        `${project.id} shares output folder \`${weaponDir}\` with ${existingOwner}`,
+      );
+    } else {
+      seenFolders.set(weaponDir, project.id);
+    }
     // The bundle id is the namespace: an id under it cannot collide with an
     // installed bundle, because that bundle's own id is unique and this one is
     // different. Nothing here tests for a fixed prefix, because a prefix is not
@@ -456,6 +470,16 @@ export function validateBundle(
     const path = match[1];
     if (!present(path)) problems.push(`\`${path}\` is not in the bundle`);
   }
+  const modIconMatch = /^mod_icon = "([^"]+)"/m.exec(modToml);
+  if (modIconMatch && !present(modIconMatch[1])) {
+    problems.push(`declared mod_icon \`${modIconMatch[1]}\` is not in the bundle`);
+  }
+  for (const match of modToml.matchAll(/^icon = "([^"]+)"/gm)) {
+    const path = match[1];
+    if (path.includes('/') && !present(path)) {
+      problems.push(`declared icon \`${path}\` is not in the bundle`);
+    }
+  }
   const declared = new Map<string, number>();
   for (const match of modToml.matchAll(/\[sprites\."([^"]+)"\]/g)) {
     const path = match[1];
@@ -465,6 +489,19 @@ export function validateBundle(
   for (const [path, count] of declared) {
     if (count > 1) problems.push(`\`${path}\` is declared ${count} times`);
   }
+
+  const depsMatch = /^dependencies\s*=\s*\[([\s\S]*?)\]/m.exec(modToml);
+  const manifestDeps = depsMatch
+    ? [...depsMatch[1].matchAll(/"([^"]+)"/g)].map((m) => m[1])
+    : [];
+  const prefix = `${folder}/`;
+  const localLuaModules: string[] = [];
+  for (const filePath of files.keys()) {
+    if (filePath.startsWith(prefix) && filePath.endsWith('.lua')) {
+      localLuaModules.push(filePath.slice(prefix.length, -4));
+    }
+  }
+
   // The code half: read each weapon's module out of the bundle it is about to be
   // written into, so what is checked is what the engine will run.
   for (const project of pack.weapons) {
@@ -474,7 +511,21 @@ export function validateBundle(
       problems.push(`\`${path}\` was not generated`);
       continue;
     }
-    const blocking = checkLua(source, { mode: 'module' }).filter(
+    const wepMatch = /\bwep\s*=\s*"([^"]+\.wep)"/i.exec(source);
+    if (wepMatch && !present(wepMatch[1])) {
+      problems.push(`${project.name || project.id}: \`${wepMatch[1]}\` is not in the bundle`);
+    }
+    const soundsMatch = /\bsounds\s*=\s*\{([^}]*)\}/.exec(source);
+    if (soundsMatch) {
+      for (const s of soundsMatch[1].matchAll(/"([^"]+)"/g)) {
+        const wav = s[1];
+        if (!present(wav)) {
+          problems.push(`${project.name || project.id}: declared sound \`${wav}\` is not in the bundle`);
+        }
+      }
+    }
+    const availableRequires = availableRequiresForCheck(source, manifestDeps, localLuaModules);
+    const blocking = checkLua(source, { mode: 'module', availableRequires }).filter(
       (finding) => finding.severity === 'error',
     );
     if (blocking.length > 0) {

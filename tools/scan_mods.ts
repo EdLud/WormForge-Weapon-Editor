@@ -21,6 +21,7 @@ import JSZip from 'jszip';
 import { readBundles, readWeapons, type ModFile } from '../src/utils/modLib/scan';
 
 const TEXT = /\.(lua|toml)$/i;
+const WEP = /\.wep$/i;
 
 async function readFolder(root: string): Promise<ModFile[]> {
   const files: ModFile[] = [];
@@ -31,9 +32,13 @@ async function readFolder(root: string): Promise<ModFile[]> {
         walk(full);
         continue;
       }
-      if (!TEXT.test(entry.name)) continue;
-      const path = relative(root, full).split(sep).join('/');
-      files.push({ path, text: readFileSync(full, 'utf8') });
+      if (TEXT.test(entry.name)) {
+        const path = relative(root, full).split(sep).join('/');
+        files.push({ path, text: readFileSync(full, 'utf8') });
+      } else if (WEP.test(entry.name)) {
+        const path = relative(root, full).split(sep).join('/');
+        files.push({ path, text: '', bytes: new Uint8Array(readFileSync(full)) });
+      }
     }
   };
   walk(root);
@@ -44,8 +49,12 @@ async function readZip(path: string): Promise<ModFile[]> {
   const zip = await JSZip.loadAsync(readFileSync(path));
   const files: ModFile[] = [];
   for (const [name, entry] of Object.entries(zip.files)) {
-    if (entry.dir || !TEXT.test(name)) continue;
-    files.push({ path: name, text: await entry.async('string') });
+    if (entry.dir) continue;
+    if (TEXT.test(name)) {
+      files.push({ path: name, text: await entry.async('string') });
+    } else if (WEP.test(name)) {
+      files.push({ path: name, text: '', bytes: await entry.async('uint8array') });
+    }
   }
   return files;
 }

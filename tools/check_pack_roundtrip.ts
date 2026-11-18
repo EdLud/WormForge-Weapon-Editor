@@ -585,10 +585,25 @@ const DECLARED_HOLD = /\[sprites\."[^"]*\/hold\.png"\]/g;
       x: { purpose: 'trail', name: 'x', path: 'sprites/rocket/trail.png', previewUrl: '', frames: 1, fps: 15, play: 'loop' },
     },
     carriedLua: {
-      preamble: [],
+      preamble: [
+        {
+          origin: 'preamble',
+          text: 'local HOLE = "sprites/rocket/hole.png"',
+          declares: ['HOLE'],
+          requires: [],
+          line: 1,
+          neededBy: ['on_explode'],
+        },
+      ],
       prologue: [],
       unresolved: [],
-      hooks: [],
+      hooks: [
+        {
+          key: 'on_fire',
+          text: 'function(ev) wa.sound.play(ev.worm, "sounds/rocket/x.wav", 5) end',
+          line: 2,
+        },
+      ],
       registrations: [],
       art: { sprites: ['sprites/rocket/hole.png'], sounds: ['sounds/rocket/x.wav'] },
     },
@@ -602,8 +617,10 @@ const DECLARED_HOLD = /\[sprites\."[^"]*\/hold\.png"\]/g;
       copy.missileSprite?.sheet === 'sprites/rocket_copy/missile.png' &&
       copy.customSprites.x?.path === 'sprites/rocket_copy/trail.png' &&
       copy.carriedLua?.art?.sprites[0] === 'sprites/rocket_copy/hole.png' &&
-      copy.carriedLua?.art?.sounds[0] === 'sounds/rocket/x.wav',
-    `${copy.hold?.sheet} ${copy.missileSprite?.sheet} ${copy.customSprites.x?.path} ${copy.carriedLua?.art?.sprites[0]}`,
+      copy.carriedLua?.art?.sounds[0] === 'sounds/rocket_copy/x.wav' &&
+      !!copy.carriedLua?.preamble[0]?.text.includes('sprites/rocket_copy/hole.png') &&
+      !!copy.carriedLua?.hooks?.[0]?.text.includes('sounds/rocket_copy/x.wav'),
+    `${copy.hold?.sheet} ${copy.missileSprite?.sheet} ${copy.customSprites.x?.path} ${copy.carriedLua?.art?.sprites[0]} ${copy.carriedLua?.art?.sounds[0]}`,
   );
   ok('and the original is untouched', dup.pack.weapons[0].hold?.sheet === 'sprites/rocket/hold.png');
 
@@ -751,6 +768,54 @@ const DECLARED_HOLD = /\[sprites\."[^"]*\/hold\.png"\]/g;
   ok(
     'one sheet declared twice is refused',
     message.includes('`sprites/pack/hold.png` is declared 2 times'),
+    message || 'no error',
+  );
+
+  // Two distinct weapon ids whose last segment collides overwrite the same Lua module and sprite folder.
+  const folderClashA = bareProject({ id: 'wfws.pack.a.bomb', name: 'Bomb A' });
+  const folderClashB = bareProject({ id: 'wfws.pack.b.bomb', name: 'Bomb B' });
+  try {
+    await emitPack(pack([folderClashA, folderClashB]));
+    message = '';
+  } catch (error) {
+    message = (error as Error).message;
+  }
+  ok(
+    'colliding output folders across distinct ids are refused',
+    message.includes('shares output folder `bomb`'),
+    message || 'no error',
+  );
+
+  // Requiring a known SDK module without its bundle dependency is refused at export.
+  const missingDep = bareProject({
+    id: 'wfws.pack.missing_dep',
+    name: 'Missing Dep',
+    carriedLua: {
+      preamble: [
+        {
+          origin: 'preamble',
+          text: 'local trail = require("wf-lib/effects/trail")',
+          declares: ['trail'],
+          requires: ['wf-lib/effects/trail'],
+          line: 1,
+          neededBy: ['on_explode'],
+        },
+      ],
+      prologue: [],
+      unresolved: [],
+      hooks: [],
+      registrations: [],
+    },
+  });
+  try {
+    await emitPack(pack([missingDep]));
+    message = '';
+  } catch (error) {
+    message = (error as Error).message;
+  }
+  ok(
+    'an undeclared SDK require refuses the export',
+    message.includes('undeclared-require'),
     message || 'no error',
   );
 }

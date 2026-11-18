@@ -4683,3 +4683,35 @@ catalogue it reads is full of multi-weapon bundles, so the library cannot assume
 one, and `tools/lua/harness_effects.py` now asserts the whole rule: the installer's
 own effect painted by one callback, a sibling's adopted by that same callback and
 painted once, a feature component's too, and an unrelated id painted by none.
+
+## 2026-11-18, bits are timed, not read from m.sprite
+
+`banana_cluster` shipped a cluster grenade whose **main** missile drew the
+clustlet art and whose bits drew nothing recognisable: the builder still
+classified by `m.sprite ~= 0`. That test was wrong for this record. WA's render
+slot is not the pellet index: a round whose own `missile.sprite` is zero can
+carry `clusters.bit.sprite` there, and the actual bit flag
+(`MissileEntity+0x150`) is not exposed to Lua. The "flip" in the 2026-11-11 note
+(`m.sprite == 0` is a bit) is the same guess read the other way and is equally
+unreliable.
+
+`classify` now uses the one signal that follows how WA builds a burst:
+
+- the first missile of the weapon is the round;
+- a missile first seen within `bit_window` frames (default 5) of the round's
+  last sighting **and** within `bit_radius` (default 64 px) of the round's last
+  position is a bit;
+- a missile fired while another round is still in the air, or away from the
+  dead round, is another round (a fire sequence), not a bit.
+
+The bits are constructed by `CreateClusters` at the round's own position in its
+detonation, so both conditions hold for every frag and for no muzzle shot. The
+first missile needs no `m.sprite` exception, including a roaming animal WA
+walks itself. `is_bit` still overrides, and a future `m.bit` is preferred when
+a build exposes it. `tools/lua/harness_flight.py` now pins the banana case (a
+round carrying `clustlet` is a round, its follow-up missiles are bits), the
+fire-sequence case (a second live round is not a frag), and the position rule.
+
+The generator still forces a stock `clusters.bit.sprite` (`clustlet`) and
+`sprite_count = 1` when the builder owns the bits: a bit needs a real sprite id
+for WA to construct it, even though the builder replaces the draw.

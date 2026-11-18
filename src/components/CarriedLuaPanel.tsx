@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import type { CarriedLua, WeaponProject } from '../types/weapon';
 import { FileCode2, Power } from 'lucide-react';
-import { generateLuaCode } from '../utils/luaGenerator';
+import { availableRequiresForCheck, generateLuaCode, weaponManifestPart } from '../utils/luaGenerator';
 import { checkLua } from '../utils/luaCheck';
 import { LuaFindings } from './LuaFindings';
 
@@ -60,10 +60,14 @@ const lineCount = (text: string) => text.split('\n').length;
 export const CarriedLuaPanel: React.FC<CarriedLuaPanelProps> = ({ project, onChange }) => {
   const carried = project.carriedLua;
   const luaCode = useMemo(() => (carried ? generateLuaCode(project) : ''), [carried, project]);
-  const carriedFindings = useMemo(
-    () => (carried ? checkLua(luaCode, { mode: 'fragment' }).filter((finding) => finding.notGenerated) : []),
-    [carried, luaCode],
-  );
+  const carriedFindings = useMemo(() => {
+    if (!carried) return [];
+    const deps = weaponManifestPart(project).dependencies;
+    const availableRequires = availableRequiresForCheck(luaCode, deps);
+    return checkLua(luaCode, { mode: 'module', availableRequires }).filter(
+      (finding) => finding.notGenerated,
+    );
+  }, [carried, luaCode, project]);
 
   if (!carried) return null;
 

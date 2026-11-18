@@ -4532,74 +4532,142 @@ export interface WeaponManifestPart {
   block: string;
 }
 
-export function weaponManifestPart(project: WeaponProject): WeaponManifestPart {
-  const modFolder = sanitizeModFolder(project.id);
-  const pos = getStockPanelPosition(project.slot);
-  const icon = project.customIconFile ? `sprites/${modFolder}/icon.png` : (project.panel_icon || project.slot);
-  const usesHold = project.hold && project.hold.enabled;
-  // The primary, bit and state roles all come from the WFWS builder, which is
-  // its own library bundle (`wfws.sdk`). It depends on `wf.sdk` for `holds`.
-  // The aiming manager (`sb.hold`) ships in the same bundle, so a hold that
-  // needs the quad layer pulls it in too.
+/** Known SDK bundles and the public `wf-lib/*` modules they export. */
+export const SDK_MODULE_EXPORTS: Record<string, string[]> = {
+  'wf.sdk': [
+    'wf-lib/holds',
+    'wf-lib/own_time',
+    'wf-lib/shared',
+    'wf-lib/parkour',
+    'wf-lib/tooltip',
+    'wf-lib/lightning',
+    'wf-lib/px_sprite_builder',
+    'wf-lib/sdk',
+  ],
+  'wfws.sdk': ['wf-lib/wfws_sprite_builder'],
+  'effects.sdk': [
+    'wf-lib/effects/trail',
+    'wf-lib/effects/px_effects',
+    'wf-lib/effects/custom_explosion',
+  ],
+  'px.fire_seq': ['wf-lib/fire_seq', 'wf-lib/px_hold_art', 'wf-lib/seq-spb'],
+  'px.electric': ['wf-lib/electric/damage', 'wf-lib/electric/hold'],
+};
+
+const SDK_MODULE_PREFIXES: { prefix: string; id: string }[] = [
+  { prefix: 'wf-lib/holds', id: 'wf.sdk' },
+  { prefix: 'wf-lib/own_time', id: 'wf.sdk' },
+  { prefix: 'wf-lib/shared', id: 'wf.sdk' },
+  { prefix: 'wf-lib/parkour', id: 'wf.sdk' },
+  { prefix: 'wf-lib/tooltip', id: 'wf.sdk' },
+  { prefix: 'wf-lib/lightning', id: 'wf.sdk' },
+  { prefix: 'wf-lib/px_sprite_builder', id: 'wf.sdk' },
+  { prefix: 'wf-lib/sdk', id: 'wf.sdk' },
+  { prefix: 'wf-lib/wfws_sprite_builder', id: 'wfws.sdk' },
+  { prefix: 'wf-lib/wfws_sdk/', id: 'wfws.sdk' },
+  { prefix: 'wf-lib/effects/', id: 'effects.sdk' },
+  { prefix: 'wf-lib/fire_seq', id: 'px.fire_seq' },
+  { prefix: 'wf-lib/px_hold_art', id: 'px.fire_seq' },
+  { prefix: 'wf-lib/seq-spb', id: 'px.fire_seq' },
+  { prefix: 'wf-lib/electric/', id: 'px.electric' },
+];
+
+/**
+ * Resolve the list of `require(...)` targets allowed for `checkLua(..., { availableRequires })`
+ * given a bundle's declared `dependencies` and any bundle-local `.lua` modules.
+ *
+ * Known SDK modules whose owning bundle is missing from `dependencies` are always
+ * excluded so `undeclared-require` catches them even when unrelated third-party
+ * dependencies are declared; modules from unrecognized external dependencies are
+ * permitted through unless they match an un-declared known SDK prefix.
+ */
+export function availableRequiresForCheck(
+  luaSource: string,
+  dependencies: string[],
+  localModules: string[] = [],
+): string[] {
+  const depSet = new Set(dependencies);
+  const allowed = new Set<string>(localModules);
+  for (const dep of depSet) {
+    for (const mod of SDK_MODULE_EXPORTS[dep] ?? []) allowed.add(mod);
+  }
+  const hasExternalDep = [...depSet].some((dep) => !(dep in SDK_MODULE_EXPORTS));
+  if (hasExternalDep) {
+    const reqPattern = /(?:^|[^A-Za-z0-9_.])require\s*\(\s*["']([^"']+)["']\s*\)/g;
+    let m: RegExpExecArray | null;
+    while ((m = reqPattern.exec(luaSource)) !== null) {
+      const target = m[1];
+      const owner = SDK_MODULE_PREFIXES.find((entry) => target.startsWith(entry.prefix));
+      if (!owner || depSet.has(owner.id)) allowed.add(target);
+    }
+  }
+  return [...allowed];
+}
+
+/**
+ * The automatic library dependencies a weapon's enabled panels require, with
+ * human-readable reasons for the Dependencies panel and the single list for
+ * `mod.toml`.
+ */
+export function autoDependenciesForProject(
+  project: WeaponProject,
+): { id: string; reason: string }[] {
+  const usesHold = !!(project.hold && project.hold.enabled);
   const usesWfws = usesWfwsBuilder(project) || holdNeedsAimLayer(project);
-  // An electrical melee strike hits through `px.electric`'s damage module, the
-  // same one the burst and the pierce use: a declared dependency must exist.
   const usesElectricMelee = !!project.melee?.enabled && project.melee.kind === 'taze';
-  const bitMode = bitBuilderMode(project);
-  const behaviorStates = resolveBehaviorStates(project);
-  // A roaming animal's flown art can be its own role (its own sheet).
-  const roamRole = wfwsRoleFlags(project).roam;
-  // The terrain stamp's strip is a claim sheet the engine slices into 32
-  // frames and keeps the pixels of, so `land.stamp` can write terrain with it.
-  const stampSheet =
-    supportsTerrainStamp(project) ? terrainStampPath(project) : null;
-  // The ribbon trail lives in its own library bundle (`effects.sdk`), which
-  // exports `wf-lib/effects/trail` and the beam/glow sheets.
+  const stampSheet = supportsTerrainStamp(project) ? terrainStampPath(project) : null;
   const usesRibbonTrail =
     !!project.ribbonTrail?.enabled &&
-    (project.fireType === 'power' || (project.fireType === 'drop' && project.body.fuse));
-  // The explosion burst is px_effects, and the optional blast replacement is
-  // custom_explosion: both live in the effects SDK. Air strikes are excluded:
-  // their bombs have no weapon slot, so the claim hook cannot run.
+    (project.fireType === 'power' || (project.fireType === 'drop' && !!project.body.fuse));
   const explodesNatively = project.fireType === 'power' || project.fireType === 'drop';
-  const usesExplosionEffect =
-    !!project.explosionEffect?.enabled && explodesNatively;
-  // PX's effect manager as a live emitter (`fx.emitter`), the same library as
-  // the burst. A melee claim eats WA's fire and has no muzzle to sit at.
+  const usesExplosionEffect = !!project.explosionEffect?.enabled && explodesNatively;
   const usesEmitter = !!project.emitter?.enabled && project.fireType !== 'melee';
-  // An electric burst (or an electric pierce) tazes through `px.electric`'s
-  // damage module, which the weapon requires as `zap`. Keep the dependency in
-  // step with the code the weapon Lua actually requires.
   const usesElectricBlast =
     usesExplosionEffect && project.explosionEffect!.damageType === 'electric';
   const stampImpact = project.terrainStamp?.impact;
-  // The pierce only runs with the stamp card on, so the taze module is only
-  // required then (the card is the switch for the whole impact block).
   const usesElectricImpact =
     !!stampImpact?.enabled &&
     !!project.terrainStamp?.enabled &&
     supportsTerrainStamp(project) &&
     stampImpact.kind === 'taze';
-  // `wf-lib/fire_seq` is its own library bundle (`px.fire_seq`). The held art
-  // and the firing role no longer need it: the aim layer draws both.
   const usesFireSequence =
     !!project.fireSequence?.enabled &&
     !(project.enableCustomLua && /(?:^|\n)[ \t]*on_fire\s*=/.test(project.customLuaSnippet || '')) &&
     supportsFireSequence(project);
-  // The ribbon sampler/drawer is also installed by `fx.install`, even when no
-  // emitter actor or explosion burst is enabled.
-  const usesEffectsSdk = usesExplosionEffect || usesEmitter || usesRibbonTrail;
+
+  const out: { id: string; reason: string }[] = [];
+  if (usesHold) out.push({ id: 'wf.sdk', reason: 'hold art builder' });
+  if (usesWfws) {
+    out.push({
+      id: 'wfws.sdk',
+      reason: usesWfwsBuilder(project) ? 'flight sprite builder' : 'aim layer',
+    });
+  }
+  if (usesRibbonTrail) out.push({ id: 'effects.sdk', reason: 'ribbon trail' });
+  if (usesExplosionEffect) out.push({ id: 'effects.sdk', reason: 'explosion burst' });
+  if (usesEmitter) out.push({ id: 'effects.sdk', reason: 'emitter' });
+  if (usesElectricBlast) out.push({ id: 'px.electric', reason: 'electric blast taze' });
+  if (usesElectricImpact) out.push({ id: 'px.electric', reason: 'electrical pierce taze' });
+  if (usesElectricMelee) out.push({ id: 'px.electric', reason: 'electrical melee strike' });
+  if (usesFireSequence) out.push({ id: 'px.fire_seq', reason: 'sequential fire' });
+  return out;
+}
+
+export function weaponManifestPart(project: WeaponProject): WeaponManifestPart {
+  const modFolder = sanitizeModFolder(project.id);
+  const pos = getStockPanelPosition(project.slot);
+  const icon = project.customIconFile ? `sprites/${modFolder}/icon.png` : (project.panel_icon || project.slot);
+  const usesHold = project.hold && project.hold.enabled;
+  const bitMode = bitBuilderMode(project);
+  const behaviorStates = resolveBehaviorStates(project);
+  const stampSheet =
+    supportsTerrainStamp(project) ? terrainStampPath(project) : null;
   const lines: string[] = [];
 
   const dependencies: string[] = [];
-  if (usesHold) dependencies.push('wf.sdk');
-  if (usesWfws) dependencies.push('wfws.sdk');
-  if (usesRibbonTrail || usesEffectsSdk) dependencies.push('effects.sdk');
-  if (usesElectricBlast || usesElectricImpact || usesElectricMelee) {
-    dependencies.push('px.electric');
+  for (const entry of autoDependenciesForProject(project)) {
+    if (!dependencies.includes(entry.id)) dependencies.push(entry.id);
   }
-  // `px.fire_seq` is the sequencer's bundle; the held art no longer needs it.
-  if (usesFireSequence) dependencies.push('px.fire_seq');
   // Extra library bundles the author asked for (they may be used from the
   // custom Lua snippet, or by a component this editor does not model).
   for (const dependency of project.extraDependencies || []) {
@@ -4650,6 +4718,28 @@ export function weaponManifestPart(project: WeaponProject): WeaponManifestPart {
     if (option.data) lines.push('data = true');
   }
 
+  for (const [featureId, table] of Object.entries(project.suggests ?? {})) {
+    if (!table || typeof table !== 'object') continue;
+    const entries = Object.entries(table).filter(([, value]) => value !== undefined);
+    if (entries.length === 0) continue;
+    lines.push('');
+    lines.push(`[components.suggests.${luaQuote(featureId)}]`);
+    const tomlScalar = (value: unknown): string | null => {
+      if (typeof value === 'string') return luaQuote(value);
+      if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+      if (typeof value === 'boolean') return value ? 'true' : 'false';
+      if (Array.isArray(value)) {
+        const items = value.map(tomlScalar).filter((item): item is string => item !== null);
+        return `[${items.join(', ')}]`;
+      }
+      return null;
+    };
+    for (const [key, value] of entries) {
+      const rendered = tomlScalar(value);
+      if (rendered !== null) lines.push(`${key} = ${rendered}`);
+    }
+  }
+
   // Sprites declarations
   const emitted = new Set<string>();
   if (project.missileSprite?.enabled && project.missileSprite.mode === 'custom') {
@@ -4690,8 +4780,8 @@ export function weaponManifestPart(project: WeaponProject): WeaponManifestPart {
       lines.push(`[sprites.${luaQuote(path)}]`);
       const frames = asset?.frames ?? 1;
       if (frames > 1) lines.push(`frames = ${frames}`);
-      lines.push('fps = 15');
-      lines.push('play = "loop"');
+      lines.push(`fps = ${asset?.fps || 15}`);
+      lines.push(`play = ${luaQuote(asset?.play || 'loop')}`);
     }
   }
 

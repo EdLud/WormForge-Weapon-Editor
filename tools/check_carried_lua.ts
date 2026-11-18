@@ -890,6 +890,75 @@ if (statSync(BUNDLE, { throwIfNoEntry: false })) {
   check('the emitter weapon re-imports with nothing foreign', emitterClean, 'emitter not clean');
 }
 
+// ---- named hooks (on_fire = place, on_explode = detonate) ----------------
+{
+  const modFiles: ModFile[] = [
+    {
+      path: 'mod.toml',
+      text: `id = "t.named"
+name = "Named Hooks"
+version = "1.0.0"
+[[components]]
+id = "t.named.bomb"
+type = "weapon"
+name = "Named Bomb"
+entry = "weapons/bomb.lua"
+`,
+    },
+    {
+      path: 'weapons/bomb.lua',
+      text: lines(
+        'local ART = "sprites/orig_mod/"',
+        'local function detonate(ev)',
+        '  local _ = ART .. "smoke.png"',
+        '  wa.world.blast{ x = ev.x, y = ev.y, power = 15 }',
+        'end',
+        'local function launch(ev)',
+        '  wa.sound.play(ev.worm, 44)',
+        'end',
+        'local weapon = {',
+        '  definition = {',
+        '    copy_from = "stock.grenade",',
+        '    on_fire = launch,',
+        '    on_explode = detonate,',
+        '  },',
+        '}',
+        'return weapon',
+      ),
+    },
+  ];
+  const bundle = readBundles(modFiles)[0];
+  const weapon = readWeapons([bundle], modFiles)[0];
+  const first = await importBundleWeapon(weapon, modFiles);
+  const firstProj = baseProject(first.project);
+  const carriedHookKeys = (firstProj.carriedLua?.hooks ?? []).map((h) => h.key).sort().join(',');
+  check(
+    'named on_explode and on_fire hooks are both carried with their closures',
+    carriedHookKeys === 'on_explode,on_fire' &&
+      (firstProj.carriedLua?.preamble ?? []).some((b) => b.text.includes('local function detonate(')) &&
+      (firstProj.carriedLua?.preamble ?? []).some((b) => b.text.includes('local function launch(')),
+    carriedHookKeys,
+  );
+  check(
+    'folder-prefix literals in carried locals rewrite to the export folder',
+    (firstProj.carriedLua?.preamble ?? []).some((b) => b.text.includes('sprites/named_bomb/')),
+  );
+  const code = generateLuaCode(firstProj);
+  const secondFiles: ModFile[] = [
+    { path: 'mod.toml', text: generateModToml(firstProj) },
+    { path: `weapons/${sanitizeModFolder(firstProj.id)}.lua`, text: code },
+  ];
+  const secondWeapon = readWeapons([readBundles(secondFiles)[0]], secondFiles)[0];
+  const second = await importBundleWeapon(secondWeapon, secondFiles);
+  const secondProj = baseProject(second.project);
+  check(
+    'named hooks round-trip with identical preamble and hook counts',
+    (secondProj.carriedLua?.hooks?.length ?? 0) === (firstProj.carriedLua?.hooks?.length ?? 0) &&
+      (secondProj.carriedLua?.preamble?.length ?? 0) === (firstProj.carriedLua?.preamble?.length ?? 0),
+    `hooks ${secondProj.carriedLua?.hooks?.length}/${firstProj.carriedLua?.hooks?.length}, preamble ${secondProj.carriedLua?.preamble?.length}/${firstProj.carriedLua?.preamble?.length}`,
+  );
+}
+
 // ---- dependencies ------------------------------------------------------
 check(
   'every library module maps to the dependency that provides it',
