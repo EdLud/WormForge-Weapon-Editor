@@ -1110,8 +1110,14 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
     const hideMain = firingView && !!hold.fireHideMain;
     const weaponImg = weaponLoadedImg || weaponImgRef.current;
     if (!hideMain && weaponImg && weaponImg.complete && weaponImg.naturalWidth > 0) {
+      // The engine slices the picture by its `[sprites]` declaration (`gpu_frame`)
+      // and uses `hold.frames` only to pick an index against that count, so a
+      // 20-cell strip held as one frame draws cell 0, not the whole strip. The
+      // editor's own uploads declare exactly what they play, so `sheetFrames` only
+      // appears on an import that says otherwise (PX's buffalo).
+      const cells = Math.max(1, Math.round(hold.sheetFrames ?? hold.frames ?? 1));
       const totalFrames = Math.max(1, hold.frames || 1);
-      const frameHeight = weaponImg.naturalHeight / totalFrames;
+      const frameHeight = weaponImg.naturalHeight / cells;
       const frameWidth = weaponImg.naturalWidth;
       // A clip key can name a frame (`frame = 3`), which steps the strip on a
       // beat of its own instead of the engine's loop.
@@ -1119,7 +1125,7 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
         pose?.frame !== undefined
           ? Math.min(totalFrames - 1, Math.max(0, Math.round(pose.frame)))
           : currentFrame;
-      const sy = (shownFrame % totalFrames) * frameHeight;
+      const sy = (Math.min(shownFrame, cells - 1) % cells) * frameHeight;
 
       offCtx.drawImage(
         weaponImg,
@@ -3301,8 +3307,20 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
                   preview={hold.sheetPreview}
                   width={hold.sheetWidth}
                   height={hold.sheetHeight}
-                  frames={hold.frames}
+                  frames={hold.sheetFrames ?? hold.frames}
                 />
+              )}
+              {/* A picture with more cells than the hold plays: an imported strip
+                  (PX's buffalo is 20 cells held on frame 0). The cell count is what
+                  `mod.toml` declares and what slices the PNG, so saying so here is
+                  the difference between "my sheet lost its frames" and the truth. */}
+              {aimTab !== 'firing' && (hold.sheetFrames ?? 1) > (hold.frames ?? 1) && (
+                <p className="text-[10px] leading-relaxed text-stone-500 dark:text-stone-400">
+                  The picture holds {hold.sheetFrames} cells and this hold plays{' '}
+                  {hold.frames === 1 ? 'frame 0 of them' : `the first ${hold.frames}`}: the engine
+                  slices the strip by the manifest&apos;s {hold.sheetFrames} and only indexes it
+                  with the frame count here.
+                </p>
               )}
             </div>
 

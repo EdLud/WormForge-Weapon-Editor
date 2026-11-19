@@ -221,8 +221,17 @@ weapon as a derived value, so **every panel still takes a single
 
 `Sidebar.tsx` is the desktop navigation (logo, live project card with copyable
 ID, the four workspace buttons, import/export, theme toggle); `MobileBar`
-replaces it below `lg`. `recordTabs.tsx` is the single source of section ids,
-labels, hints and icons.
+replaces it below `lg`.
+
+The **Bundle Settings** card is the manifest's own fields: the bundle icon, and
+from the second weapon on the bundle id, name, author and version. A bundle of
+one **is** that weapon (`syncPackToSoleWeapon`), so those four are the ones on
+the Weapon Loadout card and this card says so in one line instead of showing a
+second set of boxes for the same values (they used to be disabled, and the value
+the pack re-derived from the weapon won anyway, so typing in them did nothing).
+`profileName`, `replaces` and the profile description live only here.
+
+`recordTabs.tsx` is the single source of section ids, labels, hints and icons.
 
 `RecordEditor.tsx` is controlled: it receives `activeSubTab` and renders only
 that section, plus the workbench tab bar that selects it.
@@ -510,13 +519,25 @@ The editor ships `spec/lua_sdk/wfws_sdk/` (id `wfws.sdk`), exporting
   PX heuristic answers: a first-seen round that is born into a live ribbon for
   this weapon is a bit (`trail_is_bit`), which is why the generated Lua never
   names `sb` unless the builder is on for that weapon (wfcheck is right that it
-  would be an undefined global). Live trail ids go in an array, never `pairs` (wfcheck
-  `lockstep-pairs`). Only missile families get the card: a strike's munitions have
-  no `m.weapon`. `noise` (px) jitters each point along the ribbon's normal from a
-  fixed 257-entry table indexed by the point, so every peer wobbles identically
-  and the wobble stays put as the ribbon moves; `rainbow` cycles the hue along the
-  ribbon and with the simulation clock (PX's `SetRainbowMode`, the SDK's
-  `HueToRGBLocal`, centred at 180 so no hue passes through black).
+  would be an undefined global). **The trail hook is written after `sb.flight`,
+  and it waits when the answer is still `nil`**: both register
+  `wa.on.missile_frame` and the engine runs a mod's handlers in registration
+  order, so the builder has to decide first; and a burst listed on the round's
+  last frame is left undecided for one frame on purpose (the round may have
+  survived as another shot), so the hook retries next frame instead of falling
+  back. That fallback read an undecided bit as "not a bit" and every cluster bit
+  flew bare, which is why `tools/lua/harness_trail_bits.py` and a case in
+  `check_generator_edges` pin both halves. **A builder that owns the round art
+  but leaves the bits to WA answers `main` for every frag**, so a cluster weapon
+  in that state uses the PX live-ribbon test instead: Main Round still skips the
+  bits, and Cluster Bits still draws nothing, which the card says. Live trail
+  ids go in an array, never `pairs` (wfcheck `lockstep-pairs`). Only missile
+  families get the card: a strike's munitions have no `m.weapon`. `noise` (px)
+  jitters each point along the ribbon's normal from a fixed 257-entry table
+  indexed by the point, so every peer wobbles identically and the wobble stays
+  put as the ribbon moves; `rainbow` cycles the hue along the ribbon and with the
+  simulation clock (PX's `SetRainbowMode`, the SDK's `HueToRGBLocal`, centred at
+  180 so no hue passes through black).
 - **Explosion burst (`project.explosionEffect`)**: `px_effects`' ring plus
   squashed lens from a claim `on_explode` (the engine emits it before WA's blast).
   `effect` mode keeps the native blast; `blast` mode zeroes
@@ -944,6 +965,19 @@ needs any of them is drawn by `wfws.sdk`'s quad layer instead of the engine.
   `weap_radius = -11.8` read as +11.8. The importer reads both (only when they
   differ from the fallback) and the panel has a dial for each, so a bundle
   round-trips its arm position.
+- **A hold's cells are not its frames.** `worm_hold.rs` computes
+  `frame = (phase * hold.frames) as u32` and `gpu.rs`'s `enqueue_hold` clamps it
+  against `sprite::gpu_frame(sheet)`, the count the `[sprites]` declaration sets,
+  so `hold.frames` only picks an index into a strip the manifest slices. PX's
+  Buffalo of Lies is the case that shows it: a 20-cell run cycle held on frame 0
+  (`hold = { sheet = ..., frames = 1 }` over `[sprites] frames = 20`), with the
+  charging animals walked by the bundle's own `wa.actors` code.
+  `HoldConfig.sheetFrames` carries the picture's cell count when the two differ
+  (the import sets it from the declaration, the editor's own uploads never need
+  it), and it is what `mod.toml` declares (`frames = max(sheetFrames ?? frames)`),
+  what the preview slices, and what the divisibility warning checks. Without it
+  the export declared the 20-cell strip as one cell and the held art was the whole
+  strip squeezed into the cell.
 - **Engine bug fallback**: `draw_hand = false` still draws the hand, so the
   generator also emits `hand_radius = 0.01` with it (the project keeps the
   author's `hold.handRadius`; the importer restores it).
@@ -961,6 +995,11 @@ The hold preview mirrors `worm_hold.rs`:
 
 - worm cell 60×60; the 32-frame `aim.png` posture strip is flipped inside the
   cell so the worm faces the weapon;
+- the held sheet is sliced by its own cell count
+  (`hold.sheetFrames ?? hold.frames`, the number `mod.toml` declares) and the
+  frame index comes from `hold.frames`, which is what the engine does: one cell of
+  a 20-cell strip is one buffalo, not the whole strip squeezed into the cell. The
+  Hold card says which is which when the two numbers differ;
 - `rot = (1 - aim) * PI`; `rot_w = rot + PI * weapRadialRotation` (1 is the
   engine's default); weapon at
   `(cx + sin(rot_w)*weap_radius, cy - cos(rot_w)*weap_radius)`;
@@ -1643,8 +1682,12 @@ map keyed by path inside the ZIP. `modExporter.ts` is the thin app wrapper:
   declared.
 - `mod.toml` declares `[sprites."sprites/<mod>/missile.png"]` for custom flight
   art, the bit, homing-state and roaming-sheep sheets above, and
-  `[sprites."sprites/<mod>/hold.png"]` when the hold sheet has more than one
-  frame (`frames`, `fps`, `play = "loop"`).
+  `[sprites."sprites/<mod>/hold.png"]` when the hold picture has more than one
+  **cell** (`frames`, `fps`, `play = "loop"`). The cell count is
+  `max(hold.sheetFrames ?? hold.frames)`: the engine slices the PNG by the
+  declaration (`gpu_frame`) and uses `hold.frames` only to pick an index, so PX's
+  Buffalo of Lies (a 20-cell run cycle held on frame 0, `frames = 1`) has to keep
+  `frames = 20` here or all 20 cells are squeezed into one.
 - Profile name sanitizes `\\ / : * ? " < > |`.
 - Uploaded pack art (`project.packArt`) is written as
   `sprites/<mod>/trail.png`, `bit.png`, `bit_homing.png`, `bit_trail.png` and
@@ -1995,6 +2038,15 @@ the `merge` guard makes it fail with the exact in-game error, and writing the
 hand-off back into `on_fire` makes it fail the "no `on_fire`" case, which is why
 it exists.
 
+`tools/lua/harness_trail_bits.py` runs the **generated** `wftest.51` weapon (the
+trail card set to bits only, with the builder owning the bit art) through the real
+`wfws_sprite_builder` and `trail` with a fake `wa` whose `missile_frame` hook is a
+**list dispatched in registration order**, the way the engine does it. It asserts
+the round stays bare, that a burst listed on the round's last frame attaches
+nothing yet, that the five bits get their ribbons once the builder has decided,
+and that the ribbons reach the draw callback. Deleting the hook's wait line makes
+it fail on the bits, which is the in-game report it exists for.
+
 The flight half drives `missile_frame` for both WA phases over a run of frames:
 the per-missile sweep (a walking animal WA draws itself is re-classified once a
 second, a round with a follower never), the `bits = "inherit"` identity, and the
@@ -2030,7 +2082,10 @@ table with the record's blast zeroed), the electric bursts' `damageType` with th
 `zap` require and dependency, the Space clip with its echoes, the second hand with
 its own sheet, and the melee strike with its `hit` callback. It then regenerates
 each weapon and checks the original feature calls survived: a feature with no
-inverse in `importFeatures.ts` fails here, which is the point.
+inverse in `importFeatures.ts` fails here, which is the point. It also builds one
+three-file bundle in memory to pin the hold's **cell** count: a claim holding
+`frames = 1` over a sheet the manifest declares as 20 comes back as `frames = 1`
+plus `sheetFrames = 20`, and the export declares `frames = 20` for the picture.
 
 Compiler check (lives in the code-editor repo):
 

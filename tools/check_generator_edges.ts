@@ -28,7 +28,7 @@ import { DEFAULT_MELEE } from '../src/data/melee';
 import { DEFAULT_EMITTER, DEFAULT_EMITTER_RING, DEFAULT_EMITTER_TRAIL } from '../src/data/emitter';
 import { DEFAULT_EXPLOSION_EFFECT } from '../src/data/explosionPresets';
 import { scanLua } from '../src/utils/modLib/luaTable';
-import { readBundleFeatures } from '../src/utils/modLib/importFeatures';
+import { DEFAULT_IMPORT_HOLD, readBundleFeatures } from '../src/utils/modLib/importFeatures';
 import type { WeaponProject } from '../src/types/weapon';
 
 let failed = 0;
@@ -929,6 +929,106 @@ const makeProject = (patch: Partial<WeaponProject> = {}): WeaponProject => {
   );
 }
 
+// ---- the trail asks the builder who the missile is, in the right order ----
+// `sb.flight` and the ribbon trail both register `wa.on.missile_frame`, and the
+// engine runs a mod's handlers in registration order. The builder has to decide
+// the missile's identity before the trail asks for it, and a burst listed on the
+// round's last frame is deliberately undecided for one frame, so the hook waits
+// instead of guessing: guessing "not a bit" is what cost every cluster bit its
+// ribbon when the trail card was set to "bits only".
+{
+  const base = makeProject();
+  const bitTrail = generateLuaCode(
+    makeProject({
+      burst: 'clusters',
+      missileSprite: { ...base.missileSprite!, enabled: true, mode: 'custom', anim: 'track', hideStock: true },
+      bitFlight: { ...base.bitFlight!, mode: 'builder', anim: 'track', frames: 1 },
+      ribbonTrail: {
+        enabled: true,
+        max: 10,
+        every: 1,
+        vanish: 2,
+        coreWidth: 4,
+        glowWidth: 8,
+        color: '#66ccff',
+        target: 'bit',
+        noise: 0,
+        rainbow: false,
+      },
+    }),
+  );
+  const flightAt = bitTrail.indexOf('sb.flight(ctx');
+  const trailHookAt = bitTrail.indexOf('wa.on.missile_frame(function(m)');
+  check(
+    'the builder is registered before the trail hook',
+    flightAt >= 0 && trailHookAt > flightAt,
+    'the trail asked `sb.role` before the builder had seen the missile, so every bit read as nil',
+  );
+  check(
+    'and the trail waits for an undecided identity',
+    bitTrail.includes('if sb.role and sb.role(m.id) == nil then return end'),
+    'a deferred burst was decided on its first frame instead of the next one',
+  );
+  check(
+    'a bits-only trail keeps its bit guard',
+    bitTrail.includes('if not trail_is_bit(m) then return end') && bitTrail.includes('bits = {'),
+    'the emitted trail lost the bit target, the builder lost its bit role, or the guard was dropped',
+  );
+
+  // Without the builder there is no bit identity at all, and the hook would
+  // silently trail nothing. The generated file says so instead of pretending.
+  const noBuilderBits = generateLuaCode(
+    makeProject({
+      ribbonTrail: {
+        enabled: true,
+        max: 10,
+        every: 1,
+        vanish: 2,
+        coreWidth: 4,
+        glowWidth: 8,
+        color: '#66ccff',
+        target: 'bit',
+        noise: 0,
+        rainbow: false,
+      },
+    }),
+  );
+  check(
+    'a bits-only trail without the builder says it cannot tell them apart',
+    noBuilderBits.includes('no missile is trailed') &&
+      !noBuilderBits.includes('local role = sb.role and sb.role(m.id)'),
+    'the file claims a bit identity it does not have',
+  );
+
+  // A builder that owns the round art but leaves the bits to WA answers "main"
+  // for every frag. Using that for Main Round would trail the bits too, so the
+  // live-ribbon test is the better answer there.
+  const nativeBits = generateLuaCode(
+    makeProject({
+      burst: 'clusters',
+      missileSprite: { ...base.missileSprite!, enabled: true, mode: 'custom', anim: 'track', hideStock: true },
+      ribbonTrail: {
+        enabled: true,
+        max: 10,
+        every: 1,
+        vanish: 2,
+        coreWidth: 4,
+        glowWidth: 8,
+        color: '#66ccff',
+        target: 'main',
+        noise: 0,
+        rainbow: false,
+      },
+    }),
+  );
+  check(
+    'a builder with no bit role falls back to the live-ribbon test',
+    nativeBits.includes('return trail_live()') &&
+      !nativeBits.includes('local role = sb.role and sb.role(m.id)'),
+    'a builder with no bit role called every frag "main", so Main Round trailed the bits too',
+  );
+}
+
 // ---- every effects named in the file has its module in scope --------------
 // A claim that names `trail.BEAM` has to have `trail` in scope, and the same
 // holds for `fx` and `blast`: the SDK sheets are named by module, so a weapon
@@ -988,6 +1088,52 @@ const makeProject = (patch: Partial<WeaponProject> = {}): WeaponProject => {
       );
     }
   }
+}
+
+// ---- a hold picture with more cells than the hold plays --------------------
+// PX's Buffalo of Lies holds frame 0 of a 20-cell run cycle (`frames = 1` over a
+// sheet the manifest declares as 20). The engine slices the PNG by the manifest
+// and only indexes it with `hold.frames`, so the declaration has to keep the
+// picture's own count or all 20 cells are squeezed into the cell.
+{
+  const holdOf = (patch: Partial<WeaponProject['hold']>): WeaponProject['hold'] =>
+    ({
+      ...DEFAULT_IMPORT_HOLD,
+      enabled: true,
+      sheet: 'sprites/edges/hold.png',
+      sheetPreview: undefined,
+      sheetFile: undefined,
+      ...patch,
+    }) as WeaponProject['hold'];
+  const cells = makeProject({
+    hold: holdOf({ frames: 1, fps: 15, sheetFrames: 20 }),
+    customSprites: {},
+    packArt: {},
+  });
+  const cellToml = generateModToml(cells);
+  const cellDecl = cellToml.indexOf('[sprites."sprites/edges/hold.png"]');
+  check(
+    'a hold of one frame over a 20-cell picture declares the cells',
+    cellDecl >= 0 && /frames = 20/.test(cellToml.slice(cellDecl, cellDecl + 120)),
+    cellDecl < 0 ? 'the hold sheet is not declared at all' : cellToml.slice(cellDecl, cellDecl + 120),
+  );
+  const cellLua = generateLuaCode(cells);
+  check(
+    'the hold still plays one frame',
+    !/^\s+frames = 1,$/m.test(cellLua),
+    'the claim table names a frame count the engine would read as a strip',
+  );
+  // The editor's own uploads slice exactly what they play, so an ordinary hold
+  // keeps one number.
+  const plainToml = generateModToml(
+    makeProject({ hold: holdOf({ frames: 4, fps: 15 }), customSprites: {}, packArt: {} }),
+  );
+  const plainDecl = plainToml.indexOf('[sprites."sprites/edges/hold.png"]');
+  check(
+    'an ordinary hold declares the frames it plays',
+    plainDecl >= 0 && /frames = 4/.test(plainToml.slice(plainDecl, plainDecl + 120)),
+    plainDecl < 0 ? 'the hold sheet is not declared' : plainToml.slice(plainDecl, plainDecl + 120),
+  );
 }
 
 if (failed > 0) {

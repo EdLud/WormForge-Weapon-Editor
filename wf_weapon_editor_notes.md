@@ -1,5 +1,40 @@
 # WormForge Weapon Studio, Engineering Notes (API 4.0)
 
+### Cluster bits ask the builder a frame too early
+
+The bits-only ribbon trail was reported from play: the round flew bare as
+intended, and so did every cluster bit. The identity was not wrong, the timing
+was. `sb.flight` and the ribbon trail both register `wa.on.missile_frame`, the
+engine appends handlers to a list and calls them in registration order, and the
+generator wrote the trail hook **before** the `sb.flight` call. On a missile's
+first frame the trail therefore asked `sb.role(m.id)` before the builder had seen
+it, got `nil`, and its fallback read that as "not a bit" (`trail_live()` is false
+when the round itself was never trailed), marked the id `seen`, and never asked
+again. The two test-pack weapons that cover the feature (WF 51 bits-only trail,
+WF 52 round-only burst) also had a builder with no bit role, so every frag
+answered `main` and neither case could have passed in game.
+
+Two changes, both required:
+
+- **The trail hook is emitted after `sb.flight`**, so the identity is already
+  there when it asks on the first frame (no missing first segment on the round).
+- **The hook waits when the answer is `nil`** instead of falling back. A burst
+  listed on the round's last frame is left undecided for one frame on purpose
+  (the same frame can be a fire sequence's second shot), so the hook returns
+  without marking the missile seen and asks again next frame. The PX fallback
+  now only runs when the installed library has no `sb.role`, or when the builder
+  owns the round art but leaves the bits to WA and therefore calls every frag
+  `main`, where it is the better answer available.
+
+WF 51 and WF 52 now give the builder a bit role (`bitFlight`), and the README's
+`sb.role` section says the ordering rule out loud. The trail card also says when
+Cluster Bits cannot be told apart (builder off, no bit art, or no cluster burst),
+instead of looking configured and drawing nothing. `check_generator_edges` pins
+the emission order, the wait line and both fallbacks; `tools/lua/harness_trail_bits.py`
+drives the generated WF 51 file through the real builder and trail with a
+`missile_frame` list dispatched in order, and fails on the bits when the wait line
+is deleted.
+
 ### An export now carries the effects SDK it was built against
 
 The library used to be a dependency and nothing more: `dependencies =
@@ -4839,3 +4874,47 @@ neither writes no `mod_icon` at all (the mod loader draws initials). And a
 is a bug this work created and then removed: adopting it copied the file into the
 bundle folder and rewrote the line, so `wf-lib/utilities` stopped round-tripping
 byte for byte.
+
+## 2026-11-20: a hold's cells are not its frames, and one identity per mod
+
+Two reports, one of them a real defect hiding behind what looked like a quirk.
+
+**"The SPB reads the buffalo as if it had 1 frame".** The Buffalo of Lies says
+`hold = { sheet = "sprites/buffalo/buffalo.png", frames = 1 }` over a picture
+`mod.toml` declares as `frames = 20`, and that is not a mistake: `worm_hold.rs`
+computes `frame = (phase * hold.frames) as u32` and `gpu.rs`'s `enqueue_hold`
+clamps it against the **sheet's** own count from `sprite::gpu_frame`, so the held
+bull is cell 0 of a 20-cell run cycle and the charging animals walk the strip
+themselves through `wa.actors` and `a:frame(frame)`. Read the two numbers as
+"cells in the picture" and "cells the hold plays". The editor had one number, so
+three things were wrong:
+
+- the export declared `hold.png` only when `hold.frames > 1`, which for the
+  buffalo meant no declaration at all, so the engine sliced the 20-cell strip as
+  one cell and the whole run cycle was squeezed into the held art. This is the
+  defect: an imported bundle exported a different weapon from the one it read;
+- the aiming preview sliced the picture by `hold.frames` for the same reason, so
+  the bull in hand looked like a column of tiny buffaloes;
+- nothing in the panel said the picture and the play count disagreed.
+
+`HoldConfig.sheetFrames` is the picture's cell count, set by the import from the
+bundle's `[sprites]` declaration when it differs from `hold.frames` (and never by
+the editor, whose uploads hold exactly the frames they play). It feeds three
+places: the manifest declaration (`frames = max(sheetFrames ?? frames)`), the
+preview's slice (`cellHeight = height / cells`, index from `hold.frames`), and
+the `SheetFrameWarning` divisibility test, which is about the declared cells. The
+Hold card prints one line when the two disagree. The exported buffalo now
+declares `frames = 20` for `hold.png` with `frames` absent from the claim table,
+which is what PX ships, and `wfcheck` stays clean.
+
+**"Why can't I change the name, id, version and author of a mod?"** Because the
+four boxes in Bundle Settings were disabled while the bundle held one weapon, and
+the value `syncPackToSoleWeapon` re-derived from that weapon won anyway, so even
+an enabled box would have been overwritten. Making them write through to the
+weapon worked and was the wrong answer: it was the same four values twice on one
+page. A bundle of one **is** that weapon, so the four fields are now hidden and
+the card says in one line that they are the ones on the Weapon Loadout card
+above, with the weapon's name and id spelled out. From the second weapon on the
+card shows them and they are the manifest's, which is what the 60-weapon test
+pack and the Code tab's `mod.toml` confirm. `profileName`, `replaces` and the
+profile description stay, since they exist nowhere else.

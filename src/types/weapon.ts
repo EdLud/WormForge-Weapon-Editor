@@ -179,6 +179,18 @@ export interface HoldConfig {
   scale: number;
   handScale: number;
   frames: number;
+  /**
+   * Cells in the hold picture, when they are not what the hold plays.
+   *
+   * The engine slices the PNG by the `[sprites]` declaration (`gpu_frame`) and
+   * uses `frames` only to pick an index (`(phase * frames) as u32`), so a
+   * 20-frame strip held as a single frame is `frames = 1` over a 20-cell sheet,
+   * which is exactly what Project X's Buffalo of Lies does: the animal in hand is
+   * frame 0 of its run cycle and the charging actors walk the strip themselves.
+   * The editor's own uploads hold one picture per play frame, so the two numbers
+   * agree and this stays unset; only an import can tell them apart.
+   */
+  sheetFrames?: number;
   fps: number;
   animate: boolean;
   drawHand: boolean;

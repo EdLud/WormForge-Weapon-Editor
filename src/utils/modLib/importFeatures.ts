@@ -402,6 +402,7 @@ function readHold(
   moduleText?: string,
   sheetFrames?: number,
   declFps?: number,
+  declCells?: number,
 ): HoldConfig {
   const handType =
     table.hand_type === 1
@@ -414,6 +415,11 @@ function readHold(
   // A folder of frames joins into one strip, and its frame count is the art's
   // own: `hold.frames` is what the engine slices with, so it must be that count.
   const frames = Math.max(1, Math.round(num(table.frames) ?? sheetFrames ?? 1));
+  // The picture's own cell count, when the bundle declared one that the hold does
+  // not play: the engine slices by the declaration and only indexes by `frames`,
+  // so PX's buffalo holds frame 0 of a 20-frame strip (`frames = 1`). Dropping it
+  // would re-declare the strip as one cell and squeeze all 20 into the cell.
+  const cells = declCells !== undefined && declCells > frames ? Math.round(declCells) : undefined;
   // `anim_speed` is the engine's multiplier: it plays `1.5 × frames × speed`
   // frames per second (worm_hold.rs), which is the FPS the panel asks for. A
   // bundle that declares `fps` on the sheet instead gets that rate back, so the
@@ -468,6 +474,7 @@ function readHold(
         }
       : {}),
     frames,
+    ...(cells !== undefined ? { sheetFrames: cells } : {}),
     fps: frames > 1 ? Math.max(1, Math.round(animSpeed * 1.5 * frames)) : fallback.fps,
     drawHand,
     keepWhileFiring: bool(table.keep_while_firing) ?? false,
@@ -734,6 +741,7 @@ export async function readBundleFeatures(args: {
       moduleText,
       asset?.frames,
       numFrom(spriteDecl(weapon, sheetPath)?.fps),
+      numFrom(spriteDecl(weapon, sheetPath)?.frames),
     );
     // The firing-state sprite has two emission shapes: the old `hold.flash`
     // overlay (out/side/scale pre-resolved against the gun), the FAMAS-style

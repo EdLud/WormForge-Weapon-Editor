@@ -8,6 +8,7 @@ import type {
   WeaponProject,
 } from '../types/weapon';
 import { DEFAULT_EXPLOSION_EFFECT, EXPLOSION_PRESETS } from '../data/explosionPresets';
+import { bitBuilderMode } from '../data/spriteBuilder';
 import { DEFAULT_CUSTOM_SOUNDS, INTERVAL_PRESETS, SOUND_PRIORITIES } from '../data/soundPresets';
 import { ExplosionPreview } from './ExplosionPreview';
 import { NumberInput } from './NumberInput';
@@ -90,6 +91,10 @@ export function RibbonTrailCard({ project, onChange }: CardProps) {
   if (!supportsRibbonTrail(project)) return null;
   const ribbon = project.ribbonTrail ?? RIBBON_DEFAULT;
   const update = (patch: Partial<RibbonTrailConfig>) => updateRibbon(project, onChange, patch);
+  // A bit is only a bit to the builder: it is the classifier that tells the
+  // round from its frags, and it needs both the primary art and the bit role.
+  // Without them "Cluster Bits" has nothing to recognise.
+  const bitIdentity = bitBuilderMode(project) !== null;
 
   return (
     <div className="space-y-5">
@@ -305,7 +310,7 @@ export function RibbonTrailCard({ project, onChange }: CardProps) {
             <TooltipLabel
               label="Attach To"
               code="wa.on.missile_frame"
-              desc="Which missiles of the weapon get the ribbon. The flight builder decides which is the round and which are its cluster bits (sb.role); without it, Main skips a first-seen round that is born into a live ribbon, which is how a cluster bit is recognised."
+              desc="Which missiles of the weapon get the ribbon. The flight builder decides which is the round and which are its cluster bits (sb.role); Cluster Bits needs that builder role, because nothing else can tell a frag from the round. Without the builder, Main skips a first-seen round that is born into a live ribbon, which is how a cluster bit is recognised."
             />
             <div className="grid grid-cols-3 gap-1 rounded-xl border border-stone-200 bg-stone-100 p-1 dark:border-stone-800 dark:bg-stone-950/60">
               {(
@@ -332,6 +337,23 @@ export function RibbonTrailCard({ project, onChange }: CardProps) {
                 );
               })}
             </div>
+            {(ribbon.target ?? 'main') === 'bit' && !bitIdentity && (
+              <p className="mt-1.5 flex items-start gap-1 text-[11px] text-amber-700 dark:text-amber-300">
+                <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
+                {project.burst === 'clusters' ? (
+                  <>
+                    The flight builder is off, or it owns no cluster-bit art, so nothing can tell a
+                    frag from the round: this choice draws no ribbon. Choose Main Round or Every
+                    Part, or give the builder its bit role.
+                  </>
+                ) : (
+                  <>
+                    This weapon does not burst into cluster bits, so there are no bits to trail and
+                    this choice draws no ribbon. Choose Main Round or Every Part.
+                  </>
+                )}
+              </p>
+            )}
           </div>
         </div>
 

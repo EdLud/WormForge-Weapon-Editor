@@ -82,6 +82,17 @@ to know which part burst. `nil` means this builder never classified it (another
 weapon, or one it left to WA), which is the only case a caller has to fall back
 on. Both answers are per missile id, so they are lockstep stable.
 
+The identity is filled by the `wa.on.missile_frame` handler `sb.flight`
+registers, and the engine runs a mod's handlers in registration order. A reader
+that has to ask on the missile's first frame registers its own handler after
+`sb.flight` (the editor's ribbon trail does), so the answer is already there.
+One case is undecided on purpose: a missile at a round that was seen on that
+same frame, because the engine can list a burst's bits before it drops the
+round. That answer stays `nil` for exactly one frame, and the next frame says
+whether the round survived (another shot) or went (one of its bits). Waiting is
+correct; guessing there is what made cluster bits read as rounds and lose their
+ribbon.
+
 ```lua
 sb.flight(ctx, {
   weapon = ctx.id,

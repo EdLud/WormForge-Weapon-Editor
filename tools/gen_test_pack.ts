@@ -2119,9 +2119,11 @@ const TESTS: TestCase[] = [
       burst: 'clusters',
       body: { sprite: 'grenade' },
       clustlet: { count: 5, sprite_count: 1, animation: 2 },
-      // The primary builder has to be on: it is what classifies each missile
-      // (`sb.role`), and the trail's bit test reads that answer.
+      // The primary builder has to be on, and it needs a bit role: `sb.role` is
+      // what classifies each missile, and a builder with no `bits` art answers
+      // "main" for every frag.
       missileSprite: { enabled: true, mode: 'custom', anim: 'track', hideStock: true },
+      bitFlight: { mode: 'builder', anim: 'track', frames: 1 },
       packArt: { cluster_sprite: art('cluster_sprite', roleSheet(GRENADE_BMP, GRENADE_PNG, 16), 16) },
       trailer: {
         enabled: true,
@@ -2138,7 +2140,7 @@ const TESTS: TestCase[] = [
       'Ribbon trail with target "bit": the round flies bare and only its cluster bits trail. The builder is on for this weapon, so the identity is the one it decided on each missile`s first frame (`sb.role`), not the PX live-ribbon guess.',
     expect: 'No ribbon on the bomb; five blue ribbons once it bursts.',
     watch:
-      'A ribbon on the bomb (the guard inverted or dropped), no ribbons at all (the bit test reading a nil role as "not a bit", which happens when the builder is off), or five ribbons plus the parent`s (the hook attaching before the identity is cached).',
+      'A ribbon on the bomb (the guard inverted or dropped), no ribbons at all (the trail hook deciding on the frame before the builder has classified the bit: the two `wa.on.missile_frame` handlers are in the wrong order, or the wait line is gone), a builder with no bit role (every frag answers "main", so nothing trails), or five ribbons plus the parent`s (the hook attaching before the identity is cached).',
   },
   {
     project: makeOp({
@@ -2148,8 +2150,10 @@ const TESTS: TestCase[] = [
       burst: 'clusters',
       body: { sprite: 'grenade' },
       clustlet: { count: 5, sprite_count: 1, animation: 2 },
-      // Same reason as WF 51: the round/bit split is the builder's identity.
+      // Same reason as WF 51: the round/bit split is the builder's identity,
+      // and the builder only has one when it owns the bit art too.
       missileSprite: { enabled: true, mode: 'custom', anim: 'track', hideStock: true },
+      bitFlight: { mode: 'builder', anim: 'track', frames: 1 },
       packArt: { cluster_sprite: art('cluster_sprite', roleSheet(GRENADE_BMP, GRENADE_PNG, 16), 16) },
       explosion: {
         enabled: true,
@@ -2164,7 +2168,7 @@ const TESTS: TestCase[] = [
       'Explosion burst with target "main": only the round`s own blast draws the ring, and the five bit blasts stay plain even though they are missiles of the same weapon. The guard sits at the top of the merged claim `on_explode`, so the custom WAV and custom Lua in the same hook follow it too.',
     expect: 'One orange ring where the bomb bursts; five silent bit blasts, no rings.',
     watch:
-      'Six rings (the guard not emitted, or `sb.role` returning nil for the bits), no ring at all (the guard reading the round as a bit: `sb.role` must answer "main"), or the bits` own blast silenced (the burst in `blast` mode, where the record is zeroed for every missile).',
+      'Six rings (the guard not emitted, the builder owning no bit role so every frag answers "main", or `sb.role` returning nil for the bits), no ring at all (the guard reading the round as a bit: `sb.role` must answer "main"), or the bits` own blast silenced (the burst in `blast` mode, where the record is zeroed for every missile).',
   },
   {
     project: makeOp({

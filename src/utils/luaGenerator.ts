@@ -4233,85 +4233,6 @@ export function generateLuaCode(project: WeaponProject): string {
   }
 
 
-  // Effects-SDK ribbon trail (`wf-lib/effects/trail`): PX's effect manager
-  // samples the round's position on game frames and draws a tapering ribbon,
-  // so its colour, widths and length are ours to choose. Attached on the
-  // round's first missile frame, exactly as the PX ports do (famas, megashark,
-  // px_ninja_star): WA fires this record itself, so there is no
-  // `wa.weapons.launch` id to hand `trail.add`.
-  if (usesRibbonTrail) {
-    const t = ribbonTrail!;
-    const { r, g, b } = hexToRgb(t.color);
-    const max = Math.max(2, Math.round(t.max));
-    const every = Math.max(1, Math.round(t.every));
-    const vanish = Math.max(1, Math.round(t.vanish));
-    // `fx.install{ trail = true }` above installs the shared sampler and draw hook.
-    lines.push('    local TRAIL = {');
-    lines.push(`      max = ${max}, every = ${every}, vanish = ${vanish},`);
-    lines.push(`      core_w = ${formatNumber(Math.max(0, t.coreWidth))},`);
-    lines.push(`      glow_w = ${formatNumber(Math.max(0, t.glowWidth))},`);
-    // PX's own lateral jitter (`noise`, a reach arc's crackle) and its hue
-    // cycle. A zero jitter and no rainbow is the straight ribbon it always was,
-    // so an old project emits the keys it needs and nothing else.
-    if (t.noise > 0) lines.push(`      noise = ${formatNumber(Math.max(0, t.noise))},`);
-    if (t.rainbow) lines.push('      rainbow = true,');
-    lines.push(`      r = ${r}, g = ${g}, b = ${b},`);
-    lines.push('    }');
-    lines.push('    -- The driver needs an owner: whose turn it is, else any living worm.');
-    lines.push('    local function trail_worm()');
-    lines.push('      local first');
-    lines.push('      for _, w in ipairs(wa.worms.all()) do');
-    lines.push('        if w.turn then return w end');
-    lines.push('        if not first and w.hp > 0 then first = w end');
-    lines.push('      end');
-    lines.push('      return first');
-    lines.push('    end');
-    if (t.target !== 'all') {
-      // Which part of the missile is this? The flight builder decides it once,
-      // on first sight (`sb.role`), and that is the exact answer when it is
-      // installed. Without it the only available test is the PX one: cluster
-      // bits are born where their parent died, while its ribbon is still
-      // shedding points, so a first-seen round with a ribbon already live for
-      // this weapon is a bit. The live ids are an array: `pairs` order is not
-      // lockstep-safe (wfcheck's lockstep-pairs).
-      lines.push('    local trailed = {}');
-      lines.push('    local function trail_live()');
-      lines.push('      for i = 1, #trailed do');
-      lines.push('        if trail.has(trailed[i]) then return true end');
-      lines.push('      end');
-      lines.push('      return false');
-      lines.push('    end');
-      lines.push('    local function trail_is_bit(m)');
-      // `sb` is a local the builder's own `require` declares, so it only exists
-      // when the builder is on for this weapon. Nothing to read off it
-      // otherwise, and wfcheck is right that naming it would be an undefined
-      // global: the PX heuristic is the whole answer then.
-      if (builderOn) {
-        lines.push('      local role = sb.role and sb.role(m.id)');
-        lines.push('      if role ~= nil then return role ~= "main" end');
-      }
-      lines.push('      return trail_live()');
-      lines.push('    end');
-    }
-    lines.push('    local seen = {}');
-    lines.push('    wa.on.missile_frame(function(m)');
-    lines.push('      if m.weapon ~= ctx.id or m.phase ~= "pre" then return end');
-    lines.push('      if seen[m.id] then return end');
-    lines.push('      seen[m.id] = true');
-    if (t.target === 'main') {
-      lines.push('      if trail_is_bit(m) then return end');
-    } else if (t.target === 'bit') {
-      lines.push('      if not trail_is_bit(m) then return end');
-    }
-    if (t.target === 'all') {
-      lines.push('      trail.add(m.id, trail_worm(), TRAIL)');
-    } else {
-      lines.push('      if trail.add(m.id, trail_worm(), TRAIL) then trailed[#trailed + 1] = m.id end');
-    }
-    lines.push('    end)');
-    lines.push('');
-  }
-
   // A pack WAV on a fixed interval while the round flies. `wa.on.missile_frame`
   // has no owner handle, so the voice rides the firing worm (whose turn it is,
   // else any living worm): WA's positional sound needs a game entity, and a
@@ -4528,6 +4449,111 @@ export function generateLuaCode(project: WeaponProject): string {
       lines.push('      },');
     }
     lines.push('    })');
+  }
+
+  // Effects-SDK ribbon trail (`wf-lib/effects/trail`): PX's effect manager
+  // samples the round's position on game frames and draws a tapering ribbon,
+  // so its colour, widths and length are ours to choose. Attached on the
+  // round's first missile frame, exactly as the PX ports do (famas, megashark,
+  // px_ninja_star): WA fires this record itself, so there is no
+  // `wa.weapons.launch` id to hand `trail.add`.
+  //
+  // Written after `sb.flight` on purpose: both register `wa.on.missile_frame`,
+  // and the engine runs a mod's handlers in registration order, so the builder
+  // has to decide a missile's identity before this hook asks `sb.role` for it.
+  // The cluster bits are the case that proved it: a bit used to ask on its
+  // first frame, get nil, and fall back to a guess that said "not a bit".
+  //
+  // The builder can only answer "bit" when it owns the bit art. A cluster
+  // weapon whose builder leaves the bits to WA calls every frag `main`, so the
+  // PX heuristic is the better answer there; every other case (a fire sequence,
+  // a second round) is exactly what `sb.role` exists for.
+  const builderIdentity =
+    builderOn && (project.burst !== 'clusters' || bitBuilderMode(project) !== null);
+  if (usesRibbonTrail) {
+    const t = ribbonTrail!;
+    const { r, g, b } = hexToRgb(t.color);
+    const max = Math.max(2, Math.round(t.max));
+    const every = Math.max(1, Math.round(t.every));
+    const vanish = Math.max(1, Math.round(t.vanish));
+    // `fx.install{ trail = true }` above installs the shared sampler and draw hook.
+    lines.push('    local TRAIL = {');
+    lines.push(`      max = ${max}, every = ${every}, vanish = ${vanish},`);
+    lines.push(`      core_w = ${formatNumber(Math.max(0, t.coreWidth))},`);
+    lines.push(`      glow_w = ${formatNumber(Math.max(0, t.glowWidth))},`);
+    // PX's own lateral jitter (`noise`, a reach arc's crackle) and its hue
+    // cycle. A zero jitter and no rainbow is the straight ribbon it always was,
+    // so an old project emits the keys it needs and nothing else.
+    if (t.noise > 0) lines.push(`      noise = ${formatNumber(Math.max(0, t.noise))},`);
+    if (t.rainbow) lines.push('      rainbow = true,');
+    lines.push(`      r = ${r}, g = ${g}, b = ${b},`);
+    lines.push('    }');
+    lines.push('    -- The driver needs an owner: whose turn it is, else any living worm.');
+    lines.push('    local function trail_worm()');
+    lines.push('      local first');
+    lines.push('      for _, w in ipairs(wa.worms.all()) do');
+    lines.push('        if w.turn then return w end');
+    lines.push('        if not first and w.hp > 0 then first = w end');
+    lines.push('      end');
+    lines.push('      return first');
+    lines.push('    end');
+    if (t.target !== 'all') {
+      // Which part of the missile is this? The flight builder decides it once,
+      // on first sight (`sb.role`), and that is the exact answer when it is
+      // installed. Without it the only available test is the PX one: cluster
+      // bits are born where their parent died, while its ribbon is still
+      // shedding points, so a first-seen round with a ribbon already live for
+      // this weapon is a bit. The live ids are an array: `pairs` order is not
+      // lockstep-safe (wfcheck's lockstep-pairs).
+      if (t.target === 'bit' && !builderIdentity) {
+        lines.push('    -- Bits only, and the builder owns no bit art (or is off): nothing on this');
+        lines.push('    -- build can tell a frag from the round, so `trail_is_bit` has no live');
+        lines.push('    -- ribbon to compare against and no missile is trailed.');
+      }
+      lines.push('    local trailed = {}');
+      lines.push('    local function trail_live()');
+      lines.push('      for i = 1, #trailed do');
+      lines.push('        if trail.has(trailed[i]) then return true end');
+      lines.push('      end');
+      lines.push('      return false');
+      lines.push('    end');
+      lines.push('    local function trail_is_bit(m)');
+      // `sb` is a local the builder's own `require` declares, so it only exists
+      // when the builder is on for this weapon. Nothing to read off it
+      // otherwise, and wfcheck is right that naming it would be an undefined
+      // global: the PX heuristic is the whole answer then.
+      if (builderIdentity) {
+        lines.push('      local role = sb.role and sb.role(m.id)');
+        lines.push('      if role ~= nil then return role ~= "main" end');
+      }
+      lines.push('      return trail_live()');
+      lines.push('    end');
+    }
+    lines.push('    local seen = {}');
+    lines.push('    wa.on.missile_frame(function(m)');
+    lines.push('      if m.weapon ~= ctx.id or m.phase ~= "pre" then return end');
+    lines.push('      if seen[m.id] then return end');
+    if (builderIdentity) {
+      // A burst listed on the round's last frame is left undecided for one
+      // frame on purpose (the round may have survived as another shot), so the
+      // answer is nil here for exactly that frame. Wait for it: deciding now
+      // is what cost the cluster bits their ribbon. An older installed library
+      // has no `sb.role` at all, and the PX heuristic below is its answer.
+      lines.push('      if sb.role and sb.role(m.id) == nil then return end');
+    }
+    lines.push('      seen[m.id] = true');
+    if (t.target === 'main') {
+      lines.push('      if trail_is_bit(m) then return end');
+    } else if (t.target === 'bit') {
+      lines.push('      if not trail_is_bit(m) then return end');
+    }
+    if (t.target === 'all') {
+      lines.push('      trail.add(m.id, trail_worm(), TRAIL)');
+    } else {
+      lines.push('      if trail.add(m.id, trail_worm(), TRAIL) then trailed[#trailed + 1] = m.id end');
+    }
+    lines.push('    end)');
+    lines.push('');
   }
 
   // `wa.on.*` registrations a bundle carried (M6). Additive by construction
@@ -4842,12 +4868,18 @@ export function weaponManifestPart(project: WeaponProject): WeaponManifestPart {
     lines.push(`frames = ${STAMP_FRAMES}`);
   }
 
-  if (usesHold && project.hold.frames > 1) {
+  // The hold picture's cell count, which is not always what the hold plays: the
+  // engine slices by this declaration and only picks an index with `hold.frames`
+  // (`worm_hold.rs`), so a 20-frame strip held on one frame (`hold.frames = 1`,
+  // PX's buffalo) still has to be declared as 20 cells or all of it is squeezed
+  // into the cell.
+  const holdCells = Math.max(1, Math.round(project.hold?.sheetFrames ?? project.hold?.frames ?? 1));
+  if (usesHold && holdCells > 1) {
     const sheetPath = holdSheetPath(project);
     emitted.add(sheetPath);
     lines.push('');
     lines.push(`[sprites.${luaQuote(sheetPath)}]`);
-    lines.push(`frames = ${project.hold.frames}`);
+    lines.push(`frames = ${holdCells}`);
     lines.push(`fps = ${project.hold.fps || 15}`);
     lines.push('play = "loop"');
   }

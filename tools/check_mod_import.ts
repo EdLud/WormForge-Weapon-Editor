@@ -1527,6 +1527,63 @@ for (const [name, p] of projects) {
   );
 }
 
+// ---- a hold of one frame over a multi-cell picture ------------------------
+// PX's Buffalo of Lies holds frame 0 of a 20-cell run cycle, which the manifest
+// declares as `frames = 20`. The import has to keep both numbers: the cell count
+// is what slices the PNG, `frames` is what the hold plays. Reading only
+// `hold.frames` made the export declare the strip as one cell.
+{
+  const sheet = readFileSync(join(ROOT, 'public/assets/defaults/default_hand_grenade.png'));
+  const cellsFiles: ModFile[] = [
+    {
+      path: 'cells/mod.toml',
+      text: `id = "t.cells"
+name = "Cells Test"
+version = "1.0.0"
+[sprites."sprites/cells/s.png"]
+frames = 20
+fps = 32
+play = "loop"
+
+[[components]]
+id = "t.cells.herd"
+type = "weapon"
+name = "Herd"
+entry = "weapons/herd.lua"
+`,
+    },
+    {
+      path: 'cells/weapons/herd.lua',
+      text: `return {
+  copy_from = "stock.grenade",
+  sprites = { "sprites/cells/s.png" },
+  hold = { sheet = "sprites/cells/s.png", frames = 1, weap_radius = -8 },
+}`,
+    },
+    { path: 'cells/sprites/cells/s.png', text: '', bytes: new Uint8Array(sheet) },
+  ];
+  const cellsBundle = readBundles(cellsFiles);
+  const cellsWeapon = readWeapons(cellsBundle, cellsFiles)[0];
+  if (cellsWeapon) {
+    const imported = await importBundleWeapon(cellsWeapon, cellsFiles);
+    const hold = (imported.project as WeaponProject).hold;
+    check(
+      'a hold over a 20-cell picture keeps its cell count',
+      hold?.frames === 1 && hold?.sheetFrames === 20,
+      `frames ${hold?.frames}, sheetFrames ${hold?.sheetFrames}`,
+    );
+    const toml = generateModToml(imported.project as WeaponProject);
+    // The export writes the hold into the weapon's own folder, so the path is
+    // the component id's segment, not the source bundle's.
+    const decl = toml.indexOf('[sprites."sprites/herd/hold.png"]');
+    check(
+      'and the export declares the cells, not the played frame',
+      decl >= 0 && /frames = 20/.test(toml.slice(decl, decl + 120)),
+      decl < 0 ? 'the hold sheet is not declared' : toml.slice(decl, decl + 120),
+    );
+  }
+}
+
 if (failures.length > 0) {
   console.error(`\n${failures.length} check(s) failed:\n- ${failures.join('\n- ')}`);
   process.exit(1);

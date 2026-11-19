@@ -16,13 +16,14 @@ const inputClass =
   'w-full px-2.5 py-1.5 text-xs bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 rounded-lg text-stone-900 dark:text-white focus:outline-hidden focus:ring-2 focus:ring-forge-500 disabled:opacity-60 disabled:cursor-not-allowed';
 
 /**
- * The bundle's own identity, which only exists once it holds more than one weapon.
+ * The bundle's own identity, which exists once it holds more than one weapon.
  *
  * `mod.toml` is one file per bundle: its `id` names the folder under
  * `WormForge/Mods/`, its `name` is what the mod loader lists, and `replaces` takes
- * other bundles over. A bundle of one weapon does not get a second identity
- * (see `syncPackToSoleWeapon`), so this card explains that instead of offering
- * fields whose values would be overwritten on the next edit of the weapon.
+ * other bundles over. A bundle of one weapon **is** that weapon
+ * (`syncPackToSoleWeapon`), so its id, name, author and version are the ones on
+ * the Weapon Loadout card above: this card says so instead of showing four more
+ * boxes for the same four values.
  */
 export const PackSettingsCard: React.FC<PackSettingsCardProps> = ({
   pack,
@@ -59,6 +60,9 @@ export const PackSettingsCard: React.FC<PackSettingsCardProps> = ({
   // under, so renaming it renames them with it (`renamespaceWeapons`). It is
   // edited whole: no part of it is fixed.
   const renameBundle = (raw: string) => {
+    // A box with nothing nameable in it is not an id: writing the fallback would
+    // rename the bundle to "bundle" mid-typing.
+    if (!raw.replace(/[^a-zA-Z0-9_.-]/g, '').replace(/[._-]/g, '')) return;
     const next = slugId(raw, 'bundle');
     if (next === pack.id) return;
     const renamed = renamespaceWeapons(pack, pack.id, next);
@@ -144,64 +148,68 @@ export const PackSettingsCard: React.FC<PackSettingsCardProps> = ({
             </div>
             <p className="text-[10px] text-stone-500 dark:text-stone-400">{iconSource}</p>
           </div>
-          {!many && (
-            <p className="ml-auto max-w-[22rem] text-[10px] leading-relaxed text-stone-500 dark:text-stone-400">
-              This bundle holds one weapon, so its id, name and icon are the weapon&apos;s own.
-              {mainWeapon ? ` Add a second weapon to give the bundle an identity of its own.` : ''}
-            </p>
-          )}
         </div>
 
         <div className="grid gap-3 sm:grid-cols-2">
-          <label className="block">
-            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-stone-500 dark:text-stone-400">
-              Bundle id
-            </span>
-            <input
-              className={inputClass}
-              value={pack.id}
-              disabled={!many}
-              title="Unique across every installed bundle, and the namespace its weapons live under; it names the folder under WormForge/Mods/."
-              onChange={(event) => renameBundle(event.target.value)}
-            />
-          </label>
+          {/* Four boxes for the same four values the Weapon Loadout card edits,
+              when the bundle holds only that weapon, would be a second way to
+              type one thing. The one-weapon rule makes them the weapon's. */}
+          {many ? (
+            <>
+              <label className="block">
+                <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-stone-500 dark:text-stone-400">
+                  Bundle id
+                </span>
+                <input
+                  className={inputClass}
+                  value={pack.id}
+                  title="Unique across every installed bundle, and the namespace its weapons live under; it names the folder under WormForge/Mods/."
+                  onChange={(event) => renameBundle(event.target.value)}
+                />
+              </label>
 
-          <label className="block">
-            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-stone-500 dark:text-stone-400">
-              Bundle name
-            </span>
-            <input
-              className={inputClass}
-              value={pack.name}
-              disabled={!many}
-              title="What the mod loader lists, and the default profile file name."
-              onChange={(event) => onChange({ name: event.target.value })}
-            />
-          </label>
+              <label className="block">
+                <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-stone-500 dark:text-stone-400">
+                  Bundle name
+                </span>
+                <input
+                  className={inputClass}
+                  value={pack.name}
+                  title="What the mod loader lists, and the default profile file name."
+                  onChange={(event) => onChange({ name: event.target.value })}
+                />
+              </label>
 
-          <label className="block">
-            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-stone-500 dark:text-stone-400">
-              Author
-            </span>
-            <input
-              className={inputClass}
-              value={pack.author}
-              disabled={!many}
-              onChange={(event) => onChange({ author: event.target.value })}
-            />
-          </label>
+              <label className="block">
+                <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-stone-500 dark:text-stone-400">
+                  Author
+                </span>
+                <input
+                  className={inputClass}
+                  value={pack.author}
+                  onChange={(event) => onChange({ author: event.target.value })}
+                />
+              </label>
 
-          <label className="block">
-            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-stone-500 dark:text-stone-400">
-              Version
-            </span>
-            <input
-              className={inputClass}
-              value={pack.version}
-              disabled={!many}
-              onChange={(event) => onChange({ version: event.target.value })}
-            />
-          </label>
+              <label className="block">
+                <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-stone-500 dark:text-stone-400">
+                  Version
+                </span>
+                <input
+                  className={inputClass}
+                  value={pack.version}
+                  onChange={(event) => onChange({ version: event.target.value })}
+                />
+              </label>
+            </>
+          ) : (
+            <p className="rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-[10px] leading-relaxed text-stone-500 sm:col-span-2 dark:border-stone-800 dark:bg-stone-950/40 dark:text-stone-400">
+              The bundle id, name, author and version are the weapon&apos;s own while it is
+              alone, so they are edited in <strong>Weapon Loadout</strong> above
+              {mainWeapon ? ` (${mainWeapon.name}, ${mainWeapon.id})` : ''}. Add a second weapon
+              and this bundle gets an identity of its own.
+            </p>
+          )}
 
           <label className="block">
             <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-stone-500 dark:text-stone-400">
