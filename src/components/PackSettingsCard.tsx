@@ -1,5 +1,5 @@
-import React from 'react';
-import { Boxes, Trash2 } from 'lucide-react';
+import React, { useRef } from 'react';
+import { Boxes, Image as ImageIcon, Trash2 } from 'lucide-react';
 import type { PackProject } from '../types/weapon';
 import { sanitizeModFolder } from '../utils/luaGenerator';
 import { renamespaceWeapons } from '../utils/pack';
@@ -32,6 +32,29 @@ export const PackSettingsCard: React.FC<PackSettingsCardProps> = ({
   const many = pack.weapons.length > 1;
   const folder = sanitizeModFolder(pack.id);
   const replaces = (pack.replaces ?? []).join(', ');
+  const packIconRef = useRef<HTMLInputElement>(null);
+  // One icon per bundle. The manifest names a single `mod_icon`, so this file is
+  // written once into the bundle's own folder, and a bundle that has none is
+  // fine: the mod loader draws the name's initials. With no upload the first
+  // weapon's icon stands in, which is why the hint says whose icon it is.
+  const mainWeapon = pack.weapons[0];
+  const fallbackIcon = pack.weapons.find((weapon) => weapon.customIconPreview);
+  const iconPreview = pack.iconPreview ?? fallbackIcon?.customIconPreview;
+  const iconSource = pack.iconFile
+    ? 'Uploaded for this bundle'
+    : fallbackIcon
+      ? `${fallbackIcon.name || 'A weapon'}'s panel icon`
+      : 'None: the mod loader shows initials';
+  const uploadPackIcon = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () =>
+      onChange({ iconFile: file, iconPreview: reader.result as string });
+    reader.readAsDataURL(file);
+    event.target.value = '';
+  };
+  const clearPackIcon = () => onChange({ iconFile: undefined, iconPreview: undefined, modIcon: undefined });
   // The bundle id is the author's, and it is the **namespace** its weapons live
   // under, so renaming it renames them with it (`renamespaceWeapons`). It is
   // edited whole: no part of it is fixed.
@@ -66,6 +89,68 @@ export const PackSettingsCard: React.FC<PackSettingsCardProps> = ({
       </div>
 
       <div className="space-y-3 p-4">
+
+        {/* The bundle's one icon. */}
+        <div className="flex items-end gap-2.5">
+          <div
+            className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-stone-300 bg-stone-100 dark:border-stone-700 dark:bg-stone-950"
+            title={`Bundle icon (mod_icon): ${iconSource}`}
+          >
+            {iconPreview ? (
+              <img
+                src={iconPreview}
+                alt="Bundle icon"
+                className="h-8 w-8 object-contain"
+                style={{ imageRendering: 'pixelated' }}
+              />
+            ) : (
+              <span className="font-mono text-[10px] font-semibold uppercase text-stone-400">
+                {(pack.name || pack.id || 'wf').slice(0, 4)}
+              </span>
+            )}
+          </div>
+          <div className="space-y-1">
+            <div className="text-[11px] font-semibold text-stone-600 dark:text-stone-400">
+              Bundle icon
+            </div>
+            <div className="flex items-center gap-1">
+              <input
+                ref={packIconRef}
+                type="file"
+                accept="image/png,.png"
+                onChange={uploadPackIcon}
+                className="hidden"
+              />
+              <button
+                type="button"
+                onClick={() => packIconRef.current?.click()}
+                className="inline-flex items-center gap-1 rounded-md border border-sky-300/80 bg-sky-50/75 px-2 py-1 text-[11px] font-semibold text-sky-800 hover:bg-sky-100 dark:border-sky-700/60 dark:bg-sky-950/30 dark:text-sky-200 dark:hover:bg-sky-900/40 whitespace-nowrap shrink-0 cursor-pointer"
+                title="A pack has one icon: it is written once, as sprites/<bundle>/icon.png, and named by mod_icon."
+              >
+                <ImageIcon className="h-3 w-3 text-sky-600 dark:text-sky-400" aria-hidden="true" />
+                <span>{pack.iconFile ? 'Replace' : 'Upload PNG'}</span>
+              </button>
+              {pack.iconFile && (
+                <button
+                  type="button"
+                  onClick={clearPackIcon}
+                  className="rounded-md p-1 text-stone-400 hover:bg-stone-100 hover:text-forge-600 dark:hover:bg-stone-800 dark:hover:text-forge-400 cursor-pointer"
+                  title="Remove the bundle icon: the first weapon's icon is used, or none"
+                  aria-label="Remove the bundle icon"
+                >
+                  <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                </button>
+              )}
+            </div>
+            <p className="text-[10px] text-stone-500 dark:text-stone-400">{iconSource}</p>
+          </div>
+          {!many && (
+            <p className="ml-auto max-w-[22rem] text-[10px] leading-relaxed text-stone-500 dark:text-stone-400">
+              This bundle holds one weapon, so its id, name and icon are the weapon&apos;s own.
+              {mainWeapon ? ` Add a second weapon to give the bundle an identity of its own.` : ''}
+            </p>
+          )}
+        </div>
 
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="block">
@@ -152,13 +237,13 @@ export const PackSettingsCard: React.FC<PackSettingsCardProps> = ({
           </label>
           <label className="block sm:col-span-2">
             <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-stone-500 dark:text-stone-400">
-              Bundle description
+              Profile description
             </span>
             <input
               className={inputClass}
               value={pack.description ?? ''}
               placeholder={`${pack.name} test profile.`}
-              title="Profile description written into the bundle's shared profile TOML."
+              title="The profile's own description, written to profiles/<name>.toml: it is what the mod loader shows for the profile that places these weapons, not a manifest field."
               onChange={(event) => onChange({ description: event.target.value })}
             />
           </label>

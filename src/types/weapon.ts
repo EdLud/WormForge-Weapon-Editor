@@ -165,6 +165,17 @@ export interface HoldConfig {
   handRadius: number;
   weapRadius: number;
   weapRotation: number;
+  /**
+   * Where around the worm the art hangs, in turns of PI: the engine places the
+   * weapon at `rot + PI * weap_radial_rotation` and the hand at
+   * `rot - PI * hand_radial_rotation` (`worm_hold.rs`). 1 is the baseline both
+   * the editor used to write and PX's own weapons mostly use, and 0 puts the
+   * arm on the other side of the worm, which is why a hold can carry a negative
+   * `weapRadius` and still point forward. PX ships 0.5, 0.22 and 0, so an
+   * import that dropped these moved the art a half turn.
+   */
+  weapRadialRotation?: number;
+  handRadialRotation?: number;
   scale: number;
   handScale: number;
   frames: number;
@@ -308,6 +319,13 @@ export interface MeleeHit {
   /** The literal throw, in `fixed` push mode only. Unset: the weapon's own. */
   vx?: number;
   vy?: number;
+  /**
+   * This strike's own sound, where it lands. Unset plays the weapon's
+   * `hitSound`, which is what a combo whose strikes sound alike needs; a lighter
+   * first strike is the reason the row exists: the claim eats WA's fire, so the
+   * swing is heard only through these.
+   */
+  sound?: MeleeSound;
 }
 
 /**
@@ -1190,7 +1208,18 @@ export interface PackProject {
   replaces?: string[];
   /** The one profile the export writes; defaults to the pack name. */
   profileName?: string;
-  /** A bundle-level `mod_icon`; else the first weapon's uploaded icon. */
+  /**
+   * The bundle icon, uploaded (or carried from an imported bundle). One per
+   * bundle: `mod_icon` in `mod.toml` names a single file the mod loader shows,
+   * and the folder is `sprites/<bundle slug>/icon.png`.
+   */
+  iconFile?: File;
+  iconPreview?: string;
+  /**
+   * The `mod_icon` path in the manifest. An uploaded `iconFile` always wins and
+   * points this at its own file; with none, the first weapon's icon is used, and
+   * a bundle carrying neither is fine (the mod loader shows initials).
+   */
   modIcon?: string;
   weapons: WeaponProject[];
 }

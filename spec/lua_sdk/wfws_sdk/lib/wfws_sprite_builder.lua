@@ -1542,6 +1542,19 @@ local function hold_melee_sound(spec, role)
   return { sound = id, priority = math.floor(tonumber(spec[role .. "_priority"]) or 8) }
 end
 
+-- A strike's own sample (`wav` / `sound` / `priority` on its row), for a combo
+-- whose jabs and haymakers are heard differently. `nil` falls back to the
+-- weapon's own `hit_wav` / `hit_sound` in `hold_melee_strike`.
+local function hold_melee_hit_audio(h)
+  local wav = h.wav
+  if type(wav) == "string" and wav ~= "" then
+    return { sound = wav, priority = math.floor(tonumber(h.priority) or 8) }
+  end
+  local id = math.floor(tonumber(h.sound) or 0)
+  if id == 0 then return nil end
+  return { sound = id, priority = math.floor(tonumber(h.priority) or 8) }
+end
+
 local function hold_melee_hits(spec, push_aim)
   local out = {}
   local listed = type(spec.hits) == "table" and spec.hits or nil
@@ -1556,6 +1569,7 @@ local function hold_melee_hits(spec, push_aim)
           lift = h.lift ~= nil and tonumber(h.lift) or (tonumber(spec.lift) or 0),
           vx = h.vx ~= nil and tonumber(h.vx) or nil,
           vy = h.vy ~= nil and tonumber(h.vy) or nil,
+          audio = hold_melee_hit_audio(h),
         }
       end
     end
@@ -1671,7 +1685,9 @@ local function hold_melee_strike(entry, w, st, index)
   -- `wa.sound` arrived with 0.9.x, so an older engine keeps the strike and loses
   -- only the sound.
   if wa.sound and wa.sound.play then
-    local audio = hits > 0 and m.hit_audio or m.miss_audio
+    -- The strike's own sample wins over the weapon's, which is what lets a
+    -- combo open with a light hit and close with a heavy one.
+    local audio = hits > 0 and (hit.audio or m.hit_audio) or m.miss_audio
     if audio then
       local emitter = hits > 0 and first_hit or w
       if emitter then pcall(wa.sound.play, emitter, audio.sound, audio.priority) end
@@ -2155,7 +2171,8 @@ function M.hold(ctx, spec)
       -- half is one of WA's own ids (`hit_sound`) or a pack WAV played by path
       -- (`hit_wav`), and the file wins, like the firing art's fire_draw. 0 and
       -- no path is silent; the editor's default whiff is 96, WA's grenade throw
-      -- and bat miss.
+      -- and bat miss. A strike row can name its own sample instead, which the
+      -- weapon's becomes the fallback for.
       hit_audio = hold_melee_sound(melee_spec, "hit"),
       miss_audio = hold_melee_sound(melee_spec, "miss"),
       once = melee_spec.once ~= false,

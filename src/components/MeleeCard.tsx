@@ -1,6 +1,6 @@
-import React from 'react';
-import { Plus, Swords, Target, Trash2 } from 'lucide-react';
-import type { MeleeHit, MeleeSound, WeaponProject } from '../types/weapon';
+import React, { useRef } from 'react';
+import { Plus, Swords, Target, Trash2, Undo2, Volume2 } from 'lucide-react';
+import type { CustomSoundAsset, MeleeHit, MeleeSound, WeaponProject } from '../types/weapon';
 import { DEFAULT_MELEE, meleeStrikes, meleeTotalDamage } from '../data/melee';
 import { SOUND_PRIORITIES } from '../data/soundPresets';
 import { KeyTickInput } from './KeyTickInput';
@@ -101,6 +101,101 @@ const MeleeSoundField: React.FC<{
           </select>
         </div>
       </div>
+    </div>
+  );
+};
+
+/**
+ * One strike's own sample, in the table rather than a card of its own: a combo
+ * that opens with a light hit and closes with a heavy one needs a sound per
+ * strike, and the weapon's own hit sound is what every row without one plays.
+ * An id is enough for most combos; a WAV wins over it, as everywhere else.
+ */
+const StrikeSoundCell: React.FC<{
+  index: number;
+  sound: MeleeSound | undefined;
+  fallbackPriority: number;
+  onChange: (sound: MeleeSound | undefined) => void;
+}> = ({ index, sound, fallbackPriority, onChange }) => {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const cell =
+    'w-[52px] rounded border border-stone-300 bg-white px-1 py-0.5 text-right font-mono text-[11px] text-stone-900 dark:border-stone-700 dark:bg-stone-900 dark:text-white';
+  if (!sound) {
+    return (
+      <button
+        type="button"
+        onClick={() => onChange({ id: 0, priority: fallbackPriority })}
+        aria-label={`Strike ${index + 1} sound`}
+        title="Give this strike a sound of its own. Without one it plays the weapon's hit sound."
+        className="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] font-semibold text-stone-500 hover:bg-stone-100 hover:text-forge-600 dark:text-stone-400 dark:hover:bg-stone-700 dark:hover:text-forge-400"
+      >
+        <Plus className="h-3 w-3" aria-hidden="true" />
+        own
+      </button>
+    );
+  }
+  const patch = (next: Partial<MeleeSound>) => onChange({ ...sound, ...next });
+  return (
+    <div className="flex items-center gap-0.5">
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".wav,audio/wav,audio/x-wav"
+        className="sr-only"
+        aria-label={`Strike ${index + 1} sound file`}
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          event.target.value = '';
+          if (!file || !/\.wav$/i.test(file.name)) return;
+          const asset: CustomSoundAsset = {
+            file,
+            fileName: file.name,
+            size: file.size,
+            previewUrl: URL.createObjectURL(file),
+          };
+          patch({ file: asset });
+        }}
+      />
+      <input
+        type="number"
+        min={0}
+        max={2000}
+        value={sound.id}
+        disabled={!!sound.file}
+        aria-label={`Strike ${index + 1} sound id`}
+        title={
+          sound.file
+            ? `${sound.file.fileName} plays for this strike`
+            : "WA's own sample id for this strike. 0 is silent."
+        }
+        onChange={(event) => {
+          const value = Number(event.target.value);
+          if (event.target.value.trim() === '' || Number.isNaN(value)) return;
+          patch({ id: Math.max(0, Math.round(value)) });
+        }}
+        className={cell}
+      />
+      <button
+        type="button"
+        onClick={() => inputRef.current?.click()}
+        aria-label={`Upload a WAV for strike ${index + 1}`}
+        title="Play a WAV of your own where this strike lands."
+        className={`rounded p-0.5 hover:bg-sky-50 dark:hover:bg-sky-950/40 ${sound.file ? 'text-sky-600 dark:text-sky-400' : 'text-stone-400'}`}
+      >
+        <Volume2 className="h-3.5 w-3.5" aria-hidden="true" />
+      </button>
+      {/* A revert, not a delete: the strike keeps playing the weapon's own sound,
+          and one row of a table with a row-remove bin either side needs the
+          difference to be visible. */}
+      <button
+        type="button"
+        onClick={() => onChange(undefined)}
+        aria-label={`Clear strike ${index + 1} sound`}
+        title={`Use the weapon's hit sound for strike ${index + 1} again`}
+        className="rounded p-0.5 text-stone-400 hover:bg-stone-100 hover:text-forge-600 dark:hover:bg-stone-700 dark:hover:text-forge-400"
+      >
+        <Undo2 className="h-3 w-3" aria-hidden="true" />
+      </button>
     </div>
   );
 };
@@ -327,6 +422,12 @@ export const MeleeCard: React.FC<MeleeCardProps> = ({ project, onChange }) => {
                     >
                       Lift
                     </th>
+                    <th
+                      className="px-1 pb-1 text-left font-semibold"
+                      title="This strike's own sound, played where it lands: a lighter jab before the heavy hit. A row with none plays the weapon's hit sound above."
+                    >
+                      Sound
+                    </th>
                     <th className="w-6" />
                   </tr>
                 </thead>
@@ -407,6 +508,16 @@ export const MeleeCard: React.FC<MeleeCardProps> = ({ project, onChange }) => {
                             (value) => ({ lift: value }),
                             0.5,
                           )}
+                        </td>
+                        <td className="px-1 py-0.5">
+                          <StrikeSoundCell
+                            index={index}
+                            sound={hit.sound}
+                            fallbackPriority={melee.hitSound?.priority ?? 8}
+                            onChange={(sound) =>
+                              patchStrike(index, { sound: sound as MeleeSound })
+                            }
+                          />
                         </td>
                         <td className="px-1 py-0.5">
                           <button
@@ -585,7 +696,7 @@ export const MeleeCard: React.FC<MeleeCardProps> = ({ project, onChange }) => {
               <MeleeSoundField
                 role="hit"
                 label="Hit Sound"
-                hint="Played where the strike lands, at the worm it took. One strike plays it once, however many worms it takes, so a three-hit combo is three plays."
+                hint="Played where each strike lands, at the worm it took. Every strike plays it once, however many worms it takes, and a strike row in the table above can name a sample of its own instead: that is how a combo opens light and ends heavy."
                 sound={melee.hitSound}
                 onChange={(sound) => update({ hitSound: sound })}
               />
@@ -598,8 +709,9 @@ export const MeleeCard: React.FC<MeleeCardProps> = ({ project, onChange }) => {
               />
             </div>
             <p className="text-[10px] leading-snug text-stone-500 dark:text-stone-400">
-              Each strike plays one of them: the hit sound where it lands, the miss sound when it
-              reaches nobody. {strikes.length === 1
+              Each strike plays one of them: its own sound when the table above gives it one, else
+              the hit sound, where it lands; the miss sound when it reaches nobody.{' '}
+              {strikes.length === 1
                 ? 'One strike, one play.'
                 : `${strikes.length} strikes, up to ${strikes.length} plays.`}
             </p>

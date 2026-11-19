@@ -4715,3 +4715,127 @@ fire-sequence case (a second live round is not a frag), and the position rule.
 The generator still forces a stock `clusters.bit.sprite` (`clustlet`) and
 `sprite_count = 1` when the builder owns the bits: a bit needs a real sprite id
 for WA to construct it, even though the builder replaces the draw.
+
+---
+
+## 2026-11-18, installed corpus round trip: six import/export defects
+
+`tools/audit_bundles.ts` is the wider net behind `check_pack_fixture`: every
+installed bundle is read, exported, read back and exported again, compared by
+digest. It started at three export failures and five unstable bundles; it now
+reports 36 bundles and 169 weapons with 33 byte-identical, one stable once its
+donor is named (the `copy_from`-at-load case), two that need a library, and
+nothing failed. The findings:
+
+- **The SDK module table named a module the library does not export.**
+  `SDK_MODULE_EXPORTS` (as it then was, in `luaGenerator`) listed
+  `wf-lib/electric/hold` and omitted `wf-lib/electric/taze_mine`; the installed
+  `px.electric` exports `damage` and `taze_mine`, and three bundles require
+  `taze_mine`. `validateBundle` refused the **Conductor** and the **Pulsar** for
+  code that loads in game. The carry had a second copy of the same facts. Both
+  now read `src/data/sdkModules.ts`, measured against the installed manifests and
+  every `require("wf-lib/…")` in the corpus (`wf-lib/sdk` was listed too, and no
+  library exports it).
+- **`importBundlePack` retargeted art the wrong way.** On an id change it moved
+  art from the *wanted* id's folder to the current one, but the art had been
+  built from the single-weapon import's id. `wfws.vortex` (component id = bundle
+  id) exported declarations for `sounds/vortex_grenade/` while writing
+  `sounds/vortex/`, and the export was refused by name. It now moves from the
+  project's own folder to the adopted id's folder.
+- **Hooks and registrations were transformed on their own, and their art paths
+  were thrown away.** `carriedPaths` collected only the carried blocks, so the
+  Conductor's `FIRE_WEAPON` registration played `sounds/conductor/shot.wav` after
+  its path had been moved, while the claim's `sounds` list stayed empty and the
+  file was written undeclared. The paths from each hook/registration transform
+  now join `carriedPaths`.
+- **An empty `roam = { }` made a re-export differ from its source.** `flight_1`/
+  `flight_2` live in `sheep`, so a record whose only roam difference was those
+  set `roamTouched` with no row to write; the header and closer were still
+  emitted. A group with no rows is dropped, for the round and for its bits.
+- **An empty slot exported `"stock." = true` and placed the weapon on `F1`.** The
+  manifest resolved `''` to the Bazooka's position while the profile named
+  nothing, so one weapon of `example.tools` moved to the Bazooka on re-import.
+  `effectiveSlot(project)` (slot, else donor, else grenade) is now shared by the
+  manifest and the profile.
+- **A whole-bundle import discarded the reason its export would refuse.**
+  `ModBrowserModal` toasted a weapon count only, and `importBundlePack` reduced
+  per-weapon notes to `N note(s)`. `BundleImport.blocking` and
+  `PackImport.warnings` now carry the load-blocking sentences (an unshipped
+  carried `require`, a blocking Lua finding, an undeclared `ctx.option`) to a
+  dismissible alert above the page header; the single-weapon import puts them in
+  its toast.
+
+`check_pack_fixture` now names the four library-dependent bundles as skips and
+lists the module they need; refusing them is the correct answer for a standalone
+export, and the new warning is what tells the author which bundle to add.
+
+## 2026-11-19, the buffalo's names, the javelin's arm and a sound per strike
+
+Four reports, one cause between them: a value that the panel *showed* and the
+export *wrote* were not the same number, or a name the module wrote was never
+resolved. All four came out of reading real bundles rather than in-memory shapes.
+
+- **The buffalo's sheet, icon and sounds were dropped.** `px_buffalo` writes
+  `local SHEET = "sprites/buffalo/buffalo.png"`, `local ICON = "…/icon.png"`,
+  `local SND = "sounds/buffalo/"` and then `hold = { sheet = SHEET }`,
+  `panel_icon = ICON`, `sprites = { SHEET }`, `sounds = { SND .. "start.wav", … }`.
+  The table reader keeps literals only, so every one of those fields came back
+  empty: the import had no hold sheet, no icon and no sounds, and the flight art
+  was whatever the fallback happened to be. `luaStrings.ts` now collects
+  `local NAME = "…"` chains to a fixed point, follows `..` concatenation and fills
+  only the missing fields of the table the reader kept (and only when that table
+  is the file's `wa.weapons.replace` call, its `record` assignment or its
+  `return`, so one weapon's paths cannot land on another's art). The buffalo now
+  arrives with its sheet, its icon, its four WAVs, `weap_radial_rotation = 0.22`
+  and `hand_radial_rotation = -0.13`.
+- **Its sounds were still lost after that**, one layer down: the *carried* code
+  plays them (`SND .. "start.wav"` inside `on_fire`), and the path rewrite moved
+  the folder prefix in the text without attaching or declaring a single file.
+  `rewriteBundlePaths` now records a prefix move with its trailing slash and
+  `importWeapon` expands it into that folder's PNG/GIF/WAV files. Before, the
+  export named `sounds/buffalo_of_lies/start.wav` in the claim and wrote nothing.
+- **The javelin's radius read as +11.8 when it is -11.8.** The generator and the
+  preview both hard-coded `weap_radial_rotation = 1` / `hand_radial_rotation = 1`,
+  but `worm_hold.rs` places the weapon at `rot + PI*weap_radial_rotation` and the
+  hand at `rot - PI*hand_radial_rotation`, and PX ships 0, 0.22, -0.13. With the
+  radial term fixed at a half turn, a negative radius drew the art where a
+  positive one would, so the panel's -11.8 and the preview only agreed at +10.
+  Both are authored fields now (a dial each, `hold.weapRadialRotation` /
+  `handRadialRotation`), read on import when they differ from the fallback.
+- **A combo can sound like a combo.** `MeleeConfig.hitSound` played the same
+  sample for every strike, so a light jab was heard as the heavy finisher.
+  `MeleeHit.sound` (`sound` / `wav` / `priority` on the row) is played by the SDK
+  as `hit.audio or m.hit_audio`, the weapon's sample remains the fallback for the
+  rows that name none, and each strike's WAV is a file of its own
+  (`melee_hit<n>.wav` for strike n). `meleeStrikes()` carries the field through, which is the
+  half that mattered: the panel, the generator and the preview all read the table
+  from it, so a normaliser that rebuilt the rows without `sound` silently made
+  every strike of a combo play the weapon's one sound.
+
+Two more from the same pass, both `reqs/wflib_weapon_import_plan.md`:
+
+- **L3, the record is data.** `local weapon = { definition = { … } }` already
+  reached the claim candidates, but the *text* of that table was never found, so
+  the names inside it did not resolve. `claimTextOf(..., 'definition', 'field')`
+  finds the literal's braces on the masked copy (`matchingBrace`), and a
+  `definition = function()` is still code, not data. `check_module_scan.ts` 3b
+  pins the record, its `copy_from` and its resolved `hold.sheet`.
+- **L5, art.** A folder of per-frame PNGs (`sprites/i_bomb/body/00.png`) is what
+  the engine reads natively (`load_png_sequence`, file-name order), so the import
+  joins it into one strip in a canvas and uses the count as the role's `frames`
+  when the bundle declared none; a headless run says so instead of importing the
+  fallback sheet. `fps` comes from the bundle's `[sprites."…"]` declaration, and a
+  hold sheet's declared `fps` becomes `anim_speed = fps / (1.5 * frames)` when the
+  claim names none.
+
+**The bundle icon is `mod_icon`, and it is one per bundle.** It is uploaded in the
+Bundle Settings card (now mounted for a pack of one as well, since that card is
+where the bundle's own icon lives), written once at
+`sprites/<bundle>/icon.png`, named by the manifest, and read back on import into
+the pack along with `replaces`. Two rules keep it honest: a bundle with no
+uploaded icon falls back to its first weapon's panel icon, and a bundle with
+neither writes no `mod_icon` at all (the mod loader draws initials). And a
+`mod_icon` that names a **weapon's** own icon is not adopted as bundle art, which
+is a bug this work created and then removed: adopting it copied the file into the
+bundle folder and rewrote the line, so `wf-lib/utilities` stopped round-tripping
+byte for byte.

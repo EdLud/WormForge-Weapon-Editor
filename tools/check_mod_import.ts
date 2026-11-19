@@ -70,7 +70,7 @@ check(
   bundles.some((bundle) => bundle.id === 'wfws.sdk'),
   bundles.map((bundle) => bundle.id).join(', '),
 );
-check('test pack has 58 weapons', weapons.length === 58, String(weapons.length));
+check('test pack has 60 weapons', weapons.length === 60, String(weapons.length));
 
 const byName = new Map(weapons.map((weapon) => [weapon.name, weapon]));
 const projects = new Map<string, WeaponProject>();
@@ -1160,8 +1160,25 @@ return {
     // Every listed strike writes its own `lift` now, zero included: a missing
     // key inherits the weapon's `lift`, which threw the flat strike with the
     // first one's.
-    /hits = \{\s*\{ frame = 8, damage = 10, power = 2, lift = 0 \}/.test(comboLua),
+    /hits = \{\s*\{ frame = 8, damage = 10, power = 2, lift = 0, sound = 6 \}/.test(comboLua),
     'the `hits` table is missing from the regenerated Lua',
+  );
+  // A strike with a sample of its own: a light jab and a heavier second hit,
+  // and the strike that names none keeps playing the weapon's hit sound.
+  check(
+    'WF 55: each strike keeps its own sample',
+    comboHits[0]?.sound?.id === 6 &&
+      comboHits[1]?.sound?.id === 32 &&
+      comboHits[1]?.sound?.priority === 9 &&
+      comboHits[2]?.sound === undefined,
+    comboHits.map((hit) => hit.sound?.id ?? '-').join(','),
+  );
+  check(
+    'WF 55: and the per-strike samples are emitted again',
+    /frame = 8, damage = 10, power = 2, lift = 0, sound = 6 \}/.test(comboLua) &&
+      /frame = 16, damage = 12, power = 4, lift = 1, sound = 32, priority = 9 \}/.test(comboLua) &&
+      /frame = 22, damage = 16, power = 6, lift = 3 \}/.test(comboLua),
+    'a strike row lost its `sound`, or gained one it never had',
   );
   check(
     'WF 55: both sounds are emitted',

@@ -9,8 +9,51 @@
  * real module is found through `weapons/index.lua` rather than the manifest.
  */
 
+import { maskLuaCode } from '../luaText';
 import { parseToml, type TomlDocument } from './modToml';
 import { scanLua, firstTable, isTable, type LuaTable } from './luaTable';
+import { readAssignmentTable, readCallTable } from './luaTable';
+import { matchingBrace, resolveTableStrings, stringConstants } from './luaStrings';
+
+/**
+ * The source text of the table `source` was read from, when it can be known:
+ * a call's first table argument, an assignment's, or the file's `return` table.
+ */
+function claimTextOf(
+  text: string,
+  path: string,
+  kind: 'call' | 'assign' | 'return' | 'field',
+): string | undefined {
+  if (kind === 'call') return readCallTable(text, path)?.text;
+  if (kind === 'assign') return readAssignmentTable(text, path)?.text;
+  if (kind === 'field') {
+    // `local weapon = { definition = { … } }`: the record is one field of a
+    // table literal, so there is no path to read and the braces are found by
+    // hand. A `definition = function()` is code, not data, and is not claim text.
+    const masked = maskLuaCode(text);
+    for (const match of masked.matchAll(/(^|[^A-Za-z0-9_.])definition\s*=\s*\{/g)) {
+      const open = match.index! + match[0].length - 1;
+      const end = matchingBrace(masked, open);
+      if (end > open) return text.slice(open, end + 1);
+    }
+    return undefined;
+  }
+  // The `return { … }` table of a file that hands back a claim.
+  const at = /(^|\n)\s*return\s*\{/.exec(text);
+  if (!at) return undefined;
+  const open = text.indexOf('{', at.index + at[0].length - 1);
+  if (open < 0) return undefined;
+  const masked = maskLuaCode(text);
+  let depth = 0;
+  for (let i = open; i < masked.length; i += 1) {
+    if (masked[i] === '{') depth += 1;
+    else if (masked[i] === '}') {
+      depth -= 1;
+      if (depth === 0) return text.slice(open, i + 1);
+    }
+  }
+  return undefined;
+}
 
 export interface ModFile {
   /** Bundle-relative, `/`-separated (`wf-lib/px/weapons/banana_express.lua`). */
@@ -79,6 +122,14 @@ export interface ModBundle {
   exports: Record<string, string>;
   /** `asset_namespace`, e.g. `wf-lib/px`: the prefix this bundle's art carries. */
   assetNamespace?: string;
+  /** The manifest's `mod_icon`: the one icon the mod loader shows for the bundle. */
+  modIcon?: string;
+  /**
+   * The bundles this one retires (`replaces = ["core.fog", ...]`): installing it
+   * switches them off, so a re-export that dropped the list would change what the
+   * manifest means.
+   */
+  replaces?: string[];
   /** Files in this bundle, relative to `dir`. */
   files: string[];
 }
@@ -94,6 +145,8 @@ export interface ModWeapon {
   spriteDecls: Record<string, Record<string, unknown>>;
   /** The bundle's `author`, used as the imported project's credit. */
   author?: string;
+  /** The bundle's `mod_icon`: one icon for the whole bundle, not per weapon. */
+  bundleModIcon?: string;
   componentId: string;
   name: string;
   description?: string;
@@ -282,6 +335,8 @@ export function readBundles(files: ModFile[]): ModBundle[] {
       exports: doc.exports,
       assetNamespace:
         typeof doc.values.asset_namespace === 'string' ? doc.values.asset_namespace : undefined,
+      modIcon: typeof doc.values.mod_icon === 'string' ? doc.values.mod_icon : undefined,
+      replaces: Array.isArray(doc.values.replaces) ? (doc.values.replaces as string[]) : [],
       files: files
         .filter((entry) => entry.path.startsWith(prefix))
         .map((entry) => entry.path.slice(prefix.length)),
@@ -439,6 +494,29 @@ function readRecord(text: string): {
     returnedRecord ??
     (looksLikeRecord(returned) ? returned : undefined) ??
     findRecordLike(scan);
+  // A claim table written with names (`hold = { sheet = SHEET }`, `sounds = {
+  // SND .. "start.wav" }`) reads back with those fields empty, because the table
+  // reader keeps literals only. Resolve them against the text the table was
+  // written as, and only when that text is the table we kept: a merged claim's
+  // overrides live in the merge call, and reading them from another table would
+  // put one weapon's path on another's art.
+  if (source) {
+    const claimText =
+      (source === replace ? claimTextOf(text, 'wa.weapons.replace', 'call') : undefined) ??
+      (source === assigned
+        ? (claimTextOf(text, 'record', 'assign') ??
+          claimTextOf(text, 'weapon.record', 'assign'))
+        : undefined) ??
+      // A record handed back as data: `definition = { … }`, either assigned
+      // (`weapon.definition = { … }`) or a field of the module's own table.
+      (source === definition
+        ? (claimTextOf(text, 'definition', 'assign') ??
+          claimTextOf(text, 'weapon.definition', 'assign') ??
+          claimTextOf(text, 'definition', 'field'))
+        : undefined) ??
+      (source === returned ? claimTextOf(text, '', 'return') : undefined);
+    if (claimText) resolveTableStrings(source, claimText, stringConstants(text));
+  }
   const defaults = isTable(returned?.defaults)
     ? (returned!.defaults as LuaTable)
     : firstTable(scan, 'defaults', 'weapon.defaults') ??
@@ -620,6 +698,7 @@ export function readWeapons(bundles: ModBundle[], files: ModFile[]): ModWeapon[]
         dependencies: bundle.dependencies,
         spriteDecls: bundle.spriteDecls,
         author: bundle.author,
+        bundleModIcon: bundle.modIcon,
         componentId: component.id,
         name: component.name,
         description: component.description,

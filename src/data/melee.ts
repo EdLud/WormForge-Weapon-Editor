@@ -58,6 +58,9 @@ export function meleeStrikes(melee: MeleeConfig): MeleeHit[] {
           lift: Number(hit.lift) || 0,
           ...(hit.vx === undefined ? {} : { vx: Number(hit.vx) || 0 }),
           ...(hit.vy === undefined ? {} : { vy: Number(hit.vy) || 0 }),
+          // A strike's own sample is carried through: dropping it here is what
+          // made every strike of a combo play the weapon's one hit sound.
+          ...(hit.sound ? { sound: hit.sound } : {}),
         }))
       : [
           {

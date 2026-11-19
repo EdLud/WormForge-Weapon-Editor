@@ -2,7 +2,7 @@
  * Dev-only: a **real** pack round-trips through the editor unchanged (P6 of
  * `reqs/pack_export_plan.md`, no server, exits 1 on a failure).
  *
- *   bun run tools/gen_test_pack.ts      # the 58-shape fixture
+ *   bun run tools/gen_test_pack.ts      # the 60-shape fixture
  *   bun run tools/check_pack_fixture.ts
  *
  * `check_pack_roundtrip.ts` builds its packs in memory, so it proves the rules
@@ -125,6 +125,17 @@ async function roundTrip(label: string, files: ModFile[], ownOutput: boolean): P
       // The fallback art is painted with a canvas, which Bun does not have.
       ok(`${label}: needs the browser canvas for fallback art, skipped`, true);
       console.log(`  note ${label}: skipped, its fallback art has to be painted (canvas)`);
+      return;
+    }
+    // A bundle whose carried code requires a module only the source bundle ships
+    // (`require("lib/pyro")`) cannot be exported standalone: the emitted file
+    // would raise at load, so refusing is the correct answer, not a regression.
+    // The import already said which module; a fixture that cannot add that
+    // bundle to Dependencies skips it and says so.
+    const unshipped = first.warnings.filter((warning) => /not shipped by the export/.test(warning));
+    if (unshipped.length > 0) {
+      ok(`${label}: exports only with the library its code requires, skipped`, true);
+      for (const warning of unshipped) console.log(`  note ${label}: ${warning}`);
       return;
     }
     ok(`${label}: exports`, false, message);

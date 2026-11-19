@@ -22,7 +22,13 @@ interface Props {
   onClose: () => void;
   showToast: (message: string) => void;
   /** Applies an imported weapon to the editor's project. */
-  onImport: (project: Partial<WeaponProject> & { replaceProject?: boolean }) => void;
+  onImport: (
+    project: Partial<WeaponProject> & {
+      replaceProject?: boolean;
+      /** The bundle's `mod_icon`, for the pack this import creates. */
+      modIcon?: { file: File; preview?: string };
+    },
+  ) => void;
   /**
    * Opened from the bundle rail's "add from installed mods": the weapon joins the
    * bundle instead of replacing the open weapon. Only the label differs here; the
@@ -30,7 +36,7 @@ interface Props {
    */
   appendToPack?: boolean;
   /** Reads a whole bundle as a pack: every weapon component in it, ids kept. */
-  onImportPack: (pack: PackProject) => void;
+  onImportPack: (pack: PackProject, warnings: string[]) => void;
 }
 
 type Phase = 'idle' | 'reading' | 'ready' | 'error';
@@ -382,12 +388,7 @@ export function ModBrowserModal({
                                   importable,
                                   files,
                                 );
-                                onImportPack(result.pack);
-                                showToast(
-                                  `Read ${result.pack.weapons.length} weapon${
-                                    result.pack.weapons.length === 1 ? '' : 's'
-                                  } from ${selectedBundleInfo.id} as ${result.pack.id}`,
-                                );
+                                onImportPack(result.pack, result.warnings);
                                 onClose();
                               })();
                             }}
@@ -441,11 +442,17 @@ export function ModBrowserModal({
                               type="button"
                               onClick={() => {
                                 void (async () => {
-                                  const { project, notes, replaceProject } =
+                                  const { project, notes, blocking, replaceProject, modIcon } =
                                     await importBundleWeapon(selectedWeapon, files);
-                                  onImport({ ...project, replaceProject });
+                                  onImport({ ...project, replaceProject, ...(modIcon ? { modIcon } : {}) });
+                                  const summary = [
+                                    ...(notes.length > 0 ? [notes.join(', ')] : []),
+                                    ...(blocking.length > 0
+                                      ? [`the export will refuse it: ${blocking.join('; ')}`]
+                                      : []),
+                                  ].join('; ');
                                   showToast(
-                                    `Imported ${selectedWeapon.name}${notes.length > 0 ? `, ${notes.join(', ')}` : ''}`,
+                                    `Imported ${selectedWeapon.name}${summary ? `, ${summary}` : ''}`,
                                   );
                                   onClose();
                                 })();

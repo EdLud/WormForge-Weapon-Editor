@@ -371,6 +371,16 @@ import must emit no record tables.
   action writes the destination group in full (`fullGroup`, `clustletChanged`);
   a diff of only the changed keys lets the donor's numbers leak through and drew
   oil-drum frames as a homing trail. An untouched `.wep` still emits nothing.
+- **A group with no rows is not written.** The roam group's `flight_1`/`flight_2`
+  live in the record's `sheep` table, so a record whose only roam difference was
+  those made `roamTouched` true with no row to write and emitted `roam = { }`
+  (which writes nothing, and made a re-export differ from the export it came
+  from). The round's group and the cluster bit's group both drop an empty body.
+- **An empty `slot` is the donor's slot.** `effectiveSlot(project)` (`slot`, else
+  the `copy_from` donor, else `grenade`) is used by the component's
+  `default_position` **and** the profile's `stock.<slot>` line, so the two halves
+  of one export cannot disagree. `stock.` placed a weapon nowhere while the
+  manifest put it on `F1` (the Bazooka), and a re-import kept it there.
 - Clustlets carry `clusters.bit.action` (`impact`/`bounce`/`homing`/`roam`/`dig`);
   the groups share slots too, so only the active one is decoded or emitted.
 - Stock values are readable from PX's scheme:
@@ -854,6 +864,15 @@ needs any of them is drawn by `wfws.sdk`'s quad layer instead of the engine.
   the id box is parked while it is set. The default whiff is WA's 96, the
   grenade throw and the bat's miss; a strike lands one play per strike either
   way, at the first worm it took or at the striker when it took nobody.
+- **A combo strike can carry its own sound** (`MeleeHit.sound`): the row writes
+  `sound` / `wav` / `priority` and the SDK plays `hit.audio or m.hit_audio`, so a
+  light jab before a heavy finisher is heard as light and then heavy while every
+  row that names none keeps the weapon's `hitSound`. Its WAV is a file of its own,
+  `melee_hit<n>.wav` for strike *n* (so `melee_hit1.wav` for the first), declared
+  in `sounds` like the other melee samples. `meleeStrikes()` carries the field through: the panel, the
+  generator and the preview all read the table from it, and a normaliser that
+  rebuilt the rows without it is what made every strike of a combo play the
+  weapon's one sound.
 - Keyframe ticks commit on blur (`KeyTickInput`), because the keys are sorted by
   `t` and writing the `1` of "16" re-sorted the table mid-typing.
 
@@ -916,8 +935,15 @@ needs any of them is drawn by `wfws.sdk`'s quad layer instead of the engine.
   the launch table; a record with a pinned timer emits none of it. A custom
   `on_fire` owns the trigger, so the card is skipped then. Strikes are excluded.
 - Hold geometry is emitted in PX units: `weap_rotation = 1 + degrees/180`,
-  `hand_rotation = 1`, `weap_radial_rotation = 1`, `hand_radial_rotation = 1`, and
-  `weap_scale` carries the scale. Both radius sliders span `-35..35` px.
+  `hand_rotation = 1`, and `weap_scale` carries the scale. Both radius sliders span
+  `-35..35` px. **`weap_radial_rotation` and `hand_radial_rotation` are authored
+  fields** (`hold.weapRadialRotation` / `handRadialRotation`, default 1, turns of
+  PI): `worm_hold.rs` places the weapon at `rot + PI*weap_radial_rotation` and the
+  hand at `rot - PI*hand_radial_rotation`, and PX ships 0, 0.22, -0.13, so
+  hard-coding 1 turned the art a half turn and made the javelin's
+  `weap_radius = -11.8` read as +11.8. The importer reads both (only when they
+  differ from the fallback) and the panel has a dial for each, so a bundle
+  round-trips its arm position.
 - **Engine bug fallback**: `draw_hand = false` still draws the hand, so the
   generator also emits `hand_radius = 0.01` with it (the project keeps the
   author's `hold.handRadius`; the importer restores it).
@@ -935,11 +961,13 @@ The hold preview mirrors `worm_hold.rs`:
 
 - worm cell 60×60; the 32-frame `aim.png` posture strip is flipped inside the
   cell so the worm faces the weapon;
-- `rot = (1 - aim) * PI`; `rot_w = rot + PI`; weapon at
+- `rot = (1 - aim) * PI`; `rot_w = rot + PI * weapRadialRotation` (1 is the
+  engine's default); weapon at
   `(cx + sin(rot_w)*weap_radius, cy - cos(rot_w)*weap_radius)`;
   `weap_angle = rot + weap_rotation`;
-- hand at `rot_h = rot - PI` with `hand_radius`; put-away follows the 20-frame
-  `0x65/0x66` retreat and `0x6A/0x6B` fire poses; `thrown` skips put-away;
+- hand at `rot_h = rot - PI * handRadialRotation` with `hand_radius`; put-away
+  follows the 20-frame `0x65/0x66` retreat and `0x6A/0x6B` fire poses; `thrown`
+  skips put-away;
 - the scene is composed at 60×60 and drawn at 2× on the landscape.
 
 The flight preview runs at a fixed 50 Hz, uses the `ANIM_TYPE` tables the
@@ -1017,6 +1045,37 @@ bundle, its weapon components and the record tables each one keeps in Lua.
 - A module can name a `.wep` (`wep = "X.wep"`, sometimes assembled as
   `M.WEP .. o.wep`): the literal is matched against the bundle's own files by
   base name, so 41 of 262 weapons on the dev machine resolve one.
+- **A claim table written with names is read as names** (`luaStrings.ts`). The
+  table reader keeps literals only, so `local SHEET = "sprites/x/hold.png"` then
+  `hold = { sheet = SHEET }` read back empty and the weapon lost its sheet, its
+  icon and every sound path (`px_buffalo` is written this way). `stringConstants`
+  collects `local NAME = "…"` chains to a fixed point, `resolveStringExpr` follows
+  `..` concatenation, and `resolveTableStrings` fills only the fields that are
+  missing, recursing into nested tables. It runs on the table the reader **kept**,
+  and only when that table is the file's `wa.weapons.replace` call, its `record`
+  assignment or its `return` table, so one weapon's paths cannot land on another's
+  art.
+- **The record can be data** (`definition = { … }`): `scan.ts` already treated
+  `definition` / `weapon.definition` as claim candidates, and `claimTextOf(...,
+  'definition', 'field')` finds the literal's braces inside
+  `local weapon = { definition = { … } }` (masked copy plus `matchingBrace`, so a
+  comment or a string saying `{` cannot open it), which is what lets the names
+  inside it resolve. A `definition = function()` stays code and is not read as
+  data.
+- **`mod_icon` and `replaces` are bundle-level and are read**: `ModBundle.modIcon`
+  becomes the pack's `iconFile` (see §10) and `ModBundle.replaces` the pack's
+  `replaces`, because a re-export that dropped the list would change what
+  installing the bundle does. A `mod_icon` that names one of the weapons' own
+  icons is not adopted: it is the fallback the manifest wrote, and taking it as
+  bundle art broke byte-identical re-export.
+- **A sprite folder is a strip** (`sprites/i_bomb/body/00.png`, 32 files, and
+  `mod.toml` declaring `frames = 1`). The engine reads a folder natively as one
+  strip in file-name order (`load_png_sequence`, `crates/gfx/src/lib.rs`), and the
+  import joins it in a canvas (`frameFolderFiles` + `composeFrameFolder`) and uses
+  the file count as the role's `frames` when the bundle declared none, for the
+  hold sheet, pack art, roaming sheets and builder roles alike. Without a canvas
+  (a headless run) the import says `N PNG frames in a folder, not joined without a
+  browser` rather than writing the fallback sheet and calling it art.
 - `importWeapon.ts` builds a project the way the engine loads a bundle: the
   `.wep` first (`parseWepBinary`, `useWepFile` + the file kept for export), else
   `copy_from = "stock.<donor>"`; then the module's declared tables are carried
@@ -1214,6 +1273,11 @@ bundle, its weapon components and the record tables each one keeps in Lua.
     to `sounds`, because a pack path only resolves through the sprite-key
     registry those lists fill. A path that is already the export's own is recorded
     too, or a re-import would forget the sheet and drop it from the next ZIP.
+    **Hooks and registrations are transformed on their own**, so the `paths` that
+    call returns count as well: the Conductor's `FIRE_WEAPON` registration plays
+    `sounds/conductor/shot.wav`, and reading only the carried blocks rewrote the
+    path without attaching or declaring the sample (an empty `sounds` list and an
+    undeclared WAV).
 
   Four rules make it safe, and each has a case in `tools/check_carried_lua.ts`:
   - **Scope**: a module-level block cannot see an install local or `ctx`, so a
@@ -1235,7 +1299,13 @@ bundle, its weapon components and the record tables each one keeps in Lua.
   - **Art moves with the code**: the ZIP only ships `sprites/<mod>/` and
     `sounds/<mod>/`, so `sprites/vortex/hold.png` in carried text becomes
     `sprites/<exported folder>/hold.png` (folder segment only, a file name is the
-    author's). A `require` of a module the export does not ship is named, and a
+    author's). **A folder reference names its files**: `local SND =
+    "sounds/buffalo/"` then `SND .. "start.wav"` is a prefix, not a file, so the
+    move is recorded with its trailing slash and `importWeapon` expands it into
+    every PNG/GIF/WAV of that folder, attaching and declaring each under the
+    export's folder. Rewriting the prefix alone left the buffalo's four samples
+    attached to nothing and undeclared while the claim played paths the zip did
+    not carry. A `require` of a module the export does not ship is named, and a
     shipped one adds its dependency to the manifest (`effects.sdk`,
     `px.electric`, `wf.sdk`, `wfws.sdk`, `px.fire_seq`).
   What is refused: a block whose `end`/brackets do not close (`lua-ast`), because
@@ -1269,16 +1339,19 @@ bundle, its weapon components and the record tables each one keeps in Lua.
 bun run tools/check_module_scan.ts
 ```
 
-55 cases on `src/utils/modLib/scan.ts` and `modToml.ts`: the shared loader entry
+77 cases on `src/utils/modLib/scan.ts` and `modToml.ts`: the shared loader entry
 with an index (`px.ports`), two components over one real module, a record handed
-to a library (`lib/px_bunker.lua`), a weapon module under `lib/`, `wf-lib/`
-resolved through a dependency's `[exports]`, the legacy own-`lib/` shape, a
-cross-bundle plain `require`, option blocks attaching to the component above them
-(and not becoming phantom components), `[exports]` staying out of the scalars,
-`ctx.option` reads, the miss message, an ordinary `["name"] = "value"` table not
-being mistaken for an index, and the **manifest round trip** (the options the
-generator writes read back as the same keys, kinds, ranges, choices, defaults and
-`data` flags, with no option block becoming a phantom component). Then the
+to a library (`lib/px_bunker.lua`), **a record written as data**
+(`local weapon = { definition = { … } }`, read with its `copy_from` and its
+`hold.sheet` resolved from a module constant, which is L3), a weapon module under
+`lib/`, `wf-lib/` resolved through a dependency's `[exports]`, the legacy
+own-`lib/` shape, a cross-bundle plain `require`, option blocks attaching to the
+component above them (and not becoming phantom components), `[exports]` staying
+out of the scalars, `ctx.option` reads, the miss message, an ordinary
+`["name"] = "value"` table not being mistaken for an index, and the **manifest
+round trip** (the options the generator writes read back as the same keys, kinds,
+ranges, choices, defaults and `data` flags, with no option block becoming a
+phantom component). Then the
 installed corpus when it is mounted:
 `px.ports`' 97 weapon components with 89 records, the index and library routes
 both present, no unresolved `require` anywhere, the two components over one
@@ -1322,8 +1395,25 @@ component does not declare, so the first is a load failure).
   `default_position` becomes the project's `slot`, so each weapon stays on the
   panel slot the author chose, and its stock `icon` becomes `panel_icon`. A folder
   collision bumps the id (`adoptWeaponId`) and `retargetWeaponArt` moves that
-  weapon's declared art with it. The one-weapon rule is applied **once**, at the
-  end: applied per weapon it renamed the bundle to the first weapon's id.
+  weapon's declared art with it, **from the folder the single-weapon import chose**
+  to the adopted id's folder: the reverse (from the wanted id) put the vortex's
+  WAV and hole sheet in a folder nothing wrote. The one-weapon rule is applied
+  **once**, at the end: applied per weapon it renamed the bundle to the first
+  weapon's id.
+- **An import says what the export will refuse** (`BundleImport.blocking`,
+  `PackImport.warnings`). A carried `require` no bundle ships, a blocking Lua
+  finding and an undeclared `ctx.option` all mean the emitted module raises at
+  load, and `validateBundle` refuses it by weapon and rule. The single-weapon
+  import puts them in its toast; a whole-bundle import (eighty-nine weapons have no
+  room in a toast) keeps them in a dismissible alert above the page header. The
+  per-weapon `notes` stay one line each, because an import summary is what
+  arrived, not a transcript.
+- **The SDK module table is one file** (`src/data/sdkModules.ts`): the modules each
+  library bundle exports and the dependency that provides each, read by the carry
+  (`dependencyForModule`) and the export validator (`availableRequiresForCheck`)
+  alike. Two copies had drifted from the installed manifests, so the Conductor and
+  the Pulsar were refused for `require("wf-lib/electric/taze_mine")`, a module
+  `px.electric` does export (it does not export `hold`, which the table claimed).
   Measured on the installed `wf-lib/px` bundle: 89 records read, imported as
   `px.ports_import.*` in about a second, exported as one `ports/` bundle with 89
   components, 22 deduped sheet declarations, one profile placing all 89 on their
@@ -1480,6 +1570,15 @@ map keyed by path inside the ZIP. `modExporter.ts` is the thin app wrapper:
   `default_position`, `options`). `generatePackProfile` writes one `[weapons]`
   with every weapon and every stock slot, `ammo = -1` where asked, and
   `[options."<id>"]` for changed values only.
+- **The bundle has one icon** (`PackProject.iconFile`/`iconPreview`): `mod_icon`
+  names a single file, so an uploaded bundle icon is written once at
+  `sprites/<bundle folder>/icon.png` and `generatePackToml` points `mod_icon` at it.
+  With none, the first weapon's uploaded panel icon stands in; with neither, no
+  `mod_icon` is written and the mod loader shows the name's initials. On import
+  `ModBundle.modIcon` is read back into the pack (and `replaces` with it), except
+  when it names one of the bundle's **weapons'** own icons: that is the fallback
+  the manifest wrote, and adopting it as bundle art copied the file and changed
+  the line, which broke byte-identical re-export on `wf-lib/utilities`.
 - **Art is per weapon already**: every path is
   `sprites/<sanitizeModFolder(id)>/…`, so a namespaced `<packId>.<slug>` id names
   its own folder and a pack of one is the layout it always was. `dedupeSheets`
@@ -1512,8 +1611,11 @@ map keyed by path inside the ZIP. `modExporter.ts` is the thin app wrapper:
   against. See the paragraph after this list for what it must contain and why.
 - `weps/<file>.wep` is written only when `useWepFile` is on.
 - `sprites/<mod>/icon.png` when a custom icon exists.
-- `sprites/<mod>/body.png` when the weapon's own sheet (`sprite`) is uploaded
-  the only art path for an air strike's munition.
+- `sprites/<mod>/body.png` when the weapon's own sheet (`sprite`) is uploaded:
+  the only art path for an air strike's munition, and the sheet an imported claim
+  names as its `sprite` (`sprite = ART .. "body"`, a folder the import joins into
+  one 32-frame strip). The card is shown for any weapon that carries one, not only
+  for a strike, or the sheet would be invisible to its author.
 - `sprites/<mod>/hold.png` whenever hold art is enabled: uploaded sheet if
   present, otherwise the default art (never a dangling path).
 - `sprites/<mod>/missile.png` whenever custom flight art is enabled: uploaded
@@ -1633,7 +1735,7 @@ The pack ships the editor's own `wf-lib/wfws_sdk/` (copied from `spec/`, like an
 export does), so its weapons run against the version they were generated for
 instead of an older installed copy of the library.
 
-It writes one bundle with 58 components, one profile ("WF Test Pack") and art
+It writes one bundle with 60 components, one profile ("WF Test Pack") and art
 derived from `spec/` sheets, one per role (the sprite builder, cluster bits, the
 homing window, the homing bit, the roaming animal, native trails, the emitter,
 the aim layer, the swing, the melee strike, the aim clamp on a swing and on a
@@ -1679,7 +1781,7 @@ Pack emitter and round trip (no server, exits 1 on a failure):
 bun run tools/check_pack_roundtrip.ts
 ```
 
-66 cases on `src/utils/packExporter.ts`, `src/utils/pack.ts`, `importPack.ts` and the pack generators: a pack of one is
+78 cases on `src/utils/packExporter.ts`, `src/utils/pack.ts`, `importPack.ts` and the pack generators: a pack of one is
 manifest-for-manifest and profile-for-profile what the single-weapon generator
 writes; a three-weapon pack writes three components with their own entries, the
 unioned dependency list (once each) and one profile placing all three, with the
@@ -1693,7 +1795,12 @@ pinned too: a new id's bump stays in the folder segment, a taken name bumps, one
 weapon gives the bundle its identity while two keep it, a duplicate moves every
 path it declares (hold, flight sheet, `customSprites`, carried art) into its own
 folder, order and removal follow the active row, a bundle never drops below one
-weapon, and `[weapons]` lists a shared stock slot once. It reads the libraries
+weapon, and `[weapons]` lists a shared stock slot once. The bundle's one icon is
+pinned: an uploaded `iconFile` is named `mod_icon = "sprites/<bundle>/icon.png"`
+and written once beside the weapons, a pack with no icon falls back to the first
+weapon that has one, a bundle with none writes no `mod_icon` at all, and a
+`mod_icon` naming a weapon's own icon is that weapon's art rather than bundle art
+(adopting it moved the file and changed the line that named it). It reads the libraries
 from `spec/` the way the app imports them, so the emitter is exercised without a
 browser. The read side is pinned too: an exported pack reads back as a pack with
 the ids its manifest declared and re-exports the same two components, a foreign
@@ -1713,25 +1820,46 @@ bun run tools/gen_test_pack.ts
 bun run tools/check_pack_fixture.ts
 ```
 
-34 cases that take **art and code off disk** and assert the strongest property
+26 cases that take **art and code off disk** and assert the strongest property
 available: import, export, re-import, export writes **the same bytes**, file by
-file, digest against digest. The fixture is the 58 components of
-`gen_test_pack` (80 files, one instance of every shape the editor emits) plus
-every installed bundle that exports without a browser (`wf-lib/utilities`,
-`px_pyroman_grenades`, `wf-lib/marked_for_death`). Each round trip also runs
-`wfcheck` on the written bundle: **nothing** for the test pack, **no errors** for a
-foreign one, since another author's bundle may carry warnings of its own and only
-an error takes the bundle down at load. Carried block counts are compared before
-and after, so the carry is stable rather than merely present. A bundle whose
-fallback art has to be painted needs the browser's canvas and is reported as
-skipped by name (`wf-lib/px_fire_seq`, `wf-lib/mole_shopper`): Bun has no
+file, digest against digest. The fixture is the 60 components of
+`gen_test_pack` (80 files, one instance of every shape the editor emits) plus five
+installed bundles: `wf-lib/utilities` round-trips, while `px_pyroman_grenades` and
+`wf-lib/marked_for_death` carry a `require` only their own bundle ships and
+`wf-lib/px_fire_seq` / `wf-lib/mole_shopper` need the browser's canvas for fallback
+art. Each round trip also runs `wfcheck` on the written bundle: **nothing** for the
+test pack, **no errors** for a foreign one, since another author's bundle may carry
+warnings of its own and only an error takes the bundle down at load. Carried block
+counts are compared before and after, so the carry is stable rather than merely
+present. A bundle whose fallback art has to be painted needs the browser's canvas
+and is reported as skipped by name: Bun has no
 `document`, and silence would hide the day a bundle that exports today starts
-needing one. Three importer defects came out of it, all one root cause
+needing one. A bundle whose carried code requires a module only the source ships
+(`require("lib/pyro_flight")`) cannot be exported standalone, so the fixture skips
+it **and lists the module** instead of failing: refusing is the correct answer, and
+the import warning is what tells the author which bundle to add. Three importer
+defects came out of it, all one root cause
 (the claim `sprites` list classified by **file name** when the export's sheet
 dedupe can point one role's sheet at another weapon's file): a hold sheet shared
 as `body.png` came back as the weapon's strike art, which then suppressed
 `params = { gpu_prefix = "sprites/" }` and lost the aim layer's path resolution,
 and a builder bit sheet named `bit.png` came back as stock cluster art.
+
+Every installed bundle, round trip (no server, exits 1 on a failure):
+
+```powershell
+bun run tools/audit_bundles.ts [ModsFolder]
+```
+
+36 bundles and 169 weapons read, exported, read back and exported again, compared
+by digest. It reports **33 byte-identical, 1 stable once its donor is named, 2 that
+need a library, 0 failed**. The one donor case is `example.tools`, whose module
+builds 70 claims at load and names no `copy_from`: the first export is a whole
+record and the next is the diff against the donor it now names, so the tool asserts
+the **second** export equals a third. The two library cases are
+`px_pyroman_grenades` (`lib/pyro_flight`) and `px.laser_reflect` (`lib/laser`). This
+is the net that caught the four defects in §8a's import bullets and the empty
+groups in §7.
 
 Hook registry and module splitting (no server, exits 1 on a failure):
 
@@ -1783,7 +1911,7 @@ name, that an import leaves the author's snippet box alone, that the export has
 one `on_explode` key, that each carried registration is written once and the
 export registers exactly ours plus theirs, and the panel's four switches and the
 order they leave behind, plus the round trip: export, re-import, and the carried
-code comes back identical. It also asserts a re-import of the 58 generated
+code comes back identical. It also asserts a re-import of the 60 generated
 test-pack weapons carries exactly what it started with (nothing of our own, so the
 emitter's two registrations stay recognised, and the two weapons written to carry
 code carry it once).
@@ -1877,7 +2005,12 @@ burst's missiles are bits, a fire-sequence round stays a round, and
 It loads the real `spec/lua_sdk/wfws_sdk/lib/wfws_sprite_builder.lua` against a
 fake `wa` and walks the melee swing frame by frame: the aim draw, the Space take,
 the clip drawing with the worm in a plain standing state, the hit through the
-claim's callback, the release and `finish = "end_turn"`. Its handles are fresh per
+claim's callback, the release and `finish = "end_turn"`. It also pins the box's
+own geometry, which is what WF 59 and WF 60 exercise in game: a worm behind the
+striker and one outside the arc are not hit (the `along`/`across` culls), and a
+cut that rises (a **negative** clip angle, since the drawn angle is clockwise on
+screen and world y is down) reaches an overhead worm **only** with
+`follow_swing` on. Its handles are fresh per
 `wa.worms.all()` call, like the engine's, because identity is the bug it caught
 (`worm.id` is the only stable comparison).
 
@@ -2062,15 +2195,41 @@ emitter (muzzle or round, ring, bolts, own ribbon), terrain stamp with impact
 damage, sequential fire, custom WAVs, pack art, the bundle reader (`.wep` + Lua tables + this editor's own
 features **and the code it does not model**: a bundle's `on_explode` and `on_fire`,
 every other claim hook, every foreign `wa.on.*` registration, the closure each one
-reads and the art it names) and the exporter. `wfws.sdk` is 0.16.3 and ships
+reads and the art it names) and the exporter. `wfws.sdk` is 0.16.4 and ships
 inside every export.
 
-Validated by the full check set in §11: `lint`, `build`, `gen_test_pack` (58
-weapons), `check_mod_import` (58/58), `check_carried_lua` (92 cases),
-`check_lua_hooks` (73), `check_module_scan` (60), `check_pack_roundtrip` (66),
-`check_pack_fixture` (34), `audit_records` (0 findings), `check_copyfrom`,
+Validated by the full check set in §11: `lint`, `build`, `gen_test_pack` (60
+weapons), `check_mod_import` (60/60), `check_carried_lua` (92 cases),
+`check_lua_hooks` (73), `check_module_scan` (77), `check_pack_roundtrip` (78),
+`check_pack_fixture` (26), `audit_bundles` (36 bundles, 169 weapons, 0 failed),
+`audit_records` (0 findings), `check_copyfrom`,
 `check_sheet_dedupe`, `check_lua_rules` (57 cases), `check_generator_edges`,
 `wfcheck` on the pack and on a UI-exported ZIP.
+
+**A bundle's identity and its art are bundle-level where the engine says so.**
+`mod_icon` is one picture per bundle: `PackProject.iconFile` is uploaded in the
+Bundle Settings card (which is mounted for a pack of one too, because that card is
+where the bundle's own icon lives), `generatePackToml` names
+`sprites/<bundle>/icon.png`, `emitPackFiles` writes it once, and an import reads it
+back into the pack, with `replaces` beside it. A bundle with no icon falls back to
+the first weapon's, and one with neither writes no `mod_icon` (initials). A
+`mod_icon` that names a weapon's own icon is not adopted: that broke
+byte-identical re-export of `wf-lib/utilities`.
+
+**The bundle reader now reads the four things `px_buffalo` needed** (L3 and L5 of
+`reqs/wflib_weapon_import_plan.md`, both delivered): names in a claim table
+(`local SHEET = "…"`, `SND .. "start.wav"`), names in a **folder** that carried
+code concatenates onto (expanded into the files it holds, attached and declared),
+`definition = { … }` as the record when it is data, and a sprite **folder** joined
+into the strip the engine reads (frames in file-name order, the count as the
+role's `frames`). `hold.weapRadialRotation` / `handRadialRotation` are authored
+instead of hard-coded to 1, which is what made the javelin's `weap_radius = -11.8`
+read as +11.8 in the preview.
+
+**Every melee strike can sound different** (`MeleeHit.sound`): the row writes
+`sound` / `wav` / `priority`, the SDK plays `hit.audio or m.hit_audio`, and a row
+that names none keeps the weapon's `hitSound`, so a light jab before a heavy
+finisher is heard as light and then heavy. `wfws.sdk` 0.16.4.
 
 **The exporter is one code path** (`reqs/pack_export_plan.md`, §10): a
 single-weapon export is `emitPackFiles` of a pack of one, proven byte-identical on
@@ -2079,7 +2238,7 @@ unioned dependencies, one profile and pack-wide sheet dedupe. P0, P1, P2, **P4 a
 delivered (the pack rail, the Bundle Settings card, the per-bundle Code tab,
 `exportPackZip`, and reading a whole bundle as a pack from the mod browser's
 **Import bundle (N weapons)**), **P3 is** (structure and the findings that raise at
-load, refused by weapon and rule) and **P6 is** (`check_pack_fixture`: the 58-shape
+load, refused by weapon and rule) and **P6 is** (`check_pack_fixture`: the 60-shape
 test pack and three installed bundles round-trip **byte for byte**, with `wfcheck`
 clean on each written bundle), which is the whole plan.
 Verified in the browser on real bundles: two PX weapons in one bundle export as
@@ -2119,17 +2278,25 @@ at 279 of 280 with the last one refused by name and no corpus name that comes
 from a library's file-level local. `L4` is delivered for **options**: declarations
 in `[[components.options]]` in declaration order, values in the profile's
 `[options."<id>"]` only when they differ from the declared default, and the
-`Weapon Options` drawer. L3 (`definition` as data), the rest of L4
-(`ctx.placed`/`ctx.weapons`/`ctx.data` in carried code) and L5 (art) are open.
+`Weapon Options` drawer. **L3 (`definition` as data) and L5 (art) are delivered**
+(`definition = { … }` is read as the record; a frame folder joins into one strip,
+a bundle's `[sprites."…"]` `fps` is read back, and `mod_icon` is one picture per
+bundle, carried on import with `replaces`). The one item left in that plan is the
+rest of L4: `ctx.placed`, `ctx.weapons` and `ctx.data` are reported as unmodelled
+in carried code rather than silently carried, because they describe a match, not a
+weapon.
 `WormForgeNew/tools/split_highlander.py` writes the per-weapon modules that make
 the cross-module reads self-describing; the standalone `px_buffalo` bundle is the
 benchmark, and its `require("wf-lib/px_sprite_builder")` resolves through `wf.sdk`,
 so the `lib/` copy it also ships is dead weight rather than the load failure it
 was first read as.
-Separately: WF 51/52 (a swing that misses behind and outside the arc, and one that
-only reaches overhead when the box follows the swing), and its other half,
-`reqs/pack_export_plan.md`: writing several weapons as one bundle, so a pack the
-editor writes is the pack it reads back (status in the paragraph above).
+**WF 59 and WF 60 close the melee geometry gap** the older notes called WF 51/52:
+59 is the two culls that are not distance (a worm behind the striker and one
+outside a deliberately narrow arc both survive a swing that covers the ground
+between them, and the `[melee]` log names each worm's `along`/`across`), and 60 is
+`follow_swing` (a cut that turns 55 degrees up catches an overhead worm that the
+level aim cannot, and turning the flag off in the panel misses it). Both entries'
+expected result and failure symptom are in `test_pack/README.md`.
 
 ---
 

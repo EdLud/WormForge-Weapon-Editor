@@ -40,6 +40,7 @@
 import { fixLockstepRng, freeNames } from '../luaCheck';
 import { checkLua } from '../luaCheck';
 import { maskLuaCode, rewriteNames, scanBlockEnd } from '../luaText';
+import { dependencyForModule } from '../../data/sdkModules';
 import type { LuaBlock, SplitModule } from './splitModule';
 
 export interface CarryBlock {
@@ -77,7 +78,13 @@ export interface CarryResult {
   refused: string[];
   /** The bundle dependencies a carried `require` needs (`effects.sdk`, …). */
   dependencies: string[];
-  /** Warnings to show at import: a carried `wa` read at load, a missing module. */
+  /**
+   * Carried `require`s nothing in the export provides. These are not warnings:
+   * the emitted module raises at load, so an export is refused and the author
+   * has to add the bundle that provides them.
+   */
+  missingModules: string[];
+  /** Warnings to show at import: a carried `wa` read at load, a rewritten name. */
   notes: string[];
   /** Bundle-relative paths rewritten onto the export's own folder. */
   pathRewrites: number;
@@ -97,35 +104,12 @@ export interface CarryResult {
 }
 
 /**
- * Module ids the export can `require`, and the bundle dependency that provides
- * each. Everything under `wf-lib/` belongs to a library the editor ships in the
- * zip or declares as a dependency; a bundle's own `lib/` is neither, so a carried
- * `require` of it is named for the author to add.
+ * The dependency a carried `require` needs, re-exported for callers that only
+ * know about the carry. The table itself is `src/data/sdkModules.ts`, shared with
+ * the export validator so the two can never disagree about which library
+ * provides which module.
  */
-const MODULE_DEPENDENCIES: { prefix: string; id: string }[] = [
-  { prefix: 'wf-lib/holds', id: 'wf.sdk' },
-  // `wf.sdk`'s own `[exports]` table: the engine's library bundle provides these
-  // names, so `require("wf-lib/own_time")` resolves once the manifest declares
-  // `wf.sdk`. A carried PX weapon opens with exactly that line.
-  { prefix: 'wf-lib/own_time', id: 'wf.sdk' },
-  { prefix: 'wf-lib/shared', id: 'wf.sdk' },
-  { prefix: 'wf-lib/parkour', id: 'wf.sdk' },
-  { prefix: 'wf-lib/tooltip', id: 'wf.sdk' },
-  { prefix: 'wf-lib/lightning', id: 'wf.sdk' },
-  { prefix: 'wf-lib/px_sprite_builder', id: 'wf.sdk' },
-  { prefix: 'wf-lib/sdk', id: 'wf.sdk' },
-  { prefix: 'wf-lib/wfws_sprite_builder', id: 'wfws.sdk' },
-  { prefix: 'wf-lib/wfws_sdk/', id: 'wfws.sdk' },
-  { prefix: 'wf-lib/effects/', id: 'effects.sdk' },
-  { prefix: 'wf-lib/fire_seq', id: 'px.fire_seq' },
-  { prefix: 'wf-lib/electric/', id: 'px.electric' },
-];
-
-/** The dependency a carried `require` needs, or null when the module is unknown. */
-export function dependencyForModule(module: string): string | null {
-  const hit = MODULE_DEPENDENCIES.find((entry) => module.startsWith(entry.prefix));
-  return hit ? hit.id : null;
-}
+export { dependencyForModule } from '../../data/sdkModules';
 
 const cache = new WeakMap<LuaBlock, string[]>();
 
@@ -224,6 +208,7 @@ export function carryClosure(
   const unresolved: string[] = [];
   const refused: string[] = [];
   const notes: string[] = [];
+  const missingModules: string[] = [];
   // A queue item carries the scopes of the point of use, innermost first, so a
   // name declared inside `function weapon.setup() … end` resolves where it was
   // written rather than at module level (`swim_suit`, `portal_gun`, `nuke_rocket`).
@@ -433,6 +418,7 @@ export function carryClosure(
       notes.push(
         `carried \`require("${module}")\` is not shipped by the export: add the bundle that provides it to Dependencies, or the export fails at load`,
       );
+      if (!missingModules.includes(module)) missingModules.push(module);
     }
   }
 
@@ -489,6 +475,7 @@ export function carryClosure(
     paths,
     refused,
     dependencies,
+    missingModules,
     notes,
     transform,
   };
@@ -565,7 +552,18 @@ export function rewriteBundlePaths(
       (whole, quote: string, prefix: string, close: string) => {
         const kind = prefix.slice(0, prefix.indexOf('/'));
         const target = `${kind}/${folder}/`;
-        return target === prefix ? whole : `${quote}${target}${close}`;
+        if (target === prefix) return whole;
+        // A folder prefix is how a bundle names a whole set of files
+        // (`local SND = "sounds/buffalo/"`, then `SND .. "start.wav"`). The move
+        // keeps the trailing slash so the caller can expand it into the folder's
+        // files: without that the path was rewritten but no file was attached or
+        // declared, and the export named a folder it never wrote.
+        const key = `${prefix},${target}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          moves.push({ source: prefix, target });
+        }
+        return `${quote}${target}${close}`;
       },
     );
   return { text: out, moves };

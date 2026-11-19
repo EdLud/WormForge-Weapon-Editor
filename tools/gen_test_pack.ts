@@ -1980,10 +1980,12 @@ const TESTS: TestCase[] = [
         width: 18,
         followSwing: true,
         // Three strikes, each with its own damage and throw: 10 then 12 then a
-        // heavy finisher that throws harder and lifts.
+        // heavy finisher that throws harder and lifts. The first two name their
+        // own sample (a light id and a heavier one), so a combo is heard as well
+        // as felt; the third falls back to the weapon's `hitSound`.
         hits: [
-          { frame: 8, damage: 10, power: 2, lift: 0 },
-          { frame: 16, damage: 12, power: 4, lift: 1 },
+          { frame: 8, damage: 10, power: 2, lift: 0, sound: { id: 6, priority: 8 } },
+          { frame: 16, damage: 12, power: 4, lift: 1, sound: { id: 32, priority: 9 } },
           { frame: 22, damage: 16, power: 6, lift: 3 },
         ],
         hitFrame: 8,
@@ -2004,9 +2006,9 @@ const TESTS: TestCase[] = [
     intent:
       'A three-hit melee combo: the swing lands one strike at frame 8, another at 16 and a finisher at 22, each with its own damage and throw, each following the clip`s angle at its own frame. `hits = { { frame, damage, power, lift }, ... }` in the `sb.hold` spec; the `hit` callback receives the strike as its fourth argument so it can use `hit.damage`.',
     expect:
-      'One Space press, three separate hits on a worm standing in the box: 10 damage, then 12, then 16 (38 in all), thrown harder by each, with the third lifting the victim. Each hit lands once, on its own tick; the swing plays its full 24 ticks and ends the turn. Each landed strike plays `hit_sound` (96 here) at the victim, and a strike that takes nobody plays `miss_sound` at the striker, so a swing into thin air is heard as a whiff. Read the `[melee] hit n/3 at frame ...` lines.',
+      'One Space press, three separate hits on a worm standing in the box: 10 damage, then 12, then 16 (38 in all), thrown harder by each, with the third lifting the victim. Each hit lands once, on its own tick; the swing plays its full 24 ticks and ends the turn. Each landed strike plays its own sample when it names one (id 6, then id 32) and `hit_sound` (96) otherwise, at the victim, and a strike that takes nobody plays `miss_sound` at the striker, so a swing into thin air is heard as a whiff. Read the `[melee] hit n/3 at frame ...` lines.',
     watch:
-      'One hit only (the SDK reading `hit_frame` and ignoring `hits`), all three landing on the same tick (the strikes not sorted, or `tick >=` compared against the wrong frame), the same damage three times (the callback ignoring its fourth argument), every strike throwing the same (per-hit `power`/`lift` not read), a worm hit twice by one strike (`once` not kept per strike), the swing ending after the first hit, three sounds on a single landed strike (the sound played per worm instead of per strike), or no whiff on an empty swing (`miss_sound` dropped, or `wa.sound` missing from the engine build).',
+      'One hit only (the SDK reading `hit_frame` and ignoring `hits`), all three landing on the same tick (the strikes not sorted, or `tick >=` compared against the wrong frame), the same damage three times (the callback ignoring its fourth argument), every strike throwing the same (per-hit `power`/`lift` not read), a worm hit twice by one strike (`once` not kept per strike), the swing ending after the first hit, three sounds on a single landed strike (the sound played per worm instead of per strike), one sample for all three strikes (a row own `sound`/`wav`/`priority` not read, so every strike plays the weapon hit sound), or no whiff on an empty swing (`miss_sound` dropped, or `wa.sound` missing from the engine build).',
   },
   {
     project: makeOp({
@@ -2337,6 +2339,130 @@ const TESTS: TestCase[] = [
       "Fire at the ground: the blast carves a crater, plays a zap (the bundle's body) and then a throw (the author's body), and the arrow is stamped inside the crater pointing the way the rocket came in. The claim holds a single `on_explode`, so no owner replaces another.",
     watch:
       "Only one of the two sounds (one body overwrote the other: two `on_explode` keys, which is the bug the merge exists to prevent), no stamp (the bodies ran after it, or `effect` mode let WA's blast erase it), the stamp before the sounds (order reversed), or a load error naming `ev` (a merged body whose parameter was not renamed).",
+  },
+  {
+    project: makeOp({
+      id: 'wftest.59_melee_reach',
+      name: 'WF 59 Melee Reach',
+      // A power record, like WF 50: a special melee subtype resolves its own hit
+      // in one native frame and never animates. `holy_grenade` is an ordinary
+      // power slot no other test uses, so this weapon gets a panel entry of its
+      // own.
+      slot: 'holy_grenade',
+      fireType: 'melee',
+      body: { damage: 0 },
+      hold: {
+        enabled: true,
+        handType: 'mid',
+        handRadius: 10,
+        weapRadius: 4,
+        weapRotation: 0,
+        scale: 1,
+        frames: 1,
+        drawHand: true,
+        thrown: false,
+        putAway: true,
+      },
+      // A straight cut: the box points where the worm aims on every tick, so the
+      // only thing that decides a hit here is distance and the arc. That is the
+      // point of this weapon, the geometry test for the two culls.
+      aimClip: {
+        enabled: true,
+        ticks: 16,
+        finish: 'endTurn',
+        keys: [
+          { t: 0, angle: 0, dx: 0, dy: 0, scale: 1, ease: 'out_quad' },
+          { t: 16, angle: 0, dx: 0, dy: 0, scale: 1, ease: 'out_quad' },
+        ],
+      },
+      melee: {
+        enabled: true,
+        // A narrow arc on purpose: 8 px either side of the weapon, 40 px of
+        // reach. A worm at 40 px but 20 px off the line is outside, and a worm
+        // at the same distance behind the striker is behind, not in front.
+        radius: 40,
+        width: 8,
+        followSwing: false,
+        hitFrame: 8,
+        damage: 24,
+        kind: 'normal',
+        pushMode: 'aim',
+        pushPower: 3,
+        lift: 1,
+        hitSound: { id: 0, priority: 10 },
+        missSound: { id: 96, priority: 8 },
+        oncePerTarget: true,
+        spareShooter: true,
+        log: true,
+      },
+    }),
+    intent:
+      'The two culls that are not distance: a worm **behind** the striker and one **outside the arc** must both survive a swing whose box covers the ground between them. The arc is deliberately narrow (8 px) and the reach 40 px, so the three cases are easy to set up by hand.',
+    expect:
+      'Aiming level with the turn worm: a worm **in front** and within 40 px takes 24 damage; a worm the same distance **behind** the striker takes nothing; a worm 40 px ahead but about 20 px off the line takes nothing. Three `[melee]` lines in the log, one per worm, say which is `inside` and which is `outside`, with its own `along`/`across`, and the swing plays the whiff (96) at the striker when it takes nobody.',
+    watch:
+      'The worm behind taking it (the scan vector mirrored wrongly: the aim and `facing` are the whole direction, so `facing * sin(aim*PI)` must be positive ahead), the off-line worm taking it (`width` ignored, or tested as a radius instead of a half-width), nothing at all taking it (the reach measured from the wrong origin, or `follow_swing` left on with a clip angle of 0 read as a rotation), or a `[melee]` line with no `along`/`across` (the log printing only the total).',
+  },
+  {
+    project: makeOp({
+      id: 'wftest.60_melee_overhead',
+      name: 'WF 60 Melee Overhead',
+      slot: 'dragon_ball',
+      fireType: 'melee',
+      body: { damage: 0 },
+      hold: {
+        enabled: true,
+        handType: 'mid',
+        handRadius: 10,
+        weapRadius: 4,
+        weapRotation: 0,
+        scale: 1,
+        frames: 1,
+        drawHand: true,
+        thrown: false,
+        putAway: true,
+      },
+      // The cut rises at the hit frame. The drawn angle is clockwise on screen
+      // (world y is down), so NEGATIVE turns the box up: the scan rotates the aim
+      // vector by the clip angle, and +55 there pointed it at the ground, which
+      // `tools/lua/harness_melee.py` now pins in both directions.
+      aimClip: {
+        enabled: true,
+        ticks: 20,
+        finish: 'endTurn',
+        keys: [
+          { t: 0, angle: 0, dx: 0, dy: 0, scale: 1, ease: 'out_quad' },
+          { t: 8, angle: -55, dx: 2, dy: -4, scale: 1.08, ease: 'out_cubic' },
+          { t: 20, angle: 0, dx: 0, dy: 0, scale: 1, ease: 'out_quad' },
+        ],
+      },
+      melee: {
+        enabled: true,
+        radius: 44,
+        width: 14,
+        // The whole weapon: with this on, the box turns with the blade at the hit
+        // frame. Turn it off in the panel and the same swing reaches nothing
+        // overhead, which is the difference the flag makes.
+        followSwing: true,
+        hitFrame: 8,
+        damage: 24,
+        kind: 'normal',
+        pushMode: 'aim',
+        pushPower: 3.5,
+        lift: 2,
+        hitSound: { id: 0, priority: 10 },
+        missSound: { id: 96, priority: 8 },
+        oncePerTarget: true,
+        spareShooter: true,
+        log: true,
+      },
+    }),
+    intent:
+      '`follow_swing`: the box is the worm aim turned by the clip angle at the strike tick, so a cut that rises (a negative drawn angle: the screen angle is clockwise, world y is down) catches a worm overhead that the level aim cannot reach. With the flag off the same strike points where the worm aims and misses it. The panel toggle and the emitted `follow_swing` are the same value, and the red box on the aim preview draws both.',
+    expect:
+      'Aiming level at a worm standing **above** the striker (about 40 px up and 20 px ahead, inside the 44 px reach but about 55 degrees off the level aim): with `follow_swing` on it takes 24 damage on tick 8 and is thrown up-and-away, while a worm straight ahead takes nothing because the box has turned away from it. Turn Follow the swing off in the panel, export again, and the same overhead worm survives while the worm ahead now takes the hit. The `[melee]` lines name the scan vector, which is the difference between the two runs.',
+    watch:
+      'The overhead worm never hit with the flag on (the clip angle not applied, `follow_swing` not emitted, or the strike using the clip angle of its own tick rather than the hit frame), both worms hit (the box widened instead of turned: the angle must rotate the vector, not add width), the worm ahead hit as well with the flag on (the angle applied twice, or mirrored with `facing` in the wrong order so the box sweeps both ways), or the toggle changing nothing (the panel writing `followSwing` and the generator reading a stale `follow_swing`).',
   },
 ];
 

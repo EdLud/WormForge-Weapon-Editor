@@ -583,8 +583,8 @@ worms.
 
   ```lua
   hits = {
-    { frame = 8,  damage = 10, power = 2 },
-    { frame = 16, damage = 12, power = 4, lift = 1 },
+    { frame = 8,  damage = 10, power = 2, sound = 6 },
+    { frame = 16, damage = 12, power = 4, lift = 1, wav = "sounds/x/hit2.wav" },
     { frame = 22, damage = 16, power = 6, lift = 3 },
   }
   ```
@@ -595,6 +595,11 @@ worms.
   box with the clip's angle at *its* frame, and `once` is per strike, so a worm
   that stands in the box for the whole swing takes all three. `hit_frame` stays
   the first strike's frame.
+- **A strike can name its own sample** (`sound` / `wav` / `priority` on the row):
+  it is played where that strike lands and falls back to the weapon's
+  `hit_sound` / `hit_wav` when the row names none, which is how a light jab before
+  a heavy finisher is heard as light and then heavy. `wav` is a declared pack
+  path, exactly like `hit_wav`.
 - **`hit_sound` / `miss_sound`** are WA's own sound ids (0 is silent). Each strike
   plays one: `hit_sound` at the first worm the box took, `miss_sound` at the
   striker when it took nobody, once per strike however many worms it took. A

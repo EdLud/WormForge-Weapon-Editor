@@ -1067,9 +1067,10 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
       : Number(hold.scale) || 1;
     const scale = roleScale * putAwayShrink * poseScale;
 
-    // worm_hold.rs: `rot_w = rot + PI * weap_radial_rotation`; the generator
-    // emits `weap_radial_rotation = 1`.
-    const rotW = rot + Math.PI;
+    // worm_hold.rs: `rot_w = rot + PI * weap_radial_rotation`, and the generator
+    // writes the hold's own value (1 for the editor's default, PX's 0 or 0.22
+    // for a port that hangs the arm elsewhere).
+    const rotW = rot + Math.PI * Number(hold.weapRadialRotation ?? 1);
     const weapX = cx + Math.sin(rotW) * weapRadius;
     const weapY = cy - Math.cos(rotW) * weapRadius;
     // worm_hold.rs: `PI - PI*aim - PI*(1 - weap_rotation)`, which is
@@ -1227,9 +1228,8 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
       const roleHandScale = Number(
         (firingView ? (hold.fireHandScale ?? hold.handScale) : hold.handScale) || 1,
       );
-      // worm_hold.rs: `rot_h = rot - PI * hand_radial_rotation`; the
-      // generator emits `hand_radial_rotation = 1`.
-      const rotH = rot - Math.PI;
+      // worm_hold.rs: `rot_h = rot - PI * hand_radial_rotation`.
+      const rotH = rot - Math.PI * Number(hold.handRadialRotation ?? 1);
       let handX = cx + Math.sin(rotH) * handRadius;
       let handY = cy - Math.cos(rotH) * handRadius;
       // `hand_rotation` is in turns of PI (`rot + PI*hand_rotation`), and the
@@ -3366,6 +3366,28 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
                   step={5}
                   unit="°"
                   title="Rotation of the held art about its own centre, on top of the aim angle. Art drawn pointing up is level at 0."
+                />
+                <HoldDial
+                  id="hold-weap-radial"
+                  label="Radial Offset"
+                  value={hold.weapRadialRotation ?? 1}
+                  onChange={(value) => updateHold({ weapRadialRotation: value })}
+                  min={-1}
+                  max={1}
+                  step={0.01}
+                  unit="π"
+                  title="Where around the worm the art hangs, in turns of PI: the engine places it at rot + PI*weap_radial_rotation. 1 is the usual shoulder position, 0 the opposite side, so a port that ships 0 with a negative Weapon Radius keeps the art on the same side. Written as weap_radial_rotation."
+                />
+                <HoldDial
+                  id="hold-hand-radial"
+                  label="Hand Radial"
+                  value={hold.handRadialRotation ?? 1}
+                  onChange={(value) => updateHold({ handRadialRotation: value })}
+                  min={-1}
+                  max={1}
+                  step={0.01}
+                  unit="π"
+                  title="The hand's own radial position: rot - PI*hand_radial_rotation. 1 is the engine's default, 0 puts the hand on the other side. Written as hand_radial_rotation."
                 />
                 <HoldDial
                   id="hold-scale"

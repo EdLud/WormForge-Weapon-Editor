@@ -48,7 +48,12 @@ import {
   uniqueWeaponName,
   withWeapon,
 } from '../src/utils/pack';
-import { importBundlePack, packIdFromBundle, weaponIdFromComponent } from '../src/utils/modLib/importPack';
+import {
+  importBundlePack,
+  isWeaponIcon,
+  packIdFromBundle,
+  weaponIdFromComponent,
+} from '../src/utils/modLib/importPack';
 import { stockDonor, stockDonorBaseline } from '../src/data/stockDonors';
 import { DEFAULT_BODY } from '../src/data/defaults';
 import type { PackProject, WeaponProject } from '../src/types/weapon';
@@ -207,6 +212,121 @@ const pack = (weapons: WeaponProject[]): PackProject => ({
     'and the changed option value under that weapon’s id',
     profile.includes('[options."wfws.pack.delta"]') && profile.includes('"direction" = "opposite"'),
     profile,
+  );
+}
+
+// ---- a melee strike's own sample -------------------------------------------
+{
+  // A combo strike may name a WAV of its own, so a light jab plays a lighter
+  // sample than the finisher. The file is an export of its own
+  // (`melee_hit1.wav`), and the claim's `sounds` list is what makes
+  // `wa.sound.play(path)` resolve at load: one without the other is a nil sample.
+  const sound = (name: string) => ({
+    file: new File([new Uint8Array([82, 73, 70, 70])], name, { type: 'audio/wav' }),
+    fileName: name,
+    size: 4,
+    previewUrl: 'blob:x',
+  });
+  const weapon = bareProject({
+    id: 'wfws.pack.brawler',
+    name: 'Brawler',
+    fireType: 'melee',
+    hold: { ...(bareProject().hold ?? {}), enabled: true, frames: 1 } as WeaponProject['hold'],
+    aimClip: {
+      enabled: true,
+      ticks: 20,
+      finish: 'endTurn',
+      keys: [{ t: 0, angle: 0, dx: 0, dy: 0, scale: 1 }],
+    } as unknown as WeaponProject['aimClip'],
+    melee: {
+      enabled: true,
+      radius: 40,
+      width: 18,
+      hitFrame: 8,
+      damage: 12,
+      kind: 'normal',
+      pushMode: 'aim',
+      pushPower: 3,
+      pushVx: 0,
+      pushVy: 0,
+      lift: 0,
+      hitSound: { id: 96, priority: 8 },
+      missSound: { id: 96, priority: 8 },
+      hits: [
+        { frame: 8, damage: 10, power: 2, lift: 0, sound: { id: 0, priority: 8, file: sound('light.wav') } },
+        { frame: 16, damage: 16, power: 5, lift: 2 },
+      ],
+    } as WeaponProject['melee'],
+  });
+  const files = await emitPack(pack([weapon]));
+  const lua = String(files.get('pack/weapons/brawler.lua') ?? '');
+  ok(
+    "a strike's own WAV is written beside the weapon",
+    files.has('pack/sounds/brawler/melee_hit1.wav'),
+    [...files.keys()].filter((name) => name.endsWith('.wav')).join(', ') || 'no WAV written',
+  );
+  ok(
+    'and named in the claim sounds list',
+    /sounds = \{[^}]*melee_hit1\.wav/.test(lua),
+    lua.split(String.fromCharCode(10)).find((line) => line.includes('sounds =')) ?? 'no sounds list',
+  );
+  ok(
+    'and the row that names it says so, while the row with none says nothing',
+    /wav = "sounds\/brawler\/melee_hit1\.wav"/.test(lua) &&
+      /frame = 16, damage = 16, power = 5, lift = 2 \}/.test(lua),
+    lua.split(String.fromCharCode(10)).filter((line) => line.trim().startsWith('{ frame')).join(' | '),
+  );
+}
+
+// ---- the bundle's one icon --------------------------------------------------
+{
+  // A bundle has a single `mod_icon`, so the pack carries the file, not a
+  // weapon: the manifest names one path and the export writes it once.
+  const alpha = bareProject({ id: 'wfws.pack.alpha', name: 'Alpha' });
+  const beta = bareProject({ id: 'wfws.pack.beta', name: 'Beta', slot: 'bazooka' });
+  const icon = { file: new File([new Uint8Array([1, 2, 3])], 'icon.png', { type: 'image/png' }) };
+  const withIcon = { ...pack([alpha, beta]), iconFile: icon.file, iconPreview: 'data:,' };
+  const toml = generatePackToml(withIcon);
+  ok(
+    'an uploaded bundle icon is named by mod_icon in the bundle folder',
+    toml.includes('mod_icon = "sprites/pack/icon.png"'),
+    toml.split(String.fromCharCode(10)).find((line) => line.startsWith('mod_icon')) ?? 'none',
+  );
+  const files = await emitPack(withIcon);
+  ok(
+    'and written once, beside the weapons',
+    files.has('pack/sprites/pack/icon.png'),
+    [...files.keys()].filter((name) => name.includes('icon')).join(', '),
+  );
+  // No uploaded bundle icon: the first weapon that has a panel icon supplies it,
+  // and a bundle with no icons at all writes no `mod_icon` (the loader shows the
+  // name's initials rather than a path with no file).
+  const withWeaponIcon = [
+    alpha,
+    {
+      ...beta,
+      customIconFile: new File([new Uint8Array([4])], 'icon.png', { type: 'image/png' }),
+      customIconPreview: 'data:,',
+    },
+  ];
+  ok(
+    'with no bundle icon the first weapon icon stands in',
+    generatePackToml(pack(withWeaponIcon)).includes('mod_icon = "sprites/beta/icon.png"'),
+    generatePackToml(pack(withWeaponIcon))
+      .split(String.fromCharCode(10))
+      .find((line) => line.startsWith('mod_icon')) ?? 'none',
+  );
+  ok(
+    'and a bundle with no icon at all writes no mod_icon',
+    !generatePackToml(pack([alpha, beta])).includes('mod_icon'),
+  );
+  // A `mod_icon` that names a weapon's own icon is the fallback, not bundle art:
+  // taking it as one moved the file and changed the line that named it.
+  ok(
+    'a mod_icon naming a weapon icon is that weapon art, not bundle art',
+    isWeaponIcon('sprites/alpha/icon.png', [
+      { icon: 'sprites/alpha/icon.png' } as never,
+    ]),
   );
 }
 
@@ -507,6 +627,72 @@ const DECLARED_HOLD = /\[sprites\."[^"]*\/hold\.png"\]/g;
     'a bundle whose weapons name another namespace is copied',
     packIdFromBundle('wfws.pack', ['px.port']) === 'wfws.pack_import',
     packIdFromBundle('wfws.pack', ['px.port']),
+  );
+
+  // A foreign bundle whose carried hook requires its own `lib/` module cannot be
+  // exported standalone: the emitted file raises at load (`module 'lib/tool' not
+  // found`), so the import says which module is missing and the export refuses
+  // it. The warning is bundle-level because a pack of eighty-nine weapons has no
+  // room for one note per weapon in a toast, and a per-weapon *count* is not
+  // something an author can act on.
+  const toolFiles: ModFile[] = [
+    {
+      path: 'tools/mod.toml',
+      text: [
+        'id = "px.toolish"',
+        'name = "Toolish"',
+        'version = "0.1.0"',
+        'api_version = 4',
+        'format_version = 2',
+        '',
+        '[[components]]',
+        'id = "px.toolish"',
+        'type = "weapon"',
+        'name = "Toolish"',
+        'entry = "weapons/toolish.lua"',
+      ].join('\n'),
+    },
+    { path: 'tools/lib/tool.lua', text: 'return { splash = function() end }\n' },
+    {
+      path: 'tools/weapons/toolish.lua',
+      text: [
+        'local tool = require("lib/tool")',
+        '',
+        'local M = {}',
+        '',
+        'function M.install(ctx)',
+        '  wa.weapons.replace{',
+        '    id = ctx.id,',
+        '    copy_from = "stock.grenade",',
+        '    missile = { action = "bounce", fuse = 3000 },',
+        '    on_explode = function(ev)',
+        '      tool.splash(ev.missile)',
+        '    end,',
+        '  }',
+        'end',
+        '',
+        'return M',
+      ].join('\n'),
+    },
+  ];
+  const toolBundles = readBundles(toolFiles);
+  const toolWeapons = readWeapons(toolBundles, toolFiles).filter((weapon) => weapon.record);
+  const toolPack = await importBundlePack(toolBundles[0], toolWeapons, toolFiles);
+  ok(
+    'an import names a carried require no bundle ships',
+    toolPack.warnings.some((warning) => warning.includes('lib/tool')),
+    toolPack.warnings.join(' | ') || 'no warnings',
+  );
+  let toolError = '';
+  try {
+    await emitPack(toolPack.pack);
+  } catch (error) {
+    toolError = (error as Error).message;
+  }
+  ok(
+    'and the export refuses it instead of writing a module that cannot load',
+    /would not load/.test(toolError) && /undeclared-require/.test(toolError),
+    toolError,
   );
 }
 

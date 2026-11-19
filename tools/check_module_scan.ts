@@ -217,6 +217,57 @@ entry = "weapons/bonk.lua"
 }
 
 // ---------------------------------------------------------------------------
+// 3b. The record is data (`local weapon = { definition = { … } }`), which is what
+//     L3 is: the claim is one field of a table literal, so there is no path to
+//     read and the table has to be found by hand. A `definition = function()`
+//     stays code and is not read as data.
+{
+  const { weapon } = query(
+    {
+      'demo/mod.toml': `id = "t.def"
+[[components]]
+id = "t.def.uzi"
+type = "weapon"
+entry = "weapons/uzi.lua"
+`,
+      'demo/weapons/uzi.lua': `local SHEET = "sprites/uzi/hold.png"
+
+local weapon = {
+  defaults = { ammo = { round_start = -1 } },
+  definition = {
+    copy_from = "stock.grenade",
+    hold = { sheet = SHEET, frames = 1 },
+    missile = { explosion = { power = 60 } },
+  },
+}
+
+return {
+  defaults = weapon.defaults,
+  install = function(ctx) wa.weapons.replace(weapon.definition) end,
+}
+`,
+    },
+    't.def.uzi',
+  );
+  ok(
+    ((weapon?.record as Record<string, any> | undefined)?.missile as any)?.explosion?.power === 60,
+    'a definition table is read as the record',
+    JSON.stringify(weapon?.record),
+  );
+  ok(
+    (weapon as unknown as { copyFrom?: string } | undefined)?.copyFrom === 'stock.grenade',
+    'and its copy_from with it',
+    String((weapon as unknown as { copyFrom?: string } | undefined)?.copyFrom),
+  );
+  ok(
+    (weapon as unknown as { source?: { hold?: { sheet?: string } } } | undefined)?.source?.hold?.sheet ===
+      'sprites/uzi/hold.png',
+    'and a name in it resolves to the sheet',
+    JSON.stringify((weapon as unknown as { source?: unknown } | undefined)?.source),
+  );
+}
+
+// ---------------------------------------------------------------------------
 // 4. The record is handed to a library (`lib/px_bunker.lua`).
 {
   const { weapon } = query(

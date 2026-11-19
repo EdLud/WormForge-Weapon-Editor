@@ -20,6 +20,7 @@ import { supportsFireSequence } from '../data/fireSequence';
 import { STAMP_FRAMES, stampFrameForAngle, supportsTerrainStamp } from '../data/terrainStamp';
 import { COLLISION_FLAGS } from '../data/recordSchema';
 import { meleeStrikes } from '../data/melee';
+import { SDK_MODULE_EXPORTS, SDK_MODULE_PREFIXES } from '../data/sdkModules';
 import { maskLuaCode, NOT_GENERATED_CLOSE, NOT_GENERATED_OPEN } from './luaText';
 import { recordField } from './recordField';
 import { defaultArtFor } from './defaultArt';
@@ -1174,10 +1175,18 @@ export function customSoundPath(
 export function meleeSoundPath(
   project: WeaponProject,
   role: 'hit' | 'miss',
+  /** Which strike of a combo: its own sample is a file of its own. */
+  strike?: number,
 ): string | null {
-  const sound = role === 'hit' ? project.melee?.hitSound : project.melee?.missSound;
+  const sound =
+    strike === undefined
+      ? role === 'hit'
+        ? project.melee?.hitSound
+        : project.melee?.missSound
+      : project.melee?.hits?.[strike]?.sound;
   if (!sound?.file) return null;
-  return `sounds/${sanitizeModFolder(project.id)}/melee_${role}.wav`;
+  const suffix = strike === undefined ? role : `${role}${strike + 1}`;
+  return `sounds/${sanitizeModFolder(project.id)}/melee_${suffix}.wav`;
 }
 
 /** A safe `.wep` filename for the exported bundle. */
@@ -1711,7 +1720,7 @@ export function generateLuaCode(project: WeaponProject): string {
           : (1 + handDeg / 180).toFixed(6).replace(/0+$/, '').replace(/\.$/, '')
       },`,
     );
-    handRows.push('hand_radial_rotation = 1,');
+    handRows.push(`hand_radial_rotation = ${formatNumber(h.handRadialRotation ?? 1)},`);
     // The quad layer measures the hand's cell itself, so it needs the pixel
     // size; the engine scales each sheet natively and ignores this key. PX's
     // three hand sheets are 60x60.
@@ -1719,7 +1728,7 @@ export function generateLuaCode(project: WeaponProject): string {
     holdRows.push(`sheet = ${luaQuote(holdSheetPath(project))},`);
     holdRows.push(`weap_radius = ${h.weapRadius ?? 6},`);
     holdRows.push(`weap_rotation = ${(1 + (h.weapRotation || 0) / 180).toFixed(6).replace(/0+$/, '').replace(/\.$/, '')},`);
-    holdRows.push('weap_radial_rotation = 1,');
+    holdRows.push(`weap_radial_rotation = ${formatNumber(h.weapRadialRotation ?? 1)},`);
     holdRows.push(`weap_scale = ${h.scale ?? 1},`);
     if (h.frames > 1) {
       holdRows.push(`frames = ${h.frames},`);
@@ -1876,7 +1885,7 @@ export function generateLuaCode(project: WeaponProject): string {
         }
         if ((strikes[0].lift ?? 0) !== 0) holdRows.push(`  lift = ${formatNumber(strikes[0].lift)},`);
         if (strikes.length > 1) {
-          const rows = strikes.map((hit) => {
+          const rows = strikes.map((hit, index) => {
             const parts = [
               `frame = ${hit.frame}`,
               `damage = ${formatNumber(Math.max(0, Math.round(hit.damage)))}`,
@@ -1888,6 +1897,18 @@ export function generateLuaCode(project: WeaponProject): string {
             parts.push(`lift = ${formatNumber(hit.lift ?? 0)}`);
             if (hit.vx !== undefined) parts.push(`vx = ${formatNumber(hit.vx)}`);
             if (hit.vy !== undefined) parts.push(`vy = ${formatNumber(hit.vy)}`);
+            // A strike with a sound of its own: a lighter jab before the heavy
+            // one. Written on the row it belongs to, so the weapon's own sound
+            // stays the fallback for every strike that names none.
+            const sound = hit.sound;
+            if (sound?.file) {
+              parts.push(`wav = ${luaQuote(meleeSoundPath(project, 'hit', index)!)}`);
+            } else if ((sound?.id ?? 0) > 0) {
+              parts.push(`sound = ${Math.round(sound!.id)}`);
+            }
+            if (sound && (sound.priority ?? 8) !== 8) {
+              parts.push(`priority = ${Math.max(0, Math.round(sound.priority))}`);
+            }
             return `{ ${parts.join(', ')} },`;
           });
           holdRows.push(`  hits = {`);
@@ -2040,12 +2061,12 @@ export function generateLuaCode(project: WeaponProject): string {
         }
         holdRows.push(`  weap_radius = ${fireRadius},`);
         holdRows.push(`  weap_rotation = ${rotation(fireRotation)},`);
-        holdRows.push('  weap_radial_rotation = 1,');
+        holdRows.push(`  weap_radial_rotation = ${formatNumber(h.weapRadialRotation ?? 1)},`);
         holdRows.push(`  hand = holds.PX_HANDS[${fireHandIdx}],`);
         holdRows.push(`  hand_type = ${fireHandIdx},`);
         holdRows.push(`  hand_radius = ${h.fireHandRadius ?? h.handRadius ?? 10},`);
         holdRows.push(`  hand_rotation = ${rotation(fireHandDeg)},`);
-        holdRows.push('  hand_radial_rotation = 1,');
+        holdRows.push(`  hand_radial_rotation = ${formatNumber(h.handRadialRotation ?? 1)},`);
         holdRows.push('  hand_size = 60,');
         if (fireHandScale !== 1) holdRows.push(`  hand_scale = ${formatNumber(fireHandScale)},`);
         if ((h.fireHandOffsetX ?? 0) !== 0 || (h.fireHandOffsetY ?? 0) !== 0) {
@@ -2313,6 +2334,13 @@ export function generateLuaCode(project: WeaponProject): string {
   if (usesHoldLocal && project.melee?.enabled) {
     for (const role of ['hit', 'miss'] as const) {
       const path = meleeSoundPath(project, role);
+      if (path) packSounds.push(luaQuote(path));
+    }
+    // A strike with a sample of its own declares that one too: a declared path
+    // must have its file, and a file whose path is not declared is a nil sample.
+    for (const [index, strike] of (project.melee.hits ?? []).entries()) {
+      if (!strike.sound?.file) continue;
+      const path = meleeSoundPath(project, 'hit', index);
       if (path) packSounds.push(luaQuote(path));
     }
   }
@@ -2988,6 +3016,7 @@ export function generateLuaCode(project: WeaponProject): string {
       (fullGroup || roamTouched || !!roamFlightState || !!gasState)
     ) {
       const r = project.roamConfig;
+      const roamStart = lines.length;
       lines.push('        roam = {');
       if (roamChanged('walk_speed')) {
         lines.push(`          walk_speed = ${r.walk_speed ?? 2},`);
@@ -3065,6 +3094,11 @@ export function generateLuaCode(project: WeaponProject): string {
         lines.push('          },');
       }
       lines.push('        },');
+      // `flight_1`/`flight_2` live in `sheep`, so a record whose only roam
+      // difference is those made `roamTouched` true while no `roam` row
+      // followed. An empty group writes nothing and made a re-export differ
+      // from the export it came from (the sheep test), so it is dropped.
+      if (lines.length === roamStart + 2) lines.splice(roamStart, 2);
     } else if (
       action === 'dig' &&
       project.digConfig &&
@@ -3569,6 +3603,7 @@ export function generateLuaCode(project: WeaponProject): string {
           (clustletChanged('bit_action') || clustletChanged('roam'))
         ) {
           const r = c.roam;
+          const bitRoamStart = lines.length;
           lines.push('          roam = {');
           if (bitRoamChanged('walk_speed')) {
             lines.push(`            walk_speed = ${r.walk_speed ?? 2},`);
@@ -3639,6 +3674,9 @@ export function generateLuaCode(project: WeaponProject): string {
             lines.push('            },');
           }
           lines.push('          },');
+          // Same rule as the round's group: the animal's flying sheets are not
+          // rows here, so a difference only in those must not leave `{}`.
+          if (lines.length === bitRoamStart + 2) lines.splice(bitRoamStart, 2);
         }
 
         if (
@@ -4532,46 +4570,6 @@ export interface WeaponManifestPart {
   block: string;
 }
 
-/** Known SDK bundles and the public `wf-lib/*` modules they export. */
-export const SDK_MODULE_EXPORTS: Record<string, string[]> = {
-  'wf.sdk': [
-    'wf-lib/holds',
-    'wf-lib/own_time',
-    'wf-lib/shared',
-    'wf-lib/parkour',
-    'wf-lib/tooltip',
-    'wf-lib/lightning',
-    'wf-lib/px_sprite_builder',
-    'wf-lib/sdk',
-  ],
-  'wfws.sdk': ['wf-lib/wfws_sprite_builder'],
-  'effects.sdk': [
-    'wf-lib/effects/trail',
-    'wf-lib/effects/px_effects',
-    'wf-lib/effects/custom_explosion',
-  ],
-  'px.fire_seq': ['wf-lib/fire_seq', 'wf-lib/px_hold_art', 'wf-lib/seq-spb'],
-  'px.electric': ['wf-lib/electric/damage', 'wf-lib/electric/hold'],
-};
-
-const SDK_MODULE_PREFIXES: { prefix: string; id: string }[] = [
-  { prefix: 'wf-lib/holds', id: 'wf.sdk' },
-  { prefix: 'wf-lib/own_time', id: 'wf.sdk' },
-  { prefix: 'wf-lib/shared', id: 'wf.sdk' },
-  { prefix: 'wf-lib/parkour', id: 'wf.sdk' },
-  { prefix: 'wf-lib/tooltip', id: 'wf.sdk' },
-  { prefix: 'wf-lib/lightning', id: 'wf.sdk' },
-  { prefix: 'wf-lib/px_sprite_builder', id: 'wf.sdk' },
-  { prefix: 'wf-lib/sdk', id: 'wf.sdk' },
-  { prefix: 'wf-lib/wfws_sprite_builder', id: 'wfws.sdk' },
-  { prefix: 'wf-lib/wfws_sdk/', id: 'wfws.sdk' },
-  { prefix: 'wf-lib/effects/', id: 'effects.sdk' },
-  { prefix: 'wf-lib/fire_seq', id: 'px.fire_seq' },
-  { prefix: 'wf-lib/px_hold_art', id: 'px.fire_seq' },
-  { prefix: 'wf-lib/seq-spb', id: 'px.fire_seq' },
-  { prefix: 'wf-lib/electric/', id: 'px.electric' },
-];
-
 /**
  * Resolve the list of `require(...)` targets allowed for `checkLua(..., { availableRequires })`
  * given a bundle's declared `dependencies` and any bundle-local `.lua` modules.
@@ -4580,6 +4578,10 @@ const SDK_MODULE_PREFIXES: { prefix: string; id: string }[] = [
  * excluded so `undeclared-require` catches them even when unrelated third-party
  * dependencies are declared; modules from unrecognized external dependencies are
  * permitted through unless they match an un-declared known SDK prefix.
+ *
+ * The tables live in `src/data/sdkModules.ts`, which the carry reads too: one
+ * list, because the two copies had already disagreed with the installed
+ * libraries (`px.electric` exports `taze_mine`, not `hold`).
  */
 export function availableRequiresForCheck(
   luaSource: string,
@@ -4653,10 +4655,24 @@ export function autoDependenciesForProject(
   return out;
 }
 
+/**
+ * The stock slot a weapon replaces on the panel.
+ *
+ * The slot drives two things that must agree: the component's `default_position`
+ * and the profile's `stock.<slot>` line. An empty slot placed the component on
+ * `F1` (the first position, the Bazooka) while the profile said `stock.`, so the
+ * two halves of one export disagreed and a re-import moved the weapon to the
+ * Bazooka. The record the weapon copies is the honest fallback, because a weapon
+ * always replaces something; `grenade` only when nothing else is known.
+ */
+export function effectiveSlot(project: WeaponProject): string {
+  return project.slot || project.based_on || 'grenade';
+}
+
 export function weaponManifestPart(project: WeaponProject): WeaponManifestPart {
   const modFolder = sanitizeModFolder(project.id);
-  const pos = getStockPanelPosition(project.slot);
-  const icon = project.customIconFile ? `sprites/${modFolder}/icon.png` : (project.panel_icon || project.slot);
+  const pos = getStockPanelPosition(effectiveSlot(project));
+  const icon = project.customIconFile ? `sprites/${modFolder}/icon.png` : (project.panel_icon || effectiveSlot(project));
   const usesHold = project.hold && project.hold.enabled;
   const bitMode = bitBuilderMode(project);
   const behaviorStates = resolveBehaviorStates(project);
@@ -4906,7 +4922,11 @@ export function generatePackToml(pack: PackProject): string {
   if (dependencies.length > 0) {
     lines.push(`dependencies = [${dependencies.map(luaQuote).join(', ')}]`);
   }
-  const modIcon = pack.modIcon || parts.find((part) => part.modIcon)?.modIcon;
+  // The bundle's one icon. An uploaded file is written into the bundle's own
+  // folder and named by `mod_icon`; without one the first weapon's icon stands
+  // in, and a bundle with neither is legal (the mod loader shows initials).
+  const packIconPath = pack.iconFile ? `sprites/${sanitizeModFolder(pack.id)}/icon.png` : undefined;
+  const modIcon = packIconPath || pack.modIcon || parts.find((part) => part.modIcon)?.modIcon;
   if (modIcon) lines.push(`mod_icon = ${luaQuote(modIcon)}`);
   if (pack.replaces?.length) {
     lines.push(`replaces = [${pack.replaces.map(luaQuote).join(', ')}]`);
@@ -4980,7 +5000,9 @@ export function generatePackProfile(pack: PackProject): string {
   // repeated key is not a table entry, it is a TOML error.
   const placed = new Set<string>();
   for (const project of pack.weapons) {
-    for (const key of [project.id, `stock.${project.slot}`]) {
+    // The same slot the manifest names (`effectiveSlot`), so the two halves of
+    // one export cannot disagree about where the weapon is.
+    for (const key of [project.id, `stock.${effectiveSlot(project)}`]) {
       if (placed.has(key)) continue;
       placed.add(key);
       lines.push(`${luaQuote(key)} = true`);

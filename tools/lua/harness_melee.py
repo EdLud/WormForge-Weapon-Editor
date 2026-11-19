@@ -184,7 +184,8 @@ ctx.id = "test.bat"
 
 def build_spec(weapon="test.bat", weap_rotation=1, aim_clamp=None, follow_swing=True,
                power=3, lift=1, hits=None, hit_sound=0, miss_sound=0,
-               hit_wav=None, miss_wav=None, hit_priority=8, miss_priority=8):
+               hit_wav=None, miss_wav=None, hit_priority=8, miss_priority=8,
+               swing_angle=-30):
     spec = lua.table_from({
         "weapon": weapon,
         "sheet": "sprites/test.bat/hold.png",
@@ -205,7 +206,7 @@ def build_spec(weapon="test.bat", weap_rotation=1, aim_clamp=None, follow_swing=
             "finish": "end_turn",
             "keys": lua.table_from([
                 lua.table_from({"t": 0, "angle": 0, "dx": 0, "dy": 0, "scale": 1}),
-                lua.table_from({"t": 8, "angle": -30, "dx": 0, "dy": 0, "scale": 1}),
+                lua.table_from({"t": 8, "angle": swing_angle, "dx": 0, "dy": 0, "scale": 1}),
                 lua.table_from({"t": 16, "angle": 0, "dx": 0, "dy": 0, "scale": 1}),
             ]),
         }),
@@ -409,6 +410,26 @@ for aim, dx, dy, label in (
     check("the box points " + label, VICTIM["hp"] < 100, "victim hp %d" % VICTIM["hp"])
 WORM["aim"] = 0.5
 VICTIM["y"] = 1000
+
+# The two culls that are not distance (WF 59): behind the striker, and outside
+# the arc. `along` is the distance projected on the aim, so a worm behind has a
+# negative one, and `across` is the distance off the line, which `width` bounds.
+for dx, dy, label in ((-24, 0, "a worm behind the striker"), (24, 40, "a worm outside the arc")):
+    EVENTS.clear()
+    WORM["weapon"] = "test.bat"
+    WORM["aim"] = 0.5
+    VICTIM["x"], VICTIM["y"] = 1000 + dx, 1000 + dy
+    VICTIM["hp"] = 100
+    step(160 if dx < 0 else 190)
+    step(161 if dx < 0 else 191, space=True)
+    for n in range(162 if dx < 0 else 192, 178 if dx < 0 else 208):
+        step(n, space=True)
+    check(
+        "%s is not hit" % label,
+        VICTIM["hp"] == 100,
+        "victim hp %d (along/across culled it)" % VICTIM["hp"],
+    )
+VICTIM["x"], VICTIM["y"] = 1024, 1000
 
 # A swing that misses: the victim leaves the box, and the press still plays.
 EVENTS.clear()
@@ -615,6 +636,77 @@ check(
     and all(e[3] == 16 for e in wav_plays),
     "%s" % (wav_plays,),
 )
+
+# A strike can name its own sample (`sound` / `wav` / `priority` on the row), so a
+# combo opens light and ends heavy while the rows that name none keep playing the
+# weapon's own hit sound.
+mixed_ctx = lua.table()
+mixed_ctx.id = "test.bat.mixed"
+MIXED = [
+    {"frame": 4, "damage": 7, "power": 1, "lift": 0},
+    {"frame": 8, "damage": 9, "power": 3, "lift": 1, "sound": 8},
+    {
+        "frame": 12,
+        "damage": 11,
+        "power": 5,
+        "lift": 2,
+        "wav": "sounds/test/melee_hit3.wav",
+        "priority": 16,
+    },
+]
+sb.hold(mixed_ctx, build_spec("test.bat.mixed", 1, None, follow_swing=False, hits=MIXED,
+                             hit_sound=96, miss_sound=96, hit_priority=10))
+EVENTS.clear()
+LOG.clear()
+WORM["weapon"] = "test.bat.mixed"
+WORM["aim"] = 0.5
+VICTIM["x"], VICTIM["y"] = 1024, 1000
+VICTIM["hp"] = 100
+step(960)
+step(961, space=True)
+for n in range(962, 980):
+    step(n, space=True)
+mixed_plays = [e for e in EVENTS if e[0] == "sound"]
+check(
+    "a strike with its own sample plays that one",
+    [e[1] for e in mixed_plays]
+    == [96, 8, "sounds/test/melee_hit3.wav"],
+    "%s (the rows with none fall back to the weapon's hit sound)" % (mixed_plays,),
+)
+check(
+    "and the row priority wins over the weapon's",
+    [e[3] for e in mixed_plays] == [10, 8, 16],
+    "priorities %s" % ([e[3] for e in mixed_plays],),
+)
+
+# `follow_swing`: the clip's angle at the hit frame turns the box, so a cut that
+# rises reaches a worm overhead that the level aim cannot. The same spec twice,
+# once with the flag and once without, and the victim above and in front.
+for follow, label in ((True, "with follow_swing"), (False, "without it")):
+    name = "test.bat.follow%d" % (1 if follow else 0)
+    follow_ctx = lua.table()
+    follow_ctx.id = name
+    sb.hold(follow_ctx, build_spec(name, 1, None, follow_swing=follow, swing_angle=-55))
+    EVENTS.clear()
+    LOG.clear()
+    WORM["weapon"] = name
+    WORM["aim"] = 0.5
+    # 12 px ahead and 24 px up: inside the 32 px reach and the 16 px arc once the
+    # box has turned 55 degrees, outside it when the box stays level.
+    VICTIM["x"], VICTIM["y"] = 1012, 976
+    VICTIM["hp"] = 100
+    step(900 if follow else 940)
+    step(901 if follow else 941, space=True)
+    for n in range(902 if follow else 942, 918 if follow else 958):
+        step(n, space=True)
+    damaged = VICTIM["hp"] < 100
+    check(
+        "an overhead worm is hit %s" % label,
+        damaged == follow,
+        "victim hp %d (the box %s the clip angle)"
+        % (VICTIM["hp"], "follows" if follow else "ignores"),
+    )
+VICTIM["x"], VICTIM["y"] = 1024, 1000
 
 # A swing into thin air: the same weapon, nobody in the box, so every strike
 # plays the whiff at the striker instead. The id-sound combo entry answers again

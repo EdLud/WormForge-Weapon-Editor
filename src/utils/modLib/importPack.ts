@@ -32,11 +32,19 @@ import {
 } from '../pack';
 import { stockSlotForPosition } from '../../data/stockWeapons';
 import { copyNamespace, isUnderNamespace, slugId } from '../weaponId';
+import { readAsset } from './importFeatures';
 
 export interface PackImport {
   pack: PackProject;
   /** One line per weapon, plus anything that changed its id. */
   notes: string[];
+  /**
+   * What the imported pack cannot export as it stands, each sentence naming the
+   * weapon: a carried `require` no bundle ships, a Lua error, an undeclared
+   * option. The caller has to show these, because the export refuses them by
+   * name and the per-weapon notes are too many to read as a toast.
+   */
+  warnings: string[];
 }
 
 const lastSegment = (id: string): string => {
@@ -54,6 +62,19 @@ export function packIdFromBundle(bundleId: string, componentIds: string[] = []):
   const raw = (bundleId || '').trim() || 'bundle';
   const ours = componentIds.length > 0 && componentIds.every((id) => isUnderNamespace(id, raw));
   return ours ? raw : copyNamespace(raw);
+}
+
+/**
+ * `mod_icon` often names the **first weapon's** icon, because that is what the
+ * manifest falls back to when a bundle declares no icon of its own. Such a path
+ * is the weapon's art, already carried by its own import, so taking it as a
+ * bundle icon would copy it into the bundle folder and change the very line that
+ * named it (a re-export stopped being byte-identical).
+ */
+export function isWeaponIcon(path: string, weapons: ModWeapon[]): boolean {
+  const icon = path.trim();
+  if (!icon) return false;
+  return weapons.some((weapon) => (weapon.icon || '').trim() === icon);
 }
 
 /** The id a component's weapon gets in the imported pack. */
@@ -76,6 +97,7 @@ export async function importBundlePack(
   files: ModFile[],
 ): Promise<PackImport> {
   const notes: string[] = [];
+  const warnings: string[] = [];
   const packId = packIdFromBundle(
     bundle.id,
     weapons.map((weapon) => weapon.componentId),
@@ -86,9 +108,16 @@ export async function importBundlePack(
     author: bundle.author || 'WormForge Author',
     version: bundle.version || '0.1.0',
     weapons: [],
+    // What the source retires. Dropping it would change what installing this
+    // bundle does, and keeping it silently is worth one line: an import is a copy
+    // of the manifest, and `replaces` is part of it.
+    ...(bundle.replaces && bundle.replaces.length > 0 ? { replaces: bundle.replaces } : {}),
   };
   if (packId !== bundle.id) {
     notes.push(`${bundle.id}: imported as ${packId}, so the export does not claim the installed bundle's id`);
+  }
+  if (bundle.replaces && bundle.replaces.length > 0) {
+    notes.push(`replaces ${bundle.replaces.join(', ')}: installing this bundle retires them`);
   }
 
   // The weapons are collected and the one-weapon rule applied **once** at the
@@ -113,18 +142,32 @@ export async function importBundlePack(
       panel_icon: weapon.icon && !weapon.icon.includes('/') ? weapon.icon : project.panel_icon,
     };
     if (id !== wanted) {
-      // The id moved, so the folder it names moved: the art it declares by path
-      // goes with it (a duplicate's rule).
-      entry = retargetWeaponArt(
-        entry,
-        weaponFolder({ id: wanted } as WeaponProject),
-        weaponFolder(entry),
-      );
       notes.push(
         `${weapon.componentId}: imported as ${id}, because ${weaponFolder({ id: wanted } as WeaponProject)} is already used in this bundle`,
       );
     }
+    // The weapon's id changed, so the folder every art path it declares lives in
+    // changed with it. The paths currently point at the **import's own** folder
+    // (`project.id`), not at `wanted`'s: a bundle that names its component with
+    // its own id (`wfws.vortex` on the bundle `wfws.vortex`) has `wanted =
+    // wfws.vortex` while the single-weapon import chose
+    // `wfws.vortex.vortex_grenade`, and moving from `wanted` wrote carried art
+    // for a folder nothing ever occupied (the vortex's `explosion.wav` and
+    // hole sheet came out at `sounds/vortex_grenade/` while the WAV role wrote
+    // `sounds/vortex/`).
+    if (id !== project.id) {
+      entry = retargetWeaponArt(
+        entry,
+        weaponFolder({ id: project.id } as WeaponProject),
+        weaponFolder(entry),
+      );
+    }
     entries.push(entry);
+    // What the export will refuse goes in its own list, because the per-weapon
+    // line below is a count and a bare count cannot be acted on.
+    for (const blocker of result.blocking) {
+      warnings.push(`${weapon.name || weapon.componentId}: ${blocker}`);
+    }
     // One line per weapon: an import summary is a list of what arrived, not a
     // transcript of every note the single-weapon importer made.
     notes.push(
@@ -132,6 +175,17 @@ export async function importBundlePack(
     );
   }
   const pack = syncPackToSoleWeapon({ ...base, weapons: entries });
+
+  // The bundle's own icon, one per bundle. `mod_icon` names it in the manifest
+  // and it lives in that bundle's folder, so it belongs to the pack and not to
+  // any one weapon: importing without it lost the picture the mod loader shows.
+  const modIconAsset =
+    bundle.modIcon && !isWeaponIcon(bundle.modIcon, weapons)
+      ? await readAsset(files, bundle.dir, bundle.modIcon)
+      : undefined;
+  if (!modIconAsset && bundle.modIcon && !isWeaponIcon(bundle.modIcon, weapons)) {
+    notes.push(`mod_icon ${bundle.modIcon} is declared but not in the bundle`);
+  }
 
   // The bundle's own profile file name, when it has exactly one: a re-export
   // should not rename the profile the author ships.
@@ -143,5 +197,15 @@ export async function importBundlePack(
       ? (profileFiles[0].split('/').pop() || '').replace(/\.toml$/i, '')
       : undefined;
 
-  return { pack: { ...pack, profileName }, notes };
+  return {
+    pack: {
+      ...pack,
+      profileName,
+      ...(modIconAsset
+        ? { iconFile: modIconAsset.file, iconPreview: modIconAsset.preview }
+        : {}),
+    },
+    notes,
+    warnings,
+  };
 }

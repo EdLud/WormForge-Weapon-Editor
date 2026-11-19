@@ -240,6 +240,12 @@ export async function weaponBundlePart(project: WeaponProject): Promise<WeaponBu
       plain.push({ path, source: sound.file });
     }
   }
+  // A combo strike that names its own sample: one file per strike, so a lighter
+  // first hit stays lighter instead of playing the weapon's single hit WAV.
+  for (const [index, strike] of (project.melee?.hits ?? []).entries()) {
+    const path = meleeSoundPath(project, 'hit', index);
+    if (path && strike.sound?.file?.file) plain.push({ path, source: strike.sound.file.file });
+  }
 
   // WAVs a carried block plays by path (M6). The four roles above are the
   // editor's own; a bundle's sample that is neither is written where its code
@@ -355,6 +361,13 @@ export async function emitPackFiles(
   const alias = deduped.alias;
   const withAliases = (lua: string) =>
     alias.size > 0 ? compactSpriteLists(applySheetAliases(lua, alias)) : lua;
+
+  // The bundle's own icon, one per bundle: `mod_icon` names a single file, so it
+  // lives in the bundle's folder rather than in any weapon's. Written before the
+  // manifest is validated, so a declared `mod_icon` always has its file.
+  if (pack.iconFile) {
+    await put(`${packFolder}/sprites/${packFolder}/icon.png`, pack.iconFile);
+  }
 
   for (const part of parts) {
     for (const entry of part.plain) await put(`${packFolder}/${entry.path}`, entry.source);

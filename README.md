@@ -16,6 +16,7 @@ Maintenance and hand-off notes live in [AGENTS.md](AGENTS.md).
 - **Read installed mods**:
   - Opens a `Mods/` folder or `.zip`, lists every bundle and weapon, and reads records kept in Lua (including `copy_from`, bundled `.wep` files and the native record groups).
   - Imports the WFWS features this editor writes: hold art, sprite-builder roles and `size`/`angle`, ribbon trail, explosion burst, sequential fire, terrain stamp, custom WAVs and pack sheets, with the bundle's own PNG/GIF/WAV files attached for re-export.
+  - A whole bundle can be read as one pack, and the import says up front what an export cannot write as it stands (a carried `require` only the source bundle ships, a Lua error, an option the component does not declare), because one bad component takes the whole bundle down at load.
 - **Project X `.wep` Binary Importer**:
   - Parses binary header `[0x06, 0xDD, 0xBB, 0x5A]`, Latin-1 name strings at `0x1E4`, and 0x1D0 bytes weapon record slabs.
   - Computes minimal diffs against stock templates (`stock.<slot>`) to prevent boilerplate noise.
@@ -63,7 +64,7 @@ bun run dev
 # 3. Build for production (web / dist)
 bun run build
 
-# 4. Dev only: generate the in-game behaviour test pack (58 weapons + profile)
+# 4. Dev only: generate the in-game behaviour test pack (60 weapons + profile)
 bun run tools/gen_test_pack.ts
 ```
 

@@ -175,6 +175,12 @@ export default function App() {
   // pack is built out of weapons that already exist.
   const [importMode, setImportMode] = useState<'replace' | 'append'>('replace');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  /**
+   * What a whole-bundle import says the export will refuse. A pack of 89 weapons
+   * cannot put that in a toast, and the per-weapon notes behind the count are
+   * where an author finds the reason, so it stays on screen until dismissed.
+   */
+  const [importWarnings, setImportWarnings] = useState<string[]>([]);
   const [isExporting, setIsExporting] = useState(false);
 
   // Light is the default: it reads like the game's own 1998 UI and keeps the
@@ -316,11 +322,20 @@ export default function App() {
     />
   );
 
-  const handleApplyWepImport = (parsed: Partial<WeaponProject>) => {
+  const handleApplyWepImport = (
+    parsed: Partial<WeaponProject> & {
+      replaceProject?: boolean;
+      modIcon?: { file: File; preview?: string };
+    },
+  ) => {
     // A bundle import is a new weapon (`replaceProject`): it starts from the
     // default project, so the open weapon's record, art and builder settings
     // cannot leak into it. A `.wep` import still merges into what is open.
-    const replace = !!(parsed as { replaceProject?: boolean }).replaceProject;
+    const replace = !!parsed.replaceProject;
+    // The bundle's own icon comes with the bundle, not with the weapon: a pack
+    // has one, so it is applied to the pack the import replaces. Adding a weapon
+    // to an existing bundle leaves that bundle's icon alone.
+    const importedIcon = replace && importMode === 'replace' ? parsed.modIcon : undefined;
     // "Add to this bundle": the imported weapon joins the pack instead of
     // replacing the open one, with a free id and its art moved to its own folder.
     if (replace && importMode === 'append') {
@@ -408,7 +423,10 @@ export default function App() {
             ? prev.donorBaseline
             : stockDonorBaseline(parsed.based_on ?? prev.based_on) ?? prev.donorBaseline),
       };
-      return withWeapon(prevPack, activeIndex, merged);
+      const next = withWeapon(prevPack, activeIndex, merged);
+      return importedIcon
+        ? { ...next, iconFile: importedIcon.file, iconPreview: importedIcon.preview }
+        : next;
     });
     showToast(
       parsed.useWepFile && parsed.wepFile
@@ -422,12 +440,15 @@ export default function App() {
    * it holds replaces the open bundle, with the ids the source declares (or a
    * namespaced id when the source is another author's).
    */
-  const handleImportPack = (imported: PackProject) => {
+  const handleImportPack = (imported: PackProject, warnings: string[] = []) => {
     setPack(imported);
     setActiveIndex(0);
     setImportMode('replace');
+    setImportWarnings(warnings);
     showToast(
-      `Read ${imported.weapons.length} weapon${imported.weapons.length === 1 ? '' : 's'} into ${imported.id}.`,
+      warnings.length > 0
+        ? `Read ${imported.weapons.length} weapon${imported.weapons.length === 1 ? '' : 's'} into ${imported.id}, with ${warnings.length} export blocker${warnings.length === 1 ? '' : 's'}.`
+        : `Read ${imported.weapons.length} weapon${imported.weapons.length === 1 ? '' : 's'} into ${imported.id}.`,
     );
   };
 
@@ -559,6 +580,39 @@ export default function App() {
           id="main"
           className="mx-auto w-full max-w-6xl flex-1 px-4 py-5 sm:px-6 lg:px-8 lg:py-6"
         >
+          {importWarnings.length > 0 && (
+            <div
+              role="alert"
+              className="mb-4 rounded-xl border border-rose-300 bg-rose-50 px-3.5 py-3 text-xs text-rose-900 dark:border-rose-800 dark:bg-rose-950/50 dark:text-rose-100"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <p className="font-semibold">
+                  {importWarnings.length} thing{importWarnings.length === 1 ? '' : 's'} in this bundle
+                  would stop the export. Each line names the weapon and the reason; the export
+                  refuses them by weapon and rule until they are fixed.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setImportWarnings([])}
+                  aria-label="Dismiss import blockers"
+                  className="shrink-0 rounded-md px-1.5 text-sm leading-5 text-rose-700 hover:bg-rose-100 dark:text-rose-200 dark:hover:bg-rose-900"
+                >
+                  ✕
+                </button>
+              </div>
+              <ul className="mt-2 space-y-1 font-mono text-[11px] leading-relaxed">
+                {importWarnings.slice(0, 8).map((warning) => (
+                  <li key={warning}>{warning}</li>
+                ))}
+              </ul>
+              {importWarnings.length > 8 && (
+                <p className="mt-1 text-[11px] font-semibold">
+                  and {importWarnings.length - 8} more
+                </p>
+              )}
+            </div>
+          )}
+
           <header className="mb-4 flex flex-wrap items-end justify-between gap-3">
             <div>
               <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-forge-600 dark:text-forge-400">
@@ -575,13 +629,14 @@ export default function App() {
 
           {activeTab === 'editor' && (
             <div className="space-y-4">
-              {pack.weapons.length > 1 && (
-                <PackSettingsCard
-                  pack={pack}
-                  onChange={updatePack}
-                  onRemoveWeapon={() => removeWeapon(activeIndex)}
-                />
-              )}
+              {/* Always mounted: the bundle icon is a bundle-level field even
+                  for a pack of one, which is the same card the mod loader shows
+                  when it has none (initials). */}
+              <PackSettingsCard
+                pack={pack}
+                onChange={updatePack}
+                onRemoveWeapon={pack.weapons.length > 1 ? () => removeWeapon(activeIndex) : undefined}
+              />
               <WeaponSettings project={project} bundleId={pack.id} onChange={updateProject} />
               <RecordEditor
                 project={project}

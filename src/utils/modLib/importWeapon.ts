@@ -39,11 +39,26 @@ export interface BundleImport {
   /** What the import did, for the toast and the panel. */
   notes: string[];
   /**
+   * What the export cannot write as it stands, one sentence each: a carried
+   * `require` nothing ships, a Lua error, an option the component does not
+   * declare. These are not opinions about style; the emitted module raises at
+   * load, and `validateBundle` refuses it by weapon and rule. A single-weapon
+   * import shows them in its toast; a whole-bundle import has no room for that,
+   * so `importBundlePack` collects them into `warnings`.
+   */
+  blocking: string[];
+  /**
    * Replace the whole project instead of merging into the open one: an import
    * starts a new weapon, so the previous one's art, effects and builder
    * settings must not leak into it.
    */
   replaceProject: boolean;
+  /**
+   * The bundle's own icon (`mod_icon`), when the manifest declared one. A pack
+   * has one icon for the whole bundle, so a single-weapon import carries it to
+   * the pack it creates instead of dropping the picture the mod loader shows.
+   */
+  modIcon?: { file: File; preview?: string };
 }
 
 const num = (value: unknown): number | undefined =>
@@ -123,6 +138,7 @@ export async function importBundleWeapon(
   files: ModFile[],
 ): Promise<BundleImport> {
   const notes: string[] = [];
+  const blocking: string[] = [];
   const name = weapon.name || weapon.componentId;
   // The id is derived from the bundle the weapon came out of, never from a fixed
   // namespace: the copy takes the source's own id with `.import` after it, so a
@@ -373,16 +389,21 @@ export async function importBundleWeapon(
   // import, not discovering in game. The rules are `wfcheck`'s.
   const luaFindings = checkLua(moduleText, { mode: 'module' });
   if (luaFindings.length > 0) {
-    const blocking = luaFindings.filter((finding) => finding.severity === 'error').length;
+    const errors = luaFindings.filter((finding) => finding.severity === 'error');
     const kinds = [...new Set(luaFindings.map((finding) => finding.rule))].join(', ');
     // `error` only: `pairs()` is an advisory and trig in a draw callback is a
     // warning, the compiler's own levels. Calling an advisory "blocking" made a
     // paint-only draw file read as broken at import.
     notes.push(
       `lua: ${luaFindings.length} finding${luaFindings.length === 1 ? '' : 's'}, ${
-        blocking > 0 ? `${blocking} blocking` : 'nothing blocking'
+        errors.length > 0 ? `${errors.length} blocking` : 'nothing blocking'
       } (${kinds})`,
     );
+    if (errors.length > 0) {
+      blocking.push(
+        `${errors.length} Lua error${errors.length === 1 ? '' : 's'} (${[...new Set(errors.map((finding) => finding.rule))].join(', ')}): the export refuses the module`,
+      );
+    }
   }
   // `ctx.option("k")` on a key the component does not declare raises
   // `"<id> has no option <k>"` and the whole bundle fails to load, so it is worth
@@ -392,6 +413,9 @@ export async function importBundleWeapon(
   if (undeclaredReads.length > 0) {
     notes.push(
       `ctx.option reads ${undeclaredReads.join(', ')}, which ${weapon.componentId} does not declare: the engine raises "has no option" and the weapon fails to load`,
+    );
+    blocking.push(
+      `ctx.option reads ${undeclaredReads.join(', ')}, which ${weapon.componentId} does not declare`,
     );
   }
   if (weapon.weaponOptions && weapon.weaponOptions.length > 0) {
@@ -590,17 +614,27 @@ export async function importBundleWeapon(
       emitted,
     );
     carriedPaths.push(...carried.paths);
+    // A hook or a registration is transformed on its own (it is not one of the
+    // carried blocks), so the art **it** names comes back from that call and not
+    // from `carried.paths`. Without this, the Conductor's
+    // `wa.sound.play(worm, "sounds/conductor/shot.wav", 8)` was rewritten to the
+    // new folder but never attached or declared, and the export wrote the WAV
+    // while the claim's `sounds` list stayed empty (the play is a nil sample).
+    const transformedHooks = carriedHookList.map((hook) => {
+      const moved = carried.transform(stripNotGeneratedMarkers(hook.text));
+      carriedPaths.push(...moved.paths);
+      return { ...hook, text: moved.text };
+    });
+    const transformedRegistrations = carriedRegistrations.map((registration) => {
+      const moved = carried.transform(stripNotGeneratedMarkers(registration.text));
+      carriedPaths.push(...moved.paths);
+      return { ...registration, text: moved.text };
+    });
     nextProject.carriedLua = {
       preamble: carried.preamble,
       prologue: carried.prologue,
-      hooks: carriedHookList.map((hook) => ({
-        ...hook,
-        text: carried.transform(stripNotGeneratedMarkers(hook.text)).text,
-      })),
-      registrations: carriedRegistrations.map((registration) => ({
-        ...registration,
-        text: carried.transform(stripNotGeneratedMarkers(registration.text)).text,
-      })),
+      hooks: transformedHooks,
+      registrations: transformedRegistrations,
       unresolved: carried.unresolved,
       origin: weapon.bundleId,
     };
@@ -651,6 +685,11 @@ export async function importBundleWeapon(
     }
     for (const refused of carried.refused) notes.push(`not carried: ${refused}`);
     notes.push(...carried.notes);
+    if (carried.missingModules.length > 0) {
+      blocking.push(
+        `${carried.missingModules.map((module) => `require("${module}")`).join(', ')} ${carried.missingModules.length === 1 ? 'is' : 'are'} not shipped by the export`,
+      );
+    }
     // A carried `require` needs its own dependency in `mod.toml`: the export
     // ships our SDK folders, but the engine resolves `wf-lib/effects/*` through
     // `effects.sdk` and `wf-lib/electric/*` through `px.electric`.
@@ -670,7 +709,31 @@ export async function importBundleWeapon(
   // `sprites` list, the engine slices a declared strip by `frames`, and the zip
   // has to carry the file. All three come from the bundle's own
   // `[sprites."…"]` declaration, so nothing here invents a frame count.
-  const artPaths = [...new Map(carriedPaths.map((path) => [path.target, path])).values()];
+  // A folder reference (`"sounds/buffalo/"`, concatentated with a file name at
+  // the point of use) becomes the files it holds: the export writes
+  // `sounds/<mod>/…`, so every file of that folder is attached and declared
+  // under the export's folder, or the carried play names a sample the zip lacks.
+  const expandFolder = (path: { source: string; target: string }): { source: string; target: string }[] => {
+    if (!path.source.endsWith('/')) return [path];
+    const [kind, from] = path.source.split('/');
+    const under = weapon.bundleDir ? `${weapon.bundleDir}/${kind}/${from}/` : `${kind}/${from}/`;
+    const found: { source: string; target: string }[] = [];
+    for (const file of files) {
+      const full = file.path.split(String.fromCharCode(92)).join('/');
+      if (!full.startsWith(under)) continue;
+      const name = full.slice(under.length);
+      if (name.includes('/') || !/\.(png|gif|wav)$/i.test(name)) continue;
+      found.push({ source: `${kind}/${from}/${name}`, target: `${path.target}${name}` });
+    }
+    return found;
+  };
+  const artPaths = [
+    ...new Map(
+      carriedPaths
+        .flatMap(expandFolder)
+        .map((path) => [path.target, path] as const),
+    ).values(),
+  ];
   if (artPaths.length > 0) {
     const art: CarriedLuaArt = { sprites: [], sounds: [] };
     const soundFiles: { path: string; file: File }[] = [];
@@ -731,6 +794,25 @@ export async function importBundleWeapon(
   }
   if (carriedSummary) notes.push(`carried: ${carriedSummary}`);
 
-  return { replaceProject: true, project: nextProject, notes };
+  // The bundle's one icon. `mod_icon` names it and it belongs to the bundle, not
+  // to a weapon, so a single-weapon import hands it to the pack it creates.
+  // A `mod_icon` naming this component's own icon is the fallback, not a bundle
+  // icon: the weapon's art already carries it.
+  const ownIcon = (weapon.icon || '').trim() === (weapon.bundleModIcon || '').trim();
+  const bundleIcon =
+    weapon.bundleModIcon && !ownIcon
+      ? await readAsset(files, weapon.bundleDir, weapon.bundleModIcon)
+      : undefined;
+  if (weapon.bundleModIcon && !ownIcon && !bundleIcon) {
+    notes.push(`mod_icon ${weapon.bundleModIcon} is declared but not in the bundle`);
+  }
+
+  return {
+    replaceProject: true,
+    project: nextProject,
+    notes,
+    blocking,
+    ...(bundleIcon ? { modIcon: { file: bundleIcon.file, preview: bundleIcon.preview } } : {}),
+  };
 }
 

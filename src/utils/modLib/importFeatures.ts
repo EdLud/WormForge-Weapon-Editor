@@ -94,6 +94,28 @@ const str = (value: LuaValue | undefined): string | undefined =>
 const bool = (value: LuaValue | undefined): boolean | undefined =>
   typeof value === 'boolean' ? value : undefined;
 
+/**
+ * `hand = sb.PX_HANDS[2]` to the panel's hand type.
+ *
+ * PX and this editor's own `sb.hold` spec both pick the hand sheet by index into
+ * the SDK's `PX_HANDS` table, and the generator writes that index from the
+ * panel's own `handType` (`1` lower, `2` mid, `3` upper), so reading it back is
+ * the editor's own convention and not a guess. Buffalo of Lies names the hand
+ * this way and came back on the wrong sheet.
+ */
+function handTypeOfHand(
+  value: LuaValue | undefined,
+  moduleText?: string,
+): HoldConfig['handType'] | undefined {
+  const literal = str(value);
+  const source = literal ?? moduleText;
+  if (!source) return undefined;
+  const match = /PX_HANDS\s*\[\s*([123])\s*\]/.exec(source);
+  if (!match) return undefined;
+  if (!literal && !moduleText) return undefined;
+  return match[1] === '1' ? 'lower' : match[1] === '3' ? 'upper' : 'mid';
+}
+
 const normalize = (path: string): string => path.replace(/\\/g, '/').replace(/^\.?\//, '');
 
 export const DEFAULT_IMPORT_HOLD: HoldConfig = {
@@ -141,6 +163,8 @@ interface LoadedAsset {
   bytes: Uint8Array;
   width?: number;
   height?: number;
+  /** Frames joined from a folder of PNGs, when the art was a folder. */
+  frames?: number;
 }
 
 const MIME: Record<string, string> = {
@@ -207,7 +231,16 @@ export async function readAsset(
     files.find((file) => normalize(file.path) === full) ??
     files.find((file) => inBundle(normalize(file.path)) && file.path.endsWith(`/${base}`)) ??
     files.find((file) => normalize(file.path) === base);
-  if (!entry) return undefined;
+  if (!entry) {
+    // A folder of per-frame PNGs (`sprites/i_bomb/body/00.png`, `…/aim/01.png`):
+    // the engine reads it natively as one strip, frames in file-name order
+    // (`load_png_sequence`), so the import joins it into the single sheet an
+    // export writes. It needs a canvas, so a headless run reports the folder
+    // instead of silently importing no art.
+    const folder = frameFolderFiles(files, bundleDir, rel);
+    if (folder.length === 0) return undefined;
+    return composeFrameFolder(folder, base);
+  }
   const bytes = await bytesOf(entry);
   if (!bytes) return undefined;
   const extension = base.split('.').pop()?.toLowerCase() ?? '';
@@ -215,6 +248,82 @@ export async function readAsset(
   const file = new File([bytes as BlobPart], base, { type });
   const size = imageSize(bytes);
   return { file, preview: objectUrl(file), bytes, width: size?.width, height: size?.height };
+}
+
+/**
+ * The PNG frames of a sprite folder, in the order the engine loads them.
+ * `dirPath` is bundle-relative and may name the folder without an extension.
+ */
+export function frameFolderFiles(files: ModFile[], bundleDir: string, dirPath: string): ModFile[] {
+  const rel = normalize(dirPath).replace(/\/$/, '');
+  if (!rel) return [];
+  const full = bundleDir ? `${bundleDir}/${rel}/` : `${rel}/`;
+  return files
+    .filter((file) => {
+      const path = normalize(file.path);
+      return (
+        (path.startsWith(full) || path.startsWith(`${rel}/`)) && /\.png$/i.test(path)
+      );
+    })
+    // The engine sorts the paths, so `10.png` comes before `9.png` there too.
+    .sort((a, b) => (normalize(a.path) < normalize(b.path) ? -1 : 1));
+}
+
+/**
+ * Stack a folder's frames into one vertical strip, the shape `wa.assets.load`
+ * slices with `frames`. Returns nothing where there is no canvas (a headless
+ * check, or a Tauri build without a DOM): the caller reports the folder rather
+ * than importing a weapon whose art would be silently missing.
+ */
+async function composeFrameFolder(frames: ModFile[], base: string): Promise<LoadedAsset | undefined> {
+  if (typeof document === 'undefined') return undefined;
+  const images: HTMLImageElement[] = [];
+  const urls: string[] = [];
+  try {
+    for (const frame of frames) {
+      const bytes = await bytesOf(frame);
+      if (!bytes) continue;
+      const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: 'image/png' }));
+      urls.push(url);
+      const image = new Image();
+      image.src = url;
+      await image.decode();
+      images.push(image);
+    }
+    if (images.length === 0) return undefined;
+    const width = Math.max(...images.map((image) => image.naturalWidth));
+    const height = images.reduce((total, image) => total + image.naturalHeight, 0);
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return undefined;
+    ctx.imageSmoothingEnabled = false;
+    let y = 0;
+    for (const image of images) {
+      ctx.drawImage(image, 0, y);
+      y += image.naturalHeight;
+    }
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+    if (!blob) return undefined;
+    const file = new File([blob], `${base}.png`, { type: 'image/png' });
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    return {
+      file,
+      preview: objectUrl(file),
+      bytes,
+      width,
+      height,
+      frames: images.length,
+    };
+  } catch (error) {
+    // A folder that cannot be joined must not look like a folder that was never
+    // there: the import would quietly ship the fallback sheet instead of the art.
+    console.warn(`${base}: the frame folder could not be joined`, error);
+    return undefined;
+  } finally {
+    for (const url of urls) URL.revokeObjectURL(url);
+  }
 }
 
 /** `[sprites."sprites/<mod>/missile.png"]` values for a sheet path. */
@@ -258,7 +367,7 @@ async function readRoleArt(
     sheetFile: asset?.file ?? base.sheetFile,
     sheetPreview: asset?.preview || base.sheetPreview,
     anim: animOf(table.anim, base.anim),
-    frames: num(table.cyclical) ?? base.frames,
+    frames: num(table.cyclical) ?? asset?.frames ?? base.frames,
     pingpong: bool(table.pingpong) ?? false,
     fps: numFrom(decl?.fps) ?? base.fps,
     animSpeed: num(table.anim_speed) ?? base.animSpeed,
@@ -287,7 +396,13 @@ function readOffset(
   return out;
 }
 
-function readHold(table: LuaTable, fallback: HoldConfig): HoldConfig {
+function readHold(
+  table: LuaTable,
+  fallback: HoldConfig,
+  moduleText?: string,
+  sheetFrames?: number,
+  declFps?: number,
+): HoldConfig {
   const handType =
     table.hand_type === 1
       ? 'lower'
@@ -295,11 +410,16 @@ function readHold(table: LuaTable, fallback: HoldConfig): HoldConfig {
         ? 'upper'
         : table.hand_type === 2
           ? 'mid'
-          : fallback.handType;
-  const frames = Math.max(1, Math.round(num(table.frames) ?? 1));
+          : handTypeOfHand(table.hand, moduleText) ?? fallback.handType;
+  // A folder of frames joins into one strip, and its frame count is the art's
+  // own: `hold.frames` is what the engine slices with, so it must be that count.
+  const frames = Math.max(1, Math.round(num(table.frames) ?? sheetFrames ?? 1));
   // `anim_speed` is the engine's multiplier: it plays `1.5 × frames × speed`
-  // frames per second (worm_hold.rs), which is the FPS the panel asks for.
-  const animSpeed = num(table.anim_speed) ?? 1;
+  // frames per second (worm_hold.rs), which is the FPS the panel asks for. A
+  // bundle that declares `fps` on the sheet instead gets that rate back, so the
+  // panel shows what the art actually plays at rather than the engine default.
+  const animSpeed =
+    num(table.anim_speed) ?? (declFps && frames > 1 ? declFps / (1.5 * frames) : 1);
   const rotation = num(table.weap_rotation);
   const drawHand = bool(table.draw_hand) ?? true;
   const rawHandRadius = num(table.hand_radius);
@@ -318,6 +438,17 @@ function readHold(table: LuaTable, fallback: HoldConfig): HoldConfig {
         ? Math.round(((rotation - 1) * 180 + Number.EPSILON) * 1000) / 1000
         : fallback.weapRotation,
     weapRadius: num(table.weap_radius) ?? fallback.weapRadius,
+    // PX turns of PI, the same unit the engine multiplies: a source bundle's 0
+    // hangs the arm on the other side of the worm, and writing 1 there moved the
+    // art a half turn (the javelin's `weap_radius = -11.8` then read as +11.8).
+    ...(num(table.weap_radial_rotation) !== undefined &&
+    Math.abs((num(table.weap_radial_rotation) as number) - (fallback.weapRadialRotation ?? 1)) > 1e-6
+      ? { weapRadialRotation: num(table.weap_radial_rotation) }
+      : {}),
+    ...(num(table.hand_radial_rotation) !== undefined &&
+    Math.abs((num(table.hand_radial_rotation) as number) - (fallback.handRadialRotation ?? 1)) > 1e-6
+      ? { handRadialRotation: num(table.hand_radial_rotation) }
+      : {}),
     scale: num(table.weap_scale) ?? fallback.scale,
     handScale: num(table.hand_scale) ?? fallback.handScale,
     // `hand_rotation` is in turns of PI (`1 + degrees/180`), like `weap_rotation`.
@@ -597,7 +728,13 @@ export async function readBundleFeatures(args: {
   ) {
     const sheetPath = str(holdTable.sheet);
     const asset = await readAsset(files, bundleDir, sheetPath);
-    const hold = readHold(holdTable, args.holdBase ?? DEFAULT_IMPORT_HOLD);
+    const hold = readHold(
+      holdTable,
+      args.holdBase ?? DEFAULT_IMPORT_HOLD,
+      moduleText,
+      asset?.frames,
+      numFrom(spriteDecl(weapon, sheetPath)?.fps),
+    );
     // The firing-state sprite has two emission shapes: the old `hold.flash`
     // overlay (out/side/scale pre-resolved against the gun), the FAMAS-style
     // second hold entry handed to `px_hold_art` (`local firing = { ... }`), and
@@ -907,6 +1044,28 @@ export async function readBundleFeatures(args: {
           // `hit and hit.damage or <fallback>`, so the table is the answer and
           // the callback's literal is only the fallback for a three-argument
           // caller.
+          // A strike can name its own sample (`wav` / `sound` / `priority`), and
+          // the weapon's own hit sound is the fallback for the ones that do not.
+          const rowWav = str(row.wav);
+          const rowId = Math.max(0, Math.round(num(row.sound) ?? 0));
+          let sound: MeleeSound | undefined;
+          if (rowWav || rowId > 0) {
+            const asset = rowWav ? await readAsset(files, bundleDir, rowWav) : undefined;
+            sound = {
+              id: rowId,
+              priority: Math.max(0, Math.round(num(row.priority) ?? 8)),
+              ...(asset
+                ? {
+                    file: {
+                      file: asset.file,
+                      fileName: asset.file.name,
+                      previewUrl: asset.preview,
+                      size: asset.bytes.length,
+                    },
+                  }
+                : {}),
+            };
+          }
           hits.push({
             frame: Math.max(0, Math.round(num(row.frame) ?? 0)),
             damage: Math.max(0, Math.round(num(row.damage) ?? 0)),
@@ -914,6 +1073,7 @@ export async function readBundleFeatures(args: {
             lift: num(row.lift) ?? 0,
             ...(vx === undefined ? {} : { vx }),
             ...(vy === undefined ? {} : { vy }),
+            ...(sound ? { sound } : {}),
           });
         }
       }
@@ -1742,13 +1902,22 @@ export async function readBundleFeatures(args: {
   const packArt: Partial<Record<PackArtSlot, PackArtAsset>> = {};
   for (const [slot, path] of Object.entries(packPaths) as [PackArtSlot, string][]) {
     const loaded = await readAsset(files, bundleDir, path);
-    if (!loaded) continue;
+    if (!loaded) {
+      // A folder of frames the engine reads natively, joined here only where
+      // there is a canvas: a headless import says so instead of importing a
+      // weapon whose art silently turned into the fallback sheet.
+      const folder = frameFolderFiles(files, bundleDir, path);
+      if (folder.length > 0) {
+        notes.push(`${path}: ${folder.length} PNG frames in a folder, not joined without a browser`);
+      }
+      continue;
+    }
     const decl = spriteDecl(weapon, path);
     packArt[slot] = {
       file: loaded.file,
       fileName: path.split('/').pop(),
       previewUrl: loaded.preview,
-      frames: numFrom(decl?.frames) ?? 1,
+      frames: numFrom(decl?.frames) ?? loaded.frames ?? 1,
       fps: numFrom(decl?.fps) ?? 15,
       play:
         decl?.play === 'once' || decl?.play === 'pingpong' || decl?.play === 'loop'
@@ -1772,6 +1941,7 @@ export async function readBundleFeatures(args: {
       const decl = spriteDecl(weapon, path);
       const frames =
         numFrom(decl?.frames) ??
+        loaded?.frames ??
         (loaded?.width && loaded.height
           ? Math.max(1, Math.round(loaded.height / loaded.width))
           : 1);

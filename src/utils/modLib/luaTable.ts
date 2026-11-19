@@ -397,7 +397,7 @@ export function scanLua(code: string): LuaScan {
           scan.assignments[path] = reader.table();
           continue;
         }
-        // `*.merge(base, { … })` — PX's `require("lib/weapon").merge(weapon.record, { ... })`.
+        // `*.merge(base, { … })`, PX's `require("lib/weapon").merge(weapon.record, { ... })`.
         if ((path === 'merge' || path.endsWith('.merge')) && reader.isPunct('(')) {
           const save = reader.position;
           reader.next();
@@ -564,4 +564,49 @@ export function readCallTable(
 /** Depth-first walk over plain objects (used by the record flattener). */
 export function isTable(value: LuaValue | undefined): value is LuaTable {
   return !!value && typeof value === 'object';
+}
+
+/**
+ * The table literal assigned to a path, with its source text.
+ *
+ * `a.b = { … }` has no call to find, so `readCallTable` cannot return it, and
+ * `scanLua` keeps the table but not where it was written. A caller that has to
+ * resolve the *strings* inside it (`luaStrings.ts`: `hold = { sheet = SHEET }`)
+ * needs the text, because the table reader only keeps literals.
+ */
+export function readAssignmentTable(
+  code: string,
+  path: string,
+): { table: LuaTable; text: string } | undefined {
+  const { tokens } = tokenize(code);
+  const parts = path.split('.');
+  for (let i = 0; i < tokens.length; i += 1) {
+    let j = i;
+    let matches = true;
+    for (let p = 0; p < parts.length; p += 1) {
+      if (tokens[j]?.kind !== 'name' || tokens[j].value !== parts[p]) {
+        matches = false;
+        break;
+      }
+      j += 1;
+      if (p < parts.length - 1) {
+        if (!(tokens[j]?.kind === 'punct' && tokens[j].value === '.')) {
+          matches = false;
+          break;
+        }
+        j += 1;
+      }
+    }
+    if (!matches) continue;
+    // `= {`, and nothing else: `==` is a comparison and `[` is an index.
+    if (!(tokens[j]?.kind === 'punct' && tokens[j].value === '=')) continue;
+    j += 1;
+    if (!(tokens[j]?.kind === 'punct' && tokens[j].value === '{')) continue;
+    const reader = new Reader(tokens, j);
+    const table = reader.table();
+    const end = tokens[reader.position - 1];
+    const closer = end?.kind === 'punct' && end.value === '}' ? 1 : 0;
+    return { table, text: code.slice(tokens[j].at, (end?.at ?? tokens[j].at) + closer) };
+  }
+  return undefined;
 }

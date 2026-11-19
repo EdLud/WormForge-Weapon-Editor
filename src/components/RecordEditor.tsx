@@ -2215,20 +2215,33 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
                 </div>
               </div>
 
-              {isStrike && (
+              {/* An air strike's own bomb art, and any weapon whose claim names a
+                  pack sheet as its `sprite` (an imported bundle writes `sprite =
+                  ART .. "body"`): the second case has a sheet the panels would
+                  otherwise not show at all, so an author could not tell it was
+                  there or replace it. */}
+              {(isStrike || project.packArt?.strike_sprite) && (
                 <div className="space-y-3 rounded-xl bg-stone-50/70 p-4 dark:bg-stone-950/40">
                   <SubSectionTitle
-                    title="Strike Munition Art"
+                    title={isStrike ? 'Strike Munition Art' : 'Weapon Art Sheet'}
                     code="sprite (body 0x74)"
-                    desc="Air strikes fire created munitions without a primary launcher missile, so custom bomb art goes here."
+                    desc={
+                      isStrike
+                        ? 'Air strikes fire created munitions without a primary launcher missile, so custom bomb art goes here.'
+                        : 'This weapon ships a sheet of its own as its `sprite`, which the record would otherwise take from the donor. Remove it to fall back to the stock sprite.'
+                    }
                   />
                   <PackSpriteUpload
                     project={project}
                     onChange={onChange}
                     slot="strike_sprite"
-                    label="Munition Sheet"
+                    label={isStrike ? 'Munition Sheet' : 'Art Sheet'}
                     code="sprite"
-                    hint="Installed on the air strike munition body. 32 direction frames match WA's airmisl order."
+                    hint={
+                      isStrike
+                        ? "Installed on the air strike munition body. 32 direction frames match WA's airmisl order."
+                        : 'Installed as the weapon own sprite at load, so the stock missile art is replaced by this sheet wherever the game draws it.'
+                    }
                     rotate={{
                       onRotate: () => updateOverride('missile.animation', 2),
                     }}
