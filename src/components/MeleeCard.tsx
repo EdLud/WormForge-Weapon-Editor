@@ -119,7 +119,7 @@ const StrikeSoundCell: React.FC<{
 }> = ({ index, sound, fallbackPriority, onChange }) => {
   const inputRef = useRef<HTMLInputElement>(null);
   const cell =
-    'w-[52px] rounded border border-stone-300 bg-white px-1 py-0.5 text-right font-mono text-[11px] text-stone-900 dark:border-stone-700 dark:bg-stone-900 dark:text-white';
+    'w-[48px] rounded border border-stone-300 bg-white px-1 py-0.5 text-right font-mono text-[11px] text-stone-900 dark:border-stone-700 dark:bg-stone-900 dark:text-white';
   if (!sound) {
     return (
       <button
@@ -136,7 +136,10 @@ const StrikeSoundCell: React.FC<{
   }
   const patch = (next: Partial<MeleeSound>) => onChange({ ...sound, ...next });
   return (
-    <div className="flex items-center gap-0.5">
+    // `flex-wrap` with a bounded width: on a phone the two icon buttons drop
+    // under the id box instead of pushing the whole table wider than the screen,
+    // which is what hid the column this control lives in.
+    <div className="flex max-w-[108px] flex-wrap items-center gap-0.5">
       <input
         ref={inputRef}
         type="file"
@@ -433,8 +436,12 @@ export const MeleeCard: React.FC<MeleeCardProps> = ({ project, onChange }) => {
                 </thead>
                 <tbody>
                   {strikes.map((hit, index) => {
+                    // 52 px, not 62: six columns (frame, damage, power, lift, the
+                    // strike's sound, remove) plus the card's padding is what a
+                    // 390 px phone has room for, and the sound column is the one
+                    // that used to fall off the end of the scroll.
                     const cell =
-                      'w-[62px] rounded border border-stone-300 bg-white px-1 py-0.5 text-right font-mono text-[11px] text-stone-900 dark:border-stone-700 dark:bg-stone-900 dark:text-white';
+                      'w-[52px] rounded border border-stone-300 bg-white px-1 py-0.5 text-right font-mono text-[11px] text-stone-900 dark:border-stone-700 dark:bg-stone-900 dark:text-white';
                     const field = (
                       ariaLabel: string,
                       value: number,
