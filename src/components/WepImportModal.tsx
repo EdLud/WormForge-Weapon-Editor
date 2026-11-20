@@ -486,8 +486,8 @@ end,`,
                 patch.useWepFile = false;
                 patch.wepFile = undefined;
                 patch.wepFileName = undefined;
+                patch.wepBaseline = undefined;
               }
-              patch.wepBaseline = undefined;
               onApply(patch);
               onClose();
             }}

@@ -750,6 +750,22 @@ export function decodeRecordId(value: number): { id: number; flagged: boolean } 
   return { id: value, flagged: false };
 }
 
+/**
+ * What a numeric sprite field may commit for the text typed so far: `''` for an
+ * empty box, the id (as text) for a whole number or a stock name, and
+ * `undefined` for anything else. A half-typed name (`s` on the way to `skunk2`)
+ * is a draft, not a value: committing it wrote `Number("s")`, a `NaN`, into the
+ * project and the exported Lua.
+ */
+export function commitStockSprite(text: string): string | undefined {
+  const trimmed = text.trim();
+  if (!trimmed) return '';
+  const asNumber = Number(trimmed);
+  if (Number.isInteger(asNumber) && asNumber >= 0) return String(decodeRecordId(asNumber).id);
+  const named = stockSpriteId(trimmed);
+  return named === undefined ? undefined : String(named);
+}
+
 /** Every stock sprite, for a picker's datalist. */
 export const STOCK_SPRITE_OPTIONS: ReadonlyArray<{ name: string; id: number; label: string }> =
   STOCK_SPRITES.filter(([name]) => !name.endsWith('_2')).map(([name, id]) => ({

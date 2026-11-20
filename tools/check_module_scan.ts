@@ -19,6 +19,8 @@ import JSZip from 'jszip';
 import { readBundles, readWeapons, type ModFile } from '../src/utils/modLib/scan';
 import { importBundleWeapon } from '../src/utils/modLib/importWeapon';
 import { parseToml } from '../src/utils/modLib/modToml';
+import { resolveTableStrings, stringConstants } from '../src/utils/modLib/luaStrings';
+import { readCallTable, scanLua } from '../src/utils/modLib/luaTable';
 import { generateModToml } from '../src/utils/luaGenerator';
 import { stockDonor } from '../src/data/stockDonors';
 import type { WeaponProject } from '../src/types/weapon';
@@ -523,6 +525,81 @@ wa.weapons.replace{ missile = { sprite = 3 } }`,
     't.sound.a',
   );
   ok(weapon?.resolvedVia === 'entry', 'a plain map is not an index', weapon?.resolvedVia);
+}
+
+// ---------------------------------------------------------------------------
+// F13: the string resolver and the table reader on the text a hand-written port
+// actually has (comments, `;` separators, a literal that starts an expression).
+{
+  // A commented-out declaration above the real one used to win, because the
+  // scan read the raw text and kept the first `local DIR` it saw.
+  const shadowed = stringConstants('-- local DIR = "sprites/fake/"\nlocal DIR = "sprites/real/"');
+  ok(shadowed.get('DIR') === 'sprites/real/', 'a commented-out local does not shadow the real one', shadowed.get('DIR'));
+
+  // `--` inside a string is not a comment, and a trailing comment is.
+  const dashed = stringConstants('local S = "a--b" -- trailing\nlocal T = S .. "c"');
+  ok(dashed.get('S') === 'a--b' && dashed.get('T') === 'a--bc', '"a--b" keeps its dashes', JSON.stringify([...dashed]));
+
+  // `;` separates table fields as well as `,`.
+  const semi = [
+    'local SHEET = "sprites/w/h.png"',
+    'local SND = "sounds/w/"',
+    'wa.weapons.replace{ hold = { sheet = SHEET; frames = 2 }; sounds = { SND .. "a.wav"; SND .. "b.wav" } }',
+  ].join('\n');
+  const call = readCallTable(semi, 'wa.weapons.replace');
+  const resolved = call ? resolveTableStrings(call.table, call.text, stringConstants(semi)) : undefined;
+  const hold = resolved?.hold as Record<string, unknown> | undefined;
+  const sounds = resolved?.sounds as Record<string, unknown> | undefined;
+  ok(
+    hold?.sheet === 'sprites/w/h.png' && sounds?.['1'] === 'sounds/w/a.wav' && sounds?.['2'] === 'sounds/w/b.wav',
+    ';-separated fields resolve their strings',
+    JSON.stringify(resolved),
+  );
+
+  // A literal that starts an expression is not the whole value: keeping the
+  // prefix also stopped the resolver from filling the real path in.
+  const infix = scanLua('local NAME = "bar.png"\nwa.weapons.replace{ hold = { sheet = "sprites/a/" .. NAME, frames = 2 * 4 } }');
+  const infixHold = (infix.calls['wa.weapons.replace'] as any)?.hold;
+  ok(
+    infixHold !== undefined && infixHold.sheet === null && infixHold.frames === null,
+    '"sprites/a/" .. NAME is not read as "sprites/a/"',
+    JSON.stringify(infixHold),
+  );
+
+  // `repeat ... until` inside a skipped function opens a block like `do` does,
+  // or `until` closes the function early and its locals leak into the claim.
+  const repeated = scanLua(
+    'wa.weapons.replace{\n  on_fire = function(ev)\n    repeat step() until done()\n    local a, b = 1, 2\n  end,\n  missile = { damage = 50 },\n}',
+  );
+  const claim = repeated.calls['wa.weapons.replace'] as Record<string, unknown> | undefined;
+  ok(
+    claim !== undefined &&
+      Object.keys(claim).sort().join(',') === 'missile,on_fire' &&
+      (claim.missile as any)?.damage === 50,
+    'repeat ... until inside a hook stays inside the hook',
+    JSON.stringify(claim),
+  );
+
+  // A bare reference is not a call with a table argument: the reader must stop
+  // at the statement, not steal the next `{ ... }` in the file.
+  ok(
+    readCallTable('if sb.hold then wa.log("ok") end\nsb.flight(ctx, { sheet = "sprites/w/missile.png" })', 'sb.hold') === undefined,
+    'readCallTable stops at `then` instead of reading a later table',
+  );
+  ok(
+    readCallTable('wa.weapons.replace(rec); local other = { hold = { sheet = "x" } }', 'wa.weapons.replace') === undefined,
+    'readCallTable stops at `)` instead of reading a later table',
+  );
+  // The same two stops with nothing else to catch them: no `;`/`local` after the
+  // `)`, and no call between `then` and the table.
+  ok(
+    readCallTable('wa.weapons.replace(rec)\nsetup{ hold = { sheet = "x" } }', 'wa.weapons.replace') === undefined,
+    'readCallTable stops at `)` with a call table after it',
+  );
+  ok(
+    readCallTable('if sb.hold then cfg = { hold = 1 } end', 'sb.hold') === undefined,
+    'readCallTable stops at `then` with a table after it',
+  );
 }
 
 // ---------------------------------------------------------------------------

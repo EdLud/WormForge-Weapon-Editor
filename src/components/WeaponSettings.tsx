@@ -5,6 +5,7 @@ import { STOCK_BY_ID, STOCK_WEAPONS, StockWeaponInfo } from '../data/stockWeapon
 import { ID_MAX, isUnderNamespace, slugId } from '../utils/weaponId';
 import { TooltipLabel, UnitNumberInput, buildTooltip } from './RecordEditor';
 import { NumberInput } from './NumberInput';
+import { recordField } from '../utils/recordField';
 import { DEFAULT_MELEE } from '../data/melee';
 import {
   AlertTriangle,
@@ -152,11 +153,13 @@ export const WeaponSettings: React.FC<WeaponSettingsProps> = ({ project, bundleI
   const selectInput =
     'w-full px-2.5 py-1.5 text-xs bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 rounded-lg text-stone-900 dark:text-white focus:outline-hidden focus:ring-2 focus:ring-forge-500 disabled:opacity-50 disabled:cursor-not-allowed';
 
-  const handlingShots = project.recordOverrides['handling.shots'] ?? 1;
-  const handlingRetreat = project.recordOverrides['handling.retreat'] ?? 3000;
-  const handlingEndsTurn = project.recordOverrides['handling.ends_turn'] ?? true;
-  const handlingCaves = project.recordOverrides['handling.available_in_caves'] ?? true;
-  const handlingRemember = project.recordOverrides['handling.remember_selection'] ?? true;
+  // The inherited value when the author has not set one: a Shotgun takes two
+  // shots and a Mine retreats for 5 s, which the fixed fallbacks hid.
+  const handlingShots = recordField(project, 'handling.shots', 1);
+  const handlingRetreat = recordField(project, 'handling.retreat', 3000);
+  const handlingEndsTurn = recordField(project, 'handling.ends_turn', true);
+  const handlingCaves = recordField(project, 'handling.available_in_caves', true);
+  const handlingRemember = recordField(project, 'handling.remember_selection', true);
 
   const setOverride = (path: string, value: unknown) => {
     onChange({

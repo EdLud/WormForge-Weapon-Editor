@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { HelpCircle } from 'lucide-react';
 import {
   STOCK_SPRITE_OPTIONS,
+  commitStockSprite,
   decodeRecordId,
   resolveStockSprite,
   stockSpriteId,
@@ -30,7 +31,11 @@ export const StockSpriteInput: React.FC<{
   placeholder?: string;
   disabled?: boolean;
 }> = ({ id, label, code, desc, value, onChange, options, numeric, placeholder, disabled }) => {
-  const raw = value === undefined || value === null ? '' : String(value);
+  // A numeric field keeps what is typed until it names a sprite, so a name can
+  // be typed letter by letter; leaving the box shows the committed value again.
+  const [draft, setDraft] = useState<string | null>(null);
+  const committed = value === undefined || value === null ? '' : String(value);
+  const raw = numeric && draft !== null ? draft : committed;
   const decoded = decodeRecordId(Number(raw));
   const resolved = resolveStockSprite(raw === '' ? undefined : raw);
   const list = options ?? STOCK_SPRITE_OPTIONS;
@@ -41,18 +46,9 @@ export const StockSpriteInput: React.FC<{
       onChange(text);
       return;
     }
-    const trimmed = text.trim();
-    if (!trimmed) {
-      onChange('');
-      return;
-    }
-    const asNumber = Number(trimmed);
-    if (Number.isFinite(asNumber)) {
-      onChange(String(decodeRecordId(asNumber).id));
-      return;
-    }
-    const named = stockSpriteId(trimmed);
-    onChange(named === undefined ? trimmed : String(named));
+    setDraft(text);
+    const next = commitStockSprite(text);
+    if (next !== undefined) onChange(next);
   };
 
   return (
@@ -83,6 +79,7 @@ export const StockSpriteInput: React.FC<{
         disabled={disabled}
         title={tooltip}
         onChange={(e) => handle(e.target.value)}
+        onBlur={() => setDraft(null)}
         className="w-full text-xs font-mono px-3 py-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 text-stone-900 dark:text-white disabled:opacity-50"
       />
       <datalist id={`${id}-sprites`}>

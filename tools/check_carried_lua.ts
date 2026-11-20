@@ -30,7 +30,7 @@ import { readBundles, readWeapons } from '../src/utils/modLib/scan';
 import { importBundleWeapon } from '../src/utils/modLib/importWeapon';
 import { ownOutputOf } from '../src/utils/modLib/ownOutput';
 import { splitModule } from '../src/utils/modLib/splitModule';
-import { carryClosure, dependencyForModule } from '../src/utils/modLib/carryClosure';
+import { carryClosure, dependencyForModule, rewriteBundlePaths } from '../src/utils/modLib/carryClosure';
 import { declaredNames, generateLuaCode, generateModToml, sanitizeModFolder } from '../src/utils/luaGenerator';
 import { checkLua } from '../src/utils/luaCheck';
 import {
@@ -956,6 +956,251 @@ entry = "weapons/bomb.lua"
     (secondProj.carriedLua?.hooks?.length ?? 0) === (firstProj.carriedLua?.hooks?.length ?? 0) &&
       (secondProj.carriedLua?.preamble?.length ?? 0) === (firstProj.carriedLua?.preamble?.length ?? 0),
     `hooks ${secondProj.carriedLua?.hooks?.length}/${firstProj.carriedLua?.hooks?.length}, preamble ${secondProj.carriedLua?.preamble?.length}/${firstProj.carriedLua?.preamble?.length}`,
+  );
+}
+
+// ---- F13: the closure's scoping, the emitted-code drop and the art carry ---
+{
+  /** The closure exactly as `importBundleWeapon` asks for it: with the hook's scopes. */
+  const carryOn = (moduleText: string, emitted = '') => {
+    const split = splitModule(moduleText);
+    const seeds = split.hooks.on_explode
+      ? [{ label: 'on_explode', text: split.hooks.on_explode, enclosing: split.hookScopes.on_explode }]
+      : [];
+    return carryClosure(seeds, split, new Map(), 'w', emitted);
+  };
+  const claimWith = (preamble: string[], install: string[], hook: string) =>
+    lines(
+      ...preamble,
+      'return {',
+      '  install = function(ctx)',
+      ...install,
+      '    wa.weapons.replace{',
+      '      on_explode = function(ev)',
+      `        ${hook}`,
+      '      end,',
+      '    }',
+      '  end,',
+      '}',
+    );
+  const texts = (blocks: { text: string }[]) => blocks.map((block) => block.text);
+
+  // Two bare assignments after the local: each one asks for the declaration
+  // *before* it, so the walk reaches `local x = {}` instead of bouncing between
+  // the two assignments.
+  const chained = carryOn(claimWith([], ['    local x = {}', '    x = init_a(x)', '    x = init_b(x)'], 'use(x)'));
+  check(
+    'local x = {}; x = a(x); x = b(x) carries the local and both assignments',
+    JSON.stringify(texts(chained.prologue)) === JSON.stringify(['local x = {}', 'x = init_a(x)', 'x = init_b(x)']),
+    JSON.stringify(texts(chained.prologue)),
+  );
+  const moduleLevel = carryOn(claimWith(['local x', 'x = make()'], [], 'use(x)'));
+  check(
+    'a module-level local x; x = ... carries the local with the assignment',
+    JSON.stringify(texts(moduleLevel.preamble)) === JSON.stringify(['local x', 'x = make()']),
+    JSON.stringify(texts(moduleLevel.preamble)),
+  );
+
+  // A module-level helper cannot see an install local, so it must not be
+  // satisfied by one: the name stays unresolved and nothing is hoisted for it.
+  const helper = carryOn(claimWith(['local function helper() return state end'], ['    local state = 42'], 'helper()'));
+  check(
+    'a preamble helper reading an install local leaves it unresolved',
+    helper.prologue.length === 0 && helper.unresolved.includes('state'),
+    `prologue ${JSON.stringify(texts(helper.prologue))}, unresolved ${helper.unresolved.join(',')}`,
+  );
+
+  // A sibling function's parameter is not the hook's: only an enclosing
+  // function's parameter list is a place a free name can come from.
+  const sibling = carryOn(
+    lines(
+      'local function setup(a)',
+      '  local function unrelated(mystery) return mystery end',
+      '  wa.weapons.replace{',
+      '    on_explode = function(ev) use(mystery) end,',
+      '  }',
+      'end',
+      'return { install = function(ctx) setup(1) end }',
+    ),
+  );
+  check(
+    'a sibling function parameter is not blamed for a free name',
+    sibling.unresolved.includes('mystery') && !sibling.notes.some((note) => note.includes('unrelated(')),
+    sibling.notes.join(' | '),
+  );
+  const enclosing = carryOn(
+    lines(
+      'local M = {}',
+      'function M.install(ctx, spec)',
+      '  wa.weapons.replace{',
+      '    on_explode = function(ev) use(spec) end,',
+      '  }',
+      'end',
+      'return M',
+    ),
+  );
+  check(
+    'an enclosing install parameter is still named',
+    enclosing.notes.some((note) => note.includes('`spec` is a parameter of `M.install(ctx, spec)`')),
+    enclosing.notes.join(' | '),
+  );
+
+  // The export writes `local seen = {}` for its own trail *after* the claim, so
+  // a carried hook (which runs inside the claim) still needs its own copy. A
+  // copy before the claim is the same binding and is dropped.
+  const seenModule = claimWith([], ['    local seen = {}'], 'seen[ev.id] = true');
+  const after = carryOn(seenModule, 'wa.weapons.replace{\n  name = "x",\n}\nlocal seen = {}\n');
+  check(
+    'a claim hook keeps a local the export only declares after the claim',
+    JSON.stringify(texts(after.prologue)) === JSON.stringify(['local seen = {}']),
+    JSON.stringify(texts(after.prologue)),
+  );
+  const before = carryOn(seenModule, 'local seen = {}\nwa.weapons.replace{\n  name = "x",\n}\n');
+  check('and drops one the export declares before it', before.prologue.length === 0, JSON.stringify(texts(before.prologue)));
+
+  // The lockstep notes are about code, not about a comment or a string that
+  // mentions `math.random()`.
+  const prose = chained.transform('-- math.random() and math.sin(1)\nlocal s = "math.random() math.cos(2)"\nreturn s');
+  check(
+    'math.* in comments and strings is neither a float random nor a rewrite',
+    !prose.floatRandom && prose.rewrites.length === 0,
+    JSON.stringify({ floatRandom: prose.floatRandom, rewrites: prose.rewrites }),
+  );
+  const real = chained.transform('local a = math.random()\nlocal b = math.sin(1)');
+  check(
+    'while the same calls in code are reported',
+    real.floatRandom && real.rewrites.includes('math.sin -> wa.math.sin'),
+    JSON.stringify({ floatRandom: real.floatRandom, rewrites: real.rewrites }),
+  );
+
+  // Paths: a comment is prose, a mismatched quote is not a string, and a folder
+  // that already has the export's name is still a folder the export must fill.
+  const commented = rewriteBundlePaths('-- see "sprites/old/x.png"\nlocal a = "sprites/old/y.png"', 'w');
+  check(
+    'a path in a -- comment is not moved',
+    commented.text.startsWith('-- see "sprites/old/x.png"') &&
+      commented.moves.length === 1 &&
+      commented.moves[0].source === 'sprites/old/y.png',
+    JSON.stringify(commented),
+  );
+  const mismatched = rewriteBundlePaths('local a = "sprites/old/y.png\'\nlocal b = \'sounds/old/z.wav"', 'w');
+  check('a path between mismatched quotes is not moved', mismatched.moves.length === 0, JSON.stringify(mismatched.moves));
+  const sameFolder = rewriteBundlePaths('local SND = "sounds/buffalo/"\nwa.sound.play(w, SND .. "start.wav", 8)', 'buffalo');
+  check(
+    'a folder prefix already named for the export is still recorded',
+    sameFolder.moves.length === 1 && sameFolder.moves[0].source === 'sounds/buffalo/',
+    JSON.stringify(sameFolder.moves),
+  );
+}
+{
+  // The art carry, end to end: a nested sound folder keeps its subfolder, and a
+  // sheet's `[sprites."…"]` is matched by its own path before a sibling weapon's
+  // sheet that shares the file name.
+  const png = new Uint8Array([
+    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196,
+    137, 0, 0, 0, 10, 73, 68, 65, 84, 120, 156, 99, 0, 1, 0, 0, 5, 0, 1, 13, 10, 45, 180, 0, 0, 0, 0, 73, 69, 78, 68,
+    174, 66, 96, 130,
+  ]);
+  const wav = new Uint8Array([82, 73, 70, 70, 36, 0, 0, 0, 87, 65, 86, 69]);
+  const weaponLua = (name: string, preamble: string[], hook: string[]) =>
+    lines(
+      ...preamble,
+      'return {',
+      '  install = function(ctx)',
+      '    wa.weapons.replace{',
+      `      name = "${name}",`,
+      '      copy_from = "stock.grenade",',
+      '      on_explode = function(ev)',
+      ...hook.map((row) => `        ${row}`),
+      '      end,',
+      '    }',
+      '  end,',
+      '}',
+    );
+  const files: ModFile[] = [
+    {
+      path: 'mod.toml',
+      text: lines(
+        'id = "t.art"',
+        'name = "Art"',
+        'version = "0.1.0"',
+        'api_version = 4',
+        'format_version = 2',
+        '',
+        '[[components]]',
+        'id = "t.art.w1"',
+        'type = "weapon"',
+        'name = "W1"',
+        'entry = "weapons/w1.lua"',
+        '',
+        '[[components]]',
+        'id = "t.art.w2"',
+        'type = "weapon"',
+        'name = "W2"',
+        'entry = "weapons/w2.lua"',
+        '',
+        '[sprites."sprites/w1/trail.png"]',
+        'frames = 4',
+        'fps = 15',
+        '',
+        '[sprites."sprites/w2/trail.png"]',
+        'frames = 16',
+        'fps = 20',
+      ),
+    },
+    { path: 'weapons/w1.lua', text: weaponLua('W1', [], ['wa.draw.quad{ sprite = "sprites/w1/trail.png", x = ev.x, y = ev.y }']) },
+    {
+      path: 'weapons/w2.lua',
+      text: weaponLua('W2', ['local SND = "sounds/other/sub/"'], [
+        'wa.draw.quad{ sprite = "sprites/w2/trail.png", x = ev.x, y = ev.y }',
+        'wa.sound.play(ev.worm, SND .. "hit.wav", 8)',
+      ]),
+    },
+    { path: 'sprites/w1/trail.png', text: '', bytes: png },
+    { path: 'sprites/w2/trail.png', text: '', bytes: png },
+    { path: 'sounds/other/sub/hit.wav', text: '', bytes: wav },
+    { path: 'sounds/other/root.wav', text: '', bytes: wav },
+  ];
+  const w2 = readWeapons(readBundles(files), files).find((weapon) => weapon.componentId === 't.art.w2');
+  if (!w2) {
+    check('the two-weapon art bundle reads', false);
+  } else {
+    const imported = (await importBundleWeapon(w2, files)).project;
+    const sounds = imported.carriedLua?.art?.sounds ?? [];
+    check(
+      'a nested sound folder carries its own files under its subfolder',
+      JSON.stringify(sounds) === JSON.stringify(['sounds/w2/sub/hit.wav']),
+      JSON.stringify(sounds),
+    );
+    const sheet = imported.customSprites?.['sprites/w2/trail.png'];
+    check(
+      'a carried sheet takes its own [sprites] frames, not a namesake',
+      sheet?.frames === 16 && sheet?.fps === 20,
+      JSON.stringify({ frames: sheet?.frames, fps: sheet?.fps }),
+    );
+  }
+}
+{
+  // A teleport claim and a carried `on_select` are one key: written twice, Lua
+  // keeps the second and the cursor (or the handler) silently goes.
+  const project = {
+    ...baseProject({
+      fireType: 'cursor',
+      carriedLua: {
+        preamble: [],
+        prologue: [],
+        hooks: [{ key: 'on_select', text: 'function(sel) mark(sel) end', line: 5 }],
+        unresolved: [],
+      },
+    }),
+    teleport: true,
+  } as WeaponProject;
+  const code = generateLuaCode(project);
+  const keys = code.match(/\bon_select\s*=/g) ?? [];
+  check(
+    'teleport + a carried on_select emit one merged on_select',
+    keys.length === 1 && /on_select = \{ cursor = true, on = function\(sel\)/.test(code),
+    `${keys.length} on_select key(s)`,
   );
 }
 

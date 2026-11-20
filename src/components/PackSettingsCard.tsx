@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useRef, useState } from 'react';
 import { Boxes, Image as ImageIcon, Trash2 } from 'lucide-react';
 import type { PackProject } from '../types/weapon';
 import { sanitizeModFolder } from '../utils/luaGenerator';
@@ -33,6 +33,19 @@ export const PackSettingsCard: React.FC<PackSettingsCardProps> = ({
   const many = pack.weapons.length > 1;
   const folder = sanitizeModFolder(pack.id);
   const replaces = (pack.replaces ?? []).join(', ');
+  // The text as typed: re-rendering the parsed list on each keystroke swallowed
+  // the `,` that starts the next id. The draft shows only while it still parses
+  // to the pack's list, so a change from elsewhere replaces it.
+  const [replacesDraft, setReplacesDraft] = useState<string | null>(null);
+  const parseReplaces = (text: string) =>
+    text
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean);
+  const replacesText =
+    replacesDraft !== null && parseReplaces(replacesDraft).join(',') === (pack.replaces ?? []).join(',')
+      ? replacesDraft
+      : replaces;
   const packIconRef = useRef<HTMLInputElement>(null);
   // One icon per bundle. The manifest names a single `mod_icon`, so this file is
   // written once into the bundle's own folder, and a bundle that has none is
@@ -230,17 +243,14 @@ export const PackSettingsCard: React.FC<PackSettingsCardProps> = ({
             </span>
             <input
               className={inputClass}
-              value={replaces}
+              value={replacesText}
               placeholder="px.ports, other.bundle"
               title="Bundle ids this pack takes over, comma separated. Each id is written into `replaces`."
-              onChange={(event) =>
-                onChange({
-                  replaces: event.target.value
-                    .split(',')
-                    .map((id) => id.trim())
-                    .filter(Boolean),
-                })
-              }
+              onChange={(event) => {
+                setReplacesDraft(event.target.value);
+                onChange({ replaces: parseReplaces(event.target.value) });
+              }}
+              onBlur={() => setReplacesDraft(null)}
             />
           </label>
           <label className="block sm:col-span-2">

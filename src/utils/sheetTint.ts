@@ -15,16 +15,35 @@ export function tintedSheet(image: HTMLImageElement, color: string): HTMLCanvasE
   if (!ctx) return canvas;
   ctx.drawImage(image, 0, 0);
   ctx.globalCompositeOperation = 'multiply';
-  ctx.fillStyle = /^#?[0-9a-f]{6}$/i.test(color.trim()) ? color : '#ffffff';
+  ctx.fillStyle = normalizeTintHex(color);
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   return canvas;
 }
 
+/**
+ * Any colour the hex inputs accept, as the `#rrggbb` Canvas 2D takes.
+ *
+ * The generator reads `ff8800` and `#f80` as orange (`hexToRgb`), but Canvas
+ * rejects a colour without its `#` and keeps the old fill (black), so a pasted
+ * code made the whole effect vanish in the preview while it exported in colour.
+ * Anything that is not 3 or 6 hex digits is white, the untinted sheet.
+ */
+export function normalizeTintHex(color: string): string {
+  const hex = (color || '').trim().replace(/^#/, '');
+  if (/^[0-9a-f]{6}$/i.test(hex)) return `#${hex.toLowerCase()}`;
+  if (/^[0-9a-f]{3}$/i.test(hex)) {
+    return `#${hex
+      .split('')
+      .map((c) => c + c)
+      .join('')
+      .toLowerCase()}`;
+  }
+  return '#ffffff';
+}
+
 /** `#rrggbb` to the 0-255 components the sheets are tinted by. */
 export function parseHexColour(color: string): { r: number; g: number; b: number } {
-  const match = /^#?([0-9a-f]{6})$/i.exec((color || '').trim());
-  if (!match) return { r: 255, g: 255, b: 255 };
-  const value = parseInt(match[1], 16);
+  const value = parseInt(normalizeTintHex(color).slice(1), 16);
   return { r: (value >> 16) & 255, g: (value >> 8) & 255, b: value & 255 };
 }
 

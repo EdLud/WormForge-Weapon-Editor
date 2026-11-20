@@ -23,6 +23,7 @@ import { SheetFrameWarning } from './SheetFrameWarning';
 import { imagePixelSize } from '../utils/imagePixelSize';
 import { stockSpriteName } from '../data/stockSprites';
 import { assetUrl } from '../utils/assetUrl';
+import { recordField } from '../utils/recordField';
 import { defaultArtFor } from '../utils/defaultArt';
 import { buildRotationSheet } from '../utils/rotateSheet';
 import {
@@ -261,7 +262,9 @@ const RoamSheetField: React.FC<{
             }
             onChange={(e) => {
               const next = Math.max(1, Math.min(64, Number(e.target.value) || 1));
-              onChange({ frames: next, rotationFrames: next > 1 ? asset.rotationFrames : undefined });
+              // The whole asset: the parent replaces the slot with what it gets,
+              // so a patch of only the counts dropped the uploaded sheet.
+              onChange({ ...asset, frames: next, rotationFrames: next > 1 ? asset.rotationFrames : undefined });
             }}
             className="w-16 text-[11px] font-mono px-2 py-1 rounded-md border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 text-stone-900 dark:text-white disabled:opacity-50"
           />
@@ -1378,10 +1381,14 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
     }
 
     if (!facingRight) {
-      // The whole cell is right-facing; mirror it for the left-facing pose.
+      // The whole cell is right-facing; mirror it for the left-facing pose. The
+      // mirror is this draw's alone: the melee box below sets its own flip from
+      // the worm's pivot, and a leaked one moved it off the worm and back again.
+      ctx.save();
       ctx.translate(cellX + SIZE, cellY);
       ctx.scale(-1, 1);
       ctx.drawImage(offscreen, 0, 0, SIZE, SIZE, 0, 0, SIZE, SIZE);
+      ctx.restore();
     } else {
       ctx.drawImage(offscreen, 0, 0, SIZE, SIZE, cellX, cellY, SIZE, SIZE);
     }
@@ -2063,6 +2070,9 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
   // ---------------------------------------------------------------------------
   const handleUploadSheet = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    // Cleared so the same file picked again (another tab, after a remove)
+    // still fires `change`.
+    e.target.value = '';
     if (!file) return;
 
     const previewUrl = URL.createObjectURL(file);
@@ -2106,6 +2116,9 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
 
   const handleUploadFlash = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    // Cleared so the same file picked again (another tab, after a remove)
+    // still fires `change`.
+    e.target.value = '';
     if (!file) return;
     const previewUrl = URL.createObjectURL(file);
     let flashWidth: number | undefined;
@@ -2193,6 +2206,9 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
 
   const handleUploadMissileSheet = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    // Cleared so the same file picked again (another tab, after a remove)
+    // still fires `change`.
+    e.target.value = '';
     if (!file) return;
 
     const previewUrl = URL.createObjectURL(file);
@@ -2217,6 +2233,9 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
 
   const handleUploadRoleSheet = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    // Cleared so the same file picked again (another tab, after a remove)
+    // still fires `change`.
+    e.target.value = '';
     if (!file) return;
     const previewUrl = URL.createObjectURL(file);
     if (activeFlightRole === 'clusters') {
@@ -2340,8 +2359,9 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
       }
     }
     if (roamEnabled) {
+      // The pose the generator writes: the override, else the baseline's sprite.
       const roamWalkPose = roamWalkPoseId(
-        project.recordOverrides['missile.sprite'] ?? project.body.sprite,
+        recordField(project, 'missile.sprite', project.body.sprite),
       );
       if (roamRoleMode === 'builder') {
         modLines.push(`  roam = {`);
@@ -3145,6 +3165,7 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
                   </span>
                 )}
                 <input
+                  key={aimTab === 'firing' ? 'flash-file' : 'sheet-file'}
                   ref={aimTab === 'firing' ? flashFileInputRef : fileInputRef}
                   type="file"
                   accept="image/png,image/gif"
@@ -3890,6 +3911,7 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
                             <td className="px-1">
                               <NumberInput
                                 aria-label={`Key ${index + 1} frame`}
+                                allowEmpty
                                 value={key.frame ?? ''}
                                 onChange={(event) => {
                                   const value = Number(event.target.value);
@@ -4589,6 +4611,7 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
                   ) : (
                     <>
                       <input
+                        key={isSecondaryRole ? `role-file-${activeFlightRole}` : 'missile-file'}
                         ref={isSecondaryRole ? roleFileInputRef : missileFileInputRef}
                         type="file"
                         accept="image/png,image/gif"
@@ -5461,6 +5484,8 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
                         placeholder="0"
                         value={project.roamConfig?.gas_animal_sprite ?? 0}
                         onChange={(v) =>
+                          // Only an id reaches here; the guard keeps a NaN out of the record regardless.
+                          Number.isFinite(Number(v)) &&
                           onChange({
                             roamConfig: {
                               ...project.roamConfig,
