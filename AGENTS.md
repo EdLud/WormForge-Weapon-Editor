@@ -414,6 +414,15 @@ The editor ships `spec/lua_sdk/wfws_sdk/` (id `wfws.sdk`), exporting
   `missile.sprite` override may survive it. The one exception is a roaming animal
   whose walk pose WA can draw (`roamWalkPoseId()`), which is kept and passed back
   as `roam = { walk, fly }`.
+- **That zero costs the worm its hands** on a thrown or placed donor: WA picks
+  their pose by the record's sprite (`Weapon__hold_sheet`), and 0 gives none. So
+  wherever the missile table writes `sprite = 0` for a real shot, a `copy_from`
+  claim from a donor in `POSE_BY_SPRITE_DONORS` also writes `hold_as =
+  "stock.<donor>"`, the engine's field that lends a stock weapon's pose (1.0.0).
+  Hold art skips it: `worm_sprites = holds.PX_POSTURE` draws the posture. Keeping
+  the sprite and hiding the round with `m.sprite = 0` instead shows the stock round
+  for one frame at the throw, since WA draws a launched missile before its first
+  `missile_frame` (cluster bits are not affected). An older DLL ignores `hold_as`.
 - **Identity is decided by the burst, not by `m.sprite`** (`classify`): the first
   missile of the weapon is the round; a missile that first appears within
   `bit_window` frames (default 5) after the round was last seen and at the
@@ -1846,8 +1855,9 @@ bun run tools/check_copyfrom.ts
 It builds donor-based projects and asserts that an untouched donor emits no
 record tables, that a Mortar with its clustlets off and a 100% push writes
 `burst = "nothing"` + `push_pct = 100` (with a correct *and* a stale baseline),
-and that re-basing a donor keeps the author's edits while adopting the new
-donor's record.
+that re-basing a donor keeps the author's edits while adopting the new
+donor's record, and that a builder round on a thrown or placed donor writes
+`hold_as` (none on a bazooka, none under hold art).
 
 Sheet dedupe check (no server, exits 1 on a failure):
 

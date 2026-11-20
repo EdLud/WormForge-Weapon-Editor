@@ -5008,3 +5008,23 @@ What is left is the one-frame hold of a **new** follower (launch, a split), whic
 no pack change can give history. That is the native missile-art verb's to remove.
 `harness_flight` now refuses a spawn without an owner, as the engine does, which
 is why the first defect never showed there.
+
+## 2026-11-20: `hold_as` for builder rounds on thrown and placed donors
+
+WF 33 aimed with empty hands. The builder writes `sprite = 0` on the round, and
+WA picks a thrown weapon's pose by that sprite (`Weapon__hold_sheet`, 0x51C060:
+grenade, banana, cluster, petrol bomb and holy grenade give a sheet, anything
+else none; placed weapons the same by their flight sprite). Keeping the sprite
+and hiding the round with `m.sprite = 0` doesn't work: a replay with render-frame
+logging showed WA draws a launched missile for one frame before its first
+`missile_frame` (its parent, the physics filter, was already walked that frame),
+so the stock round would flash at every throw. Cluster bits get their first
+`missile_frame` before any draw. The builder also needs the 0 to tell the round
+from its bits.
+
+wkLua 1.0.0 adds `hold_as = "stock.<name>"`: the worm takes out and aims the
+weapon in that stock weapon's pose. The generator writes it beside the zero for
+a `copy_from` claim whose donor is in `POSE_BY_SPRITE_DONORS`, not under hold art
+(`PX_POSTURE` draws the posture there) and not for a `.wep` (its record may not
+be the donor's family). In the test pack: WF 05, 24, 26, 30, 33, 51 and 52. An
+older DLL ignores the field and keeps the empty hands. `check_copyfrom.ts` pins it.
