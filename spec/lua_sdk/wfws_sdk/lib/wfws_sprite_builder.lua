@@ -865,9 +865,14 @@ function M.flight(ctx, opts)
     end
 
     local f = follow[id]
-    if f and f.cfg ~= cfg then            -- state changed: new art, new actor
-      drop_follower(id)
-      f = nil
+    if f and f.cfg ~= cfg then
+      -- State changed: the same actor takes the new sheet. A new actor has no
+      -- motion history, so its first frame drew untweened, a one-frame hold
+      -- at every switch; `look` keeps the actor and so keeps its history.
+      -- The new state's cycle starts from its own first frame, as before.
+      f.actor:look(cfg.sheet)
+      f.cfg = cfg
+      cycl_phase[id] = nil
     end
     if not f then
       gen = gen + 1

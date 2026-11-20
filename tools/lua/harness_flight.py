@@ -43,6 +43,8 @@ WORLD = {"frame": 0, "keys": {"space": False}}
 WORMS = []
 LOG = []
 SPAWNS = []
+LOOKS = []      # (actor, sheet) for every `a:look`
+DESPAWNS = []   # every actor despawned
 CALLS = {}
 FRAMES = []
 
@@ -80,8 +82,10 @@ def spawn(spec):
         raise RuntimeError("spawn needs an owner worm or actor")
     SPAWNS.append(spec)
     actor = lua.table()
-    for name in ("frame", "gfx", "despawn", "sound"):
+    for name in ("frame", "gfx", "sound"):
         actor[name] = lambda *a: None
+    actor["look"] = lambda self, sheet: LOOKS.append((self, sheet))
+    actor["despawn"] = lambda self: DESPAWNS.append(self)
     return actor
 
 
@@ -314,6 +318,24 @@ check("and is not decided yet", sb.role(81) is None, repr(sb.role(81)))
 WORLD["frame"] += 1
 call(81, 0, "test.flash", 1000, 1000)
 check("the next frame it is a bit", sb.role(81) == "bit", repr(sb.role(81)))
+
+# ---- A state switch keeps its actor -----------------------------------------
+# Homing art from `arm` on: the follower used to be despawned and a new one
+# spawned with no motion history, so the switch frame drew untweened. The same
+# actor now takes the new sheet with `a:look`, and keeps its history.
+homing = lua.table_from({"sheet": "sprites/test/homing.png", "arm": 100, "time": 0, "anim": "track"})
+flight("test.look", track=False, homing=homing)
+spawned, looked, despawned = len(SPAWNS), len(LOOKS), len(DESPAWNS)
+for _ in range(10):  # 200 ms: past `arm`
+    step(90, 0, "test.look")
+check("a state switch spawns no second actor", len(SPAWNS) - spawned == 1, str(len(SPAWNS) - spawned))
+check("and despawns none", len(DESPAWNS) == despawned, str(len(DESPAWNS) - despawned))
+new_looks = LOOKS[looked:]
+check(
+    "the follower takes the homing sheet in place",
+    len(new_looks) == 1 and new_looks[0][1] == "sprites/test/homing.png",
+    repr([sheet for _, sheet in new_looks]),
+)
 
 if fails > 0:
     print(f"\n{fails} check(s) failed")
