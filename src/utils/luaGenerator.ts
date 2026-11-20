@@ -21,7 +21,7 @@ import { STAMP_FRAMES, stampFrameForAngle, supportsTerrainStamp } from '../data/
 import { COLLISION_FLAGS } from '../data/recordSchema';
 import { meleeStrikes } from '../data/melee';
 import { SDK_MODULE_EXPORTS, SDK_MODULE_PREFIXES } from '../data/sdkModules';
-import { maskLuaCode, NOT_GENERATED_CLOSE, NOT_GENERATED_OPEN } from './luaText';
+import { maskLuaCode, NOT_GENERATED_CLOSE, NOT_GENERATED_OPEN, scanBlockEnd } from './luaText';
 import { recordField } from './recordField';
 import { defaultArtFor } from './defaultArt';
 import {
@@ -231,7 +231,9 @@ function luaMaskTable(mask: Record<string, unknown> | undefined): string | null 
 }
 
 function formatNumber(value: number, digits = 4): string {
-  return value.toFixed(digits).replace(/0+$/, '').replace(/\.$/, '');
+  const n = Number(value);
+  const safe = Number.isFinite(n) ? n : 0;
+  return safe.toFixed(digits).replace(/0+$/, '').replace(/\.$/, '');
 }
 
 /** `#rrggbb` (or `rrggbb`) to the 0-255 components the trail module takes. */
@@ -808,19 +810,22 @@ function homingWindowRow(
 }
 
 /** The `sb.flight` keys shared by the primary, bit and state roles. */
-function roleArtRows(cfg: FlightRoleArt, indent: string): string[] {
+function roleArtRows(
+  cfg: Pick<FlightRoleArt, 'anim' | 'frames' | 'pingpong' | 'animSpeed' | 'spinRate' | 'scale' | 'mirror' | 'z'>,
+  indent: string,
+): string[] {
   const rows = [`${indent}anim = ${luaQuote(cfg.anim || 'rotation')},`];
   if (cfg.frames > 1) rows.push(`${indent}cyclical = ${cfg.frames},`);
   // One frame has nothing to play backwards, so `pingpong` is only meaningful
   // with a real strip.
   if (cfg.pingpong && cfg.frames > 1) rows.push(`${indent}pingpong = true,`);
-  if (cfg.animSpeed && cfg.animSpeed !== 1) {
+  if (cfg.animSpeed !== undefined && cfg.animSpeed !== 1) {
     rows.push(`${indent}anim_speed = ${formatNumber(cfg.animSpeed)},`);
   }
-  if (cfg.spinRate && cfg.spinRate !== 1) {
+  if (cfg.spinRate !== undefined && cfg.spinRate !== 1) {
     rows.push(`${indent}spin = ${formatNumber(cfg.spinRate)},`);
   }
-  if (cfg.scale && cfg.scale !== 1) {
+  if (cfg.scale !== undefined && cfg.scale !== 1) {
     rows.push(`${indent}scale = ${formatNumber(cfg.scale)},`);
   }
   if (cfg.mirror === false) rows.push(`${indent}mirror = false,`);
@@ -839,13 +844,13 @@ export function digArtOverrideRows(cfg: FlightRoleArt | undefined, indent: strin
   }
   if (cfg.frames > 1) rows.push(`${indent}cyclical = ${cfg.frames},`);
   if (cfg.pingpong && cfg.frames > 1) rows.push(`${indent}pingpong = true,`);
-  if (cfg.animSpeed && cfg.animSpeed !== 1) {
+  if (cfg.animSpeed !== undefined && cfg.animSpeed !== 1) {
     rows.push(`${indent}anim_speed = ${formatNumber(cfg.animSpeed)},`);
   }
-  if (cfg.spinRate && cfg.spinRate !== 1) {
+  if (cfg.spinRate !== undefined && cfg.spinRate !== 1) {
     rows.push(`${indent}spin = ${formatNumber(cfg.spinRate)},`);
   }
-  if (cfg.scale && cfg.scale !== 1) {
+  if (cfg.scale !== undefined && cfg.scale !== 1) {
     rows.push(`${indent}scale = ${formatNumber(cfg.scale)},`);
   }
   if (cfg.mirror === false) rows.push(`${indent}mirror = false,`);
@@ -944,38 +949,16 @@ export function parseCustomLua(snippet: string): ParsedCustomLua {
   const paramName = fnMatch[1] || 'ev';
   const fnBodyStart = afterEquals + fnMatch[0].length;
 
-  // Scan forward for matching `end` using linear token search with max 5000
-  // iterations, over the masked text: a keyword in a comment or a string is not
-  // a block, and counting one used to truncate the body (an `end` in a comment)
-  // or swallow the rest of the snippet (an `if` or `for` in a string).
-  const searchSlice = masked.slice(fnBodyStart);
-  const tokenRegex = /\b(function|if|for|while|end)\b/g;
-  let depth = 1;
-  let fnBodyEnd = -1;
-  let iterations = 0;
-  let m: RegExpExecArray | null;
-
-  while ((m = tokenRegex.exec(searchSlice)) !== null && iterations < 5000) {
-    iterations += 1;
-    if (m[1] === 'end') {
-      depth -= 1;
-      if (depth === 0) {
-        fnBodyEnd = fnBodyStart + m.index;
-        break;
-      }
-    } else {
-      depth += 1;
-    }
-  }
-
-  if (fnBodyEnd === -1) {
-    fnBodyEnd = snippet.length;
-  }
+  // Scan forward for matching `end` using `scanBlockEnd` over the masked text:
+  // a keyword in a comment or a string is not a block, and bare `do ... end` or
+  // `repeat ... until` blocks inside the body must match too.
+  const foundEnd = scanBlockEnd(masked, fnBodyStart);
+  const fnBodyEnd = foundEnd === -1 ? snippet.length : foundEnd;
 
   const onExplodeBody = snippet.slice(fnBodyStart, fnBodyEnd).trim();
 
   // Find the end of the entire on_explode statement
-  let stmtEnd = fnBodyEnd + 3; // past 'end'
+  let stmtEnd = foundEnd === -1 ? snippet.length : foundEnd + 3; // past 'end'
   const afterEnd = snippet.slice(stmtEnd);
 
   if (isTable) {
@@ -1025,9 +1008,12 @@ export function hookBodyOf(text: string): { param: string; body: string } {
   const close = open < 0 ? -1 : masked.indexOf(')', open);
   if (open < 0 || close < 0) return { param: 'ev', body: '' };
   const param = text.slice(open + 1, close).split(',')[0]?.trim() || 'ev';
-  // `end` is a keyword, so the last one in the masked copy closes the outermost
-  // block: a nested `function`/`if` closes earlier.
-  const end = masked.lastIndexOf('end');
+  // `end` is a keyword, so the last whole-word one in the masked copy closes
+  // the outermost block: partial matches like `send` or `blend` do not count.
+  let end = -1;
+  const endRe = /\bend\b/g;
+  let em: RegExpExecArray | null;
+  while ((em = endRe.exec(masked)) !== null) end = em.index;
   if (end <= close) return { param, body: '' };
   return { param, body: text.slice(close + 1, end).trim() };
 }
@@ -1183,7 +1169,9 @@ export function meleeSoundPath(
       ? role === 'hit'
         ? project.melee?.hitSound
         : project.melee?.missSound
-      : project.melee?.hits?.[strike]?.sound;
+      : project.melee
+        ? meleeStrikes(project.melee)[strike]?.sound
+        : undefined;
   if (!sound?.file) return null;
   const suffix = strike === undefined ? role : `${role}${strike + 1}`;
   return `sounds/${sanitizeModFolder(project.id)}/melee_${suffix}.wav`;
@@ -1209,6 +1197,18 @@ export function wepBundlePath(project: WeaponProject): string | null {
 }
 
 export function generateLuaCode(project: WeaponProject): string {
+  /**
+   * A melee claim is a real weapon now, and Space fires it.
+   *
+   * WA ends a turn when a projectile is built (`after_use`, plus the retreat
+   * window), takes the ammo, plays its own launch step and gives the player
+   * control of the shot. `eat_fire` skipped every one of those, and the clip then
+   * zeroed the turn clock itself, which ended the turn whether or not the record
+   * asked for it. So the record fires a **ghost**: no art, no trail, no blast, no
+   * damage, no payload, no action, and an invisible 5 s retreat window. Nothing
+   * leaves the worm that a player can see or feel, and the turn is WA's to end.
+   */
+  const meleeGhost = !!project.melee?.enabled;
   // An incomplete project (a hand-built object, a half-restored draft) must not
   // die with `undefined is not an object` in the middle of an export.
   const modFolder = sanitizeModFolder(project.id || 'custom.weapon');
@@ -1352,9 +1352,12 @@ export function generateLuaCode(project: WeaponProject): string {
   const hasCustomExplodeCode = hasSnippetExplodeCode || hasCarriedExplodeCode;
   // `wf-lib/fire_seq` (px.fire_seq): one `on_fire` fires a burst. A custom
   // `on_fire` in the snippet owns the trigger, so the card is skipped then.
+  // Mask comments/strings so `-- on_fire =` does not disable features.
   const fireSequence = project.fireSequence;
-  const hasCustomOnFire =
-    project.enableCustomLua && /(?:^|\n)[ \t]*on_fire\s*=/.test(project.customLuaSnippet || '');
+  const maskedSnippet = project.enableCustomLua
+    ? maskLuaCode(project.customLuaSnippet || '')
+    : '';
+  const hasCustomOnFire = /(?:^|\n)[ \t]*on_fire\s*=/.test(maskedSnippet);
   // The bundle's own `on_fire` (M6): a hand-written trigger the editor does not
   // model. It does not stop the launch WAV, which is one report per trigger and
   // still belongs first in the handler, but it does stop our `fire_seq` burst:
@@ -1366,7 +1369,10 @@ export function generateLuaCode(project: WeaponProject): string {
     : null;
   const hasCarriedOnFire = !!carriedOnFire?.body.trim();
   const usesFireSequence =
-    !!fireSequence?.enabled && !hasCustomOnFire && supportsFireSequence(project);
+    !!fireSequence?.enabled &&
+    !hasCustomOnFire &&
+    !hasCarriedOnFire &&
+    supportsFireSequence(project);
   // Claim keys the engine reads verbatim and the editor does not model: the
   // bundle's own callbacks, written as the key itself. `on_explode`/`on_fire`
   // are not here: they are merged into the handler the editor emits.
@@ -1414,10 +1420,10 @@ export function generateLuaCode(project: WeaponProject): string {
   const usesSwing = usesAimLayer && !!project.aimClip?.enabled;
   const usesHoldLocal = usesAimLayer;
   const shotSoundPath = usesFireSequence ? customSoundPath(project, 'shot') : null;
-  // The launch WAV rides the claim's `on_fire`, i.e. where WA fires this weapon.
-  // Two cases cannot have it: a claim that eats the trigger (a melee swing takes
-  // the worm, so `on_fire` never runs) and an author's own `on_fire`, which owns
-  // the key. Both are said in the file instead of being dropped in silence.
+  // A standalone launch WAV uses a filtered `WEAPON_RELEASED` listener because
+  // claiming `on_fire` replaces WA's own shot dispatch. When `on_fire` is
+  // already owned by `fire_seq` or carried `on_fire`, it plays inside `on_fire`
+  // once per trigger instead.
   const launchSoundPath =
     !hasCustomOnFire && project.fireType !== 'melee'
       ? customSoundPath(project, 'launch')
@@ -1426,6 +1432,8 @@ export function generateLuaCode(project: WeaponProject): string {
   const launchSoundPlay = launchSoundPath
     ? `wa.sound.play(ev.worm, ${luaQuote(launchSoundPath)}, ${launchSoundPriority})`
     : null;
+  const launchInOnFire = !!launchSoundPlay && (usesFireSequence || hasCarriedOnFire);
+  const usesStandaloneLaunchSound = !!launchSoundPath && !usesFireSequence && !hasCarriedOnFire;
   // The effects SDK's ribbon trail follows a missile WA builds from this
   // record, so it only applies to the missile families (a strike's bombs are
   // not one: their `m.weapon` is nil).
@@ -1760,11 +1768,11 @@ export function generateLuaCode(project: WeaponProject): string {
       // also needs the mute: a 1x1 transparent sheet as `hold.sheets[1]`, which
       // is what `wa.weapons.hold_sheet` switches to while the quads draw.
       const fallback = defaultArtFor(project);
-      const frames = Math.max(1, h.frames || 1);
+      const holdCells = Math.max(1, Math.round(h.sheetFrames ?? h.frames ?? 1));
       const cellW = Math.max(1, Math.round(h.sheetWidth ?? fallback.width));
       const cellH = Math.max(
         1,
-        Math.round(h.sheetFile ? (h.sheetHeight ?? fallback.height) / frames : fallback.height),
+        Math.round(h.sheetFile ? (h.sheetHeight ?? fallback.height) / holdCells : fallback.height),
       );
       holdRows.push(`cell_w = ${cellW},`);
       holdRows.push(`cell_h = ${cellH},`);
@@ -1825,7 +1833,14 @@ export function generateLuaCode(project: WeaponProject): string {
         holdRows.push(
           `  ticks = ${formatNumber(Math.max(1, clip?.ticks ?? (keys[keys.length - 1]?.t ?? 1) + 1))},`,
         );
-        if (clip?.finish === 'endTurn') holdRows.push('  finish = "end_turn",');
+        // `finish = "end_turn"` zeroes the turn clock when the clip ends. That is
+        // what a clip-only weapon wants (it ate the fire, so nothing else would
+        // end the turn), and exactly what a melee must not do: WA ends the turn
+        // itself once its shot resolves, and the retreat window is the control
+        // the player keeps until then.
+        if (clip?.finish === 'endTurn' && !meleeGhost) {
+          holdRows.push('  finish = "end_turn",');
+        }
         holdRows.push('  keys = {');
         for (const key of keys) {
           const parts = [
@@ -1988,6 +2003,11 @@ export function generateLuaCode(project: WeaponProject): string {
         // numbers" (`fire_draw` defaults on, so the hand does not vanish). No
         // firing pass, no firing keys.
         const hasFiringPass = usesFiringArt || usesFiringHold;
+        const aimScale = extra.scale ?? 1;
+        const aimOffX = extra.offsetX ?? 0;
+        const aimOffY = extra.offsetY ?? 0;
+        const fireOffX = extra.fireOffsetX ?? aimOffX;
+        const fireOffY = extra.fireOffsetY ?? aimOffY;
         if (hasFiringPass && extra.fireDraw === false) holdRows.push('  fire_draw = false,');
         if (hasFiringPass && extra.fireRadius !== undefined) {
           holdRows.push(`  fire_radius = ${formatNumber(extra.fireRadius)},`);
@@ -1995,15 +2015,16 @@ export function generateLuaCode(project: WeaponProject): string {
         if (hasFiringPass && extra.fireRotation !== undefined) {
           holdRows.push(`  fire_rotation = ${rotation(extra.fireRotation)},`);
         }
-        if (hasFiringPass && extra.fireScale !== undefined && extra.fireScale !== 1) {
+        if (hasFiringPass && extra.fireScale !== undefined && extra.fireScale !== aimScale) {
           holdRows.push(`  fire_scale = ${formatNumber(extra.fireScale)},`);
         }
         if (
           hasFiringPass &&
-          ((extra.fireOffsetX ?? 0) !== 0 || (extra.fireOffsetY ?? 0) !== 0)
+          (extra.fireOffsetX !== undefined || extra.fireOffsetY !== undefined) &&
+          (fireOffX !== aimOffX || fireOffY !== aimOffY)
         ) {
           holdRows.push(
-            `  fire_offset = { x = ${formatNumber(extra.fireOffsetX ?? 0)}, y = ${formatNumber(extra.fireOffsetY ?? 0)} },`,
+            `  fire_offset = { x = ${formatNumber(fireOffX)}, y = ${formatNumber(fireOffY)} },`,
           );
         }
         holdRows.push('},');
@@ -2012,10 +2033,10 @@ export function generateLuaCode(project: WeaponProject): string {
       // the aim entry and the firing entry never share a number by accident.
       if (usesFiringArt) {
         const fallback = defaultArtFor(project);
-        const holdFrames = Math.max(1, h.frames || 1);
+        const holdCells = Math.max(1, Math.round(h.sheetFrames ?? h.frames ?? 1));
         const holdCell = Math.min(
           h.sheetWidth ?? fallback.width,
-          h.sheetFile ? (h.sheetHeight ?? fallback.height) / holdFrames : fallback.height,
+          h.sheetFile ? (h.sheetHeight ?? fallback.height) / holdCells : fallback.height,
         );
         const fireFrames = Math.max(1, Math.round(h.fireFrames ?? 1));
         const flashW = Math.max(0, h.flashWidth ?? 0);
@@ -2068,7 +2089,9 @@ export function generateLuaCode(project: WeaponProject): string {
         holdRows.push(`  hand_rotation = ${rotation(fireHandDeg)},`);
         holdRows.push(`  hand_radial_rotation = ${formatNumber(h.handRadialRotation ?? 1)},`);
         holdRows.push('  hand_size = 60,');
-        if (fireHandScale !== 1) holdRows.push(`  hand_scale = ${formatNumber(fireHandScale)},`);
+        if (fireHandScale !== (h.handScale ?? 1)) {
+          holdRows.push(`  hand_scale = ${formatNumber(fireHandScale)},`);
+        }
         if ((h.fireHandOffsetX ?? 0) !== 0 || (h.fireHandOffsetY ?? 0) !== 0) {
           holdRows.push(
             `  hand_offset = { x = ${formatNumber(h.fireHandOffsetX ?? 0)}, y = ${formatNumber(h.fireHandOffsetY ?? 0)} },`,
@@ -2076,8 +2099,11 @@ export function generateLuaCode(project: WeaponProject): string {
         }
         // The panel's checkbox is `fireDrawHand ?? drawHand`, so the emitted
         // key has to resolve the same way: with only the aim hand turned off,
-        // the firing role used to keep drawing a hand at `hand_radius`.
+        // the firing role used to keep drawing a hand at `hand_radius`. When the
+        // aim role turned the hand off (`draw_hand = false`) and firing wants
+        // it back on, write `draw_hand = true`.
         if ((h.fireDrawHand ?? h.drawHand) === false) holdRows.push('  draw_hand = false,');
+        else if (h.drawHand === false && h.fireDrawHand === true) holdRows.push('  draw_hand = true,');
         holdRows.push('},');
       }
     }
@@ -2181,9 +2207,16 @@ export function generateLuaCode(project: WeaponProject): string {
         'and the engine refuses a bundle that names one it does not know',
     );
   }
-  if (usesSwing) {
+  if (meleeGhost) {
+    // A ghost that crosses a crate would collect it for the team, which is a
+    // visible effect of a shot nobody asked for.
+    lines.push('      collects_crates = false,');
+  }
+  if (usesSwing && !meleeGhost) {
     // Space plays the clip instead of firing. WA's dispatch is eaten, so
-    // nothing leaves the worm; the clip's `finish` hands the turn back.
+    // nothing leaves the worm; the clip's `finish` hands the turn back. A melee
+    // claim does the opposite: it fires a ghost shot so WA, not the clip, owns
+    // the turn (see `meleeGhost`).
     lines.push('      eat_fire = true,');
   }
 
@@ -2338,10 +2371,13 @@ export function generateLuaCode(project: WeaponProject): string {
     }
     // A strike with a sample of its own declares that one too: a declared path
     // must have its file, and a file whose path is not declared is a nil sample.
-    for (const [index, strike] of (project.melee.hits ?? []).entries()) {
-      if (!strike.sound?.file) continue;
-      const path = meleeSoundPath(project, 'hit', index);
-      if (path) packSounds.push(luaQuote(path));
+    const sortedStrikes = meleeStrikes(project.melee);
+    if (sortedStrikes.length > 1) {
+      for (const [index, strike] of sortedStrikes.entries()) {
+        if (!strike.sound?.file) continue;
+        const path = meleeSoundPath(project, 'hit', index);
+        if (path) packSounds.push(luaQuote(path));
+      }
     }
   }
   if (usesExplosionSound) packSounds.push(luaQuote(explosionSoundPath!));
@@ -2418,8 +2454,10 @@ export function generateLuaCode(project: WeaponProject): string {
     return value;
   };
   const overrideTouched = (...keys: string[]) => keys.some((key) => override(key) !== undefined);
-  const action = project.action || (body.bounce_pct > 0 ? 'bounce' : body.homing !== 'off' ? 'homing' : 'none');
-  const actionChanged = !baseline || action !== baseline.action;
+  const action = meleeGhost
+    ? 'none'
+    : project.action || (body.bounce_pct > 0 ? 'bounce' : body.homing !== 'off' ? 'homing' : 'none');
+  const actionChanged = meleeGhost || !baseline || action !== baseline.action;
   // The action groups share one native slab (+0xA8..+0xD0): a bounce sound at
   // 0xB4 is the homing trail's sprite, a dig sound at 0xB0 is the homing
   // animation, and so on. Switching the action (or starting from a donor whose
@@ -2452,8 +2490,8 @@ export function generateLuaCode(project: WeaponProject): string {
   const bitActionChangedEarly =
     !baseline ||
     clustletAction(project.body.clustlet) !== clustletAction(baseline.body.clustlet);
-  const burst = project.burst || (body.cluster ? 'clusters' : 'nothing');
-  const burstChanged = !baseline || burst !== baseline.burst;
+  const burst = meleeGhost ? 'nothing' : project.burst || (body.cluster ? 'clusters' : 'nothing');
+  const burstChanged = meleeGhost || !baseline || burst !== baseline.burst;
   const clustletTouched = (Object.keys(body.clustlet) as (keyof ClustletConfig)[]).some(clustletChanged);
   // Whole-group tests compare key by key: `same` is a JSON text compare, so two
   // tables with the same values in a different key order looked "touched" and
@@ -2498,24 +2536,36 @@ export function generateLuaCode(project: WeaponProject): string {
   handlingInt('handling.shots', 'shots');
   handlingBool('handling.ends_turn', 'ends_turn');
   handlingInt('handling.retreat', 'retreat');
+  // A melee's retreat window **is** its ghost's lifetime: WA gives the turn back
+  // when the last shot dies or the retreat runs out, whichever comes first, so
+  // two different numbers would end the turn at the earlier of them. The donor
+  // carries its own retreat in `recordOverrides`, which the diff then drops as
+  // inherited, so the test is on the *emitted* value and not on the key.
+  const ghostWindowMs = meleeGhost
+    ? Math.max(500, Math.round(Number(override('handling.retreat') ?? 5000)))
+    : 0;
+  if (meleeGhost && override('handling.retreat') === undefined) {
+    // 5 s covers the swing and a walk-back without leaving a turn hanging on an
+    // invisible projectile. An author's own `handling.retreat` wins, and the
+    // fuse below moves with it.
+    handlingRows.push('        retreat = 5000,');
+  }
   if (handlingRows.length > 0) {
     lines.push('      handling = {');
     lines.push(...handlingRows);
     lines.push('      },');
   }
 
-  // `fires.subtype` (+0x34) is not family-specific: every record has it, and
-  // WA plays that number's own fire animation and sound (4 = Minigun, 5 =
-  // Shotgun, …). Write it when the author's choice differs from the inherited
-  // record; the archetype buttons and a donor change re-base it with the
-  // donor's own number, so an untouched weapon still writes nothing. It is a
-  // firing-header value only: it never touches the held-art animation.
-  {
-    const subtype = override('fires.subtype') ?? project.specialSubtype;
-    if (subtype !== undefined && (!baseline || subtype !== baseline.specialSubtype)) {
-      lines.push(`      fires = { subtype = ${subtype} },`);
-    }
-  }
+  // `fires.subtype` (+0x34) is emitted together with `launch_power_pct` /
+  // `creates_projectile` in the single `fires` table below so Lua never
+  // sees two `fires =` keys in the claim table.
+  const rawFiresSubtype = override('fires.subtype') ?? project.specialSubtype;
+  const firesSubtype =
+    rawFiresSubtype !== undefined && Number.isFinite(Number(rawFiresSubtype))
+      ? Number(rawFiresSubtype)
+      : undefined;
+  const firesSubtypeChanged =
+    firesSubtype !== undefined && (!baseline || firesSubtype !== baseline.specialSubtype);
 
   if (project.fireType === 'hitscan') {
     const gunTouched =
@@ -2619,9 +2669,15 @@ export function generateLuaCode(project: WeaponProject): string {
       lines.push('      },');
     }
   } else if (project.fireType === 'cursor' && project.teleport) {
-    lines.push('      on_select = { cursor = true },');
+    if (!carriedHooks.has('on_select')) {
+      lines.push('      on_select = { cursor = true },');
+    }
   } else if (
     project.fireType === 'power' ||
+    // A melee claim borrows a power record for its aim phase (the Sheep
+    // Launcher's), so it carries `missile` edits like any projectile: the ghost
+    // shot is one (see `meleeGhost`).
+    meleeGhost ||
     (project.fireType === 'drop' && body.fuse) ||
     // An air strike is a missile record too: the engine reads the munition
     // body 0x14 bytes further in (record.rs STRIKE_SHIFT), and every
@@ -2642,16 +2698,18 @@ export function generateLuaCode(project: WeaponProject): string {
       pushPct !== undefined ||
       explosionBias !== undefined ||
       explosionVariation !== undefined ||
-      silencesBlast
+      silencesBlast ||
+      meleeGhost
     ) {
       lines.push('        explosion = {');
-      if (silencesBlast) {
+      if (silencesBlast || meleeGhost) {
         // The custom explosion in `on_explode` does the damage, push and
-        // crater; a power here would blast a second time.
+        // crater; a power here would blast a second time. A melee ghost has no
+        // blast at all: its damage is the strike's `hit` callback.
         lines.push('          power = 0,');
         lines.push('          push_pct = 0,');
       } else if (powerChanged) lines.push(`          power = ${body.damage},`);
-      if (!silencesBlast && pushPct !== undefined) {
+      if (!silencesBlast && !meleeGhost && pushPct !== undefined) {
         lines.push(`          push_pct = ${pushPct},`);
       }
       if (explosionBias !== undefined) lines.push(`          bias = ${explosionBias},`);
@@ -2672,7 +2730,16 @@ export function generateLuaCode(project: WeaponProject): string {
 
     // `fuse` (0x8C) and `countdown` (0x88) are separate native timers.
     const fuseChanged = bodyChanged('fuse') || bodyChanged('fuse_time_ms');
-    if (fuseChanged) {
+    if (meleeGhost) {
+      // The ghost has to outlive the retreat. WA hands the turn over the moment
+      // the shot it fired is gone, so a missile that dies on contact with the
+      // ground at the worm's feet ends the turn a frame after the swing and the
+      // retreat window is never seen. A nonzero `fuse` is also WA's "timed, not
+      // impact detonated" switch, so the ghost lives exactly the window and
+      // then pops harmlessly (`power = 0`, no sound), which is the moment the
+      // turn ends anyway.
+      lines.push(`        fuse = ${ghostWindowMs},`);
+    } else if (fuseChanged) {
       if (body.fuse && body.fuse_time_ms > 0) {
         lines.push(`        fuse = ${body.fuse_time_ms},`);
       } else {
@@ -2690,9 +2757,12 @@ export function generateLuaCode(project: WeaponProject): string {
     }
 
     // Optional native pre-explosion sound: `{ enabled, sound, before }`.
-    const explosionSoundEnabled = override('missile.explosion_sound.enabled');
-    const explosionSound = override('missile.explosion_sound.sound');
-    const explosionSoundBefore = override('missile.explosion_sound.before');
+    // A ghost makes no noise of its own: the strike's own hit and miss samples
+    // are the weapon's voice, and WA's launch, flight and blast sounds belong to
+    // the record it borrowed the aim phase from.
+    const explosionSoundEnabled = meleeGhost ? false : override('missile.explosion_sound.enabled');
+    const explosionSound = meleeGhost ? undefined : override('missile.explosion_sound.sound');
+    const explosionSoundBefore = meleeGhost ? undefined : override('missile.explosion_sound.before');
     if (
       explosionSoundEnabled !== undefined ||
       explosionSound !== undefined ||
@@ -2714,7 +2784,10 @@ export function generateLuaCode(project: WeaponProject): string {
     // ANIM_TYPE (`track`, `rotation`, `slow`, ...) must NOT be written to the
     // record's `animation`: that field is WA's native selector (0..5).
     const spriteOverride = override('missile.sprite');
-    if (builderOn && !(action === 'roam' && roamWalkPose !== 0)) {
+    if (meleeGhost) {
+      // Nothing to draw: the shot is a carrier for WA's firing flow, not a thing.
+      lines.push('        sprite = 0,');
+    } else if (builderOn && !(action === 'roam' && roamWalkPose !== 0)) {
       // The builder classifies a missile as the primary only when `m.sprite` is
       // zero at first sight (a cluster bit carries its record's own bit sprite).
       // This write is unconditional: an imported `.wep` baseline or a
@@ -2769,7 +2842,7 @@ export function generateLuaCode(project: WeaponProject): string {
     if (collisionShape !== undefined) {
       lines.push(`        collision_shape = ${collisionShape},`);
     }
-    const alarmWorms = override('missile.alarm_worms');
+    const alarmWorms = meleeGhost ? false : override('missile.alarm_worms');
     if (alarmWorms !== undefined) {
       lines.push(`        alarm_worms = ${alarmWorms ? 'true' : 'false'},`);
     }
@@ -2790,7 +2863,10 @@ export function generateLuaCode(project: WeaponProject): string {
       'missile.trail.bubbles_per_second',
     ];
     const trailEnabled = project.recordOverrides['missile.trail.enabled'];
-    if (missileTrailArt) {
+    if (meleeGhost) {
+      // No trail either: `sprite = 0` is the engine's "no trail" value.
+      lines.push('        trail = { sprite = 0 },');
+    } else if (missileTrailArt) {
       // A pack image replaces the stock trail sprite for this weapon only; the
       // engine loads it and writes its id into the native trail field.
       lines.push('        trail = {');
@@ -2835,16 +2911,16 @@ export function generateLuaCode(project: WeaponProject): string {
       lines.push('        },');
     }
 
-    const impactParticles = override('missile.impact_particles');
+    const impactParticles = meleeGhost ? false : override('missile.impact_particles');
     if (impactParticles !== undefined) {
       lines.push(`        impact_particles = ${impactParticles ? 'true' : 'false'},`);
     }
 
-    const flightSound = override('missile.flight_sound');
+    const flightSound = meleeGhost ? 0 : override('missile.flight_sound');
     if (flightSound !== undefined) {
       lines.push(`        flight_sound = ${flightSound},`);
     }
-    const launchSound = override('missile.launch_sound');
+    const launchSound = meleeGhost ? 0 : override('missile.launch_sound');
     if (launchSound !== undefined) {
       lines.push(`        launch_sound = ${launchSound},`);
     }
@@ -2868,6 +2944,19 @@ export function generateLuaCode(project: WeaponProject): string {
         'missile.bounce.explosion.power',
         'missile.bounce.explosion.variation'
       );
+    // When switching action groups (`fullGroup`), read the project's values
+    // directly instead of subtracting stale dummy bytes from the old action's
+    // baseline slab, while still guarding pack sprite paths.
+    const groupVal = (key: string): any => {
+      if (!fullGroup) return override(key);
+      const value = project.recordOverrides[key];
+      if (value === undefined) return undefined;
+      if (isSpriteField(key) && !pathSpriteKeys.has(key) && looksLikePackPath(value)) {
+        if (!droppedSpritePaths.includes(key)) droppedSpritePaths.push(key);
+        return undefined;
+      }
+      return value;
+    };
     if (action === 'bounce' && bounceTouched) {
       lines.push('        bounce = {');
       if (fullGroup || bodyChanged('bounce_pct')) {
@@ -2877,7 +2966,7 @@ export function generateLuaCode(project: WeaponProject): string {
       // each one shares its slot with the previous action's field (see
       // `fullGroup`).
       const groupInt = (key: string, name: string, fallback = 0) => {
-        const v = override(key);
+        const v = groupVal(key);
         if (v === undefined && !fullGroup) return;
         lines.push(`          ${name} = ${v ?? fallback},`);
       };
@@ -2890,10 +2979,10 @@ export function generateLuaCode(project: WeaponProject): string {
       groupInt('missile.bounce.contact_sides', 'contact_sides');
       groupInt('missile.bounce.extra_reverse_chance_pct', 'extra_reverse_chance_pct');
 
-      const bounceExplosionBias = override('missile.bounce.explosion.bias');
-      const bounceExplosionPush = override('missile.bounce.explosion.push_pct');
-      const bounceExplosionPower = override('missile.bounce.explosion.power');
-      const bounceExplosionVariation = override('missile.bounce.explosion.variation');
+      const bounceExplosionBias = groupVal('missile.bounce.explosion.bias');
+      const bounceExplosionPush = groupVal('missile.bounce.explosion.push_pct');
+      const bounceExplosionPower = groupVal('missile.bounce.explosion.power');
+      const bounceExplosionVariation = groupVal('missile.bounce.explosion.variation');
       if (
         fullGroup ||
         bounceExplosionBias !== undefined ||
@@ -2906,7 +2995,7 @@ export function generateLuaCode(project: WeaponProject): string {
           lines.push(`            bias = ${bounceExplosionBias ?? 0},`);
         }
         if (fullGroup || bounceExplosionPush !== undefined) {
-          lines.push(`            push_pct = ${bounceExplosionPush ?? 0},`);
+          lines.push(`            push_pct = ${bounceExplosionPush ?? 100},`);
         }
         if (fullGroup || bounceExplosionPower !== undefined) {
           lines.push(`            power = ${bounceExplosionPower ?? 0},`);
@@ -2920,7 +3009,7 @@ export function generateLuaCode(project: WeaponProject): string {
       // `bounce.hits` is the bounce action's own target selection. It is added
       // to `ends_on_contact`, never a replacement for it. The mask leaves the
       // `impact_particles` bit alone (it shares this dword).
-      const bounceHits = luaMaskTable(override('missile.bounce.hits'));
+      const bounceHits = luaMaskTable(groupVal('missile.bounce.hits'));
       if (bounceHits !== null) {
         lines.push(`          hits = ${bounceHits},`);
       } else if (fullGroup) {
@@ -2956,7 +3045,7 @@ export function generateLuaCode(project: WeaponProject): string {
         : homingState?.assigned.homing_sprite !== undefined
           ? homingState.assigned.homing_sprite
           : fullGroup
-            ? (override('missile.homing.sprite') ?? 0)
+            ? (groupVal('missile.homing.sprite') ?? 0)
             : override('missile.homing.sprite');
       if (homingSprite !== undefined) {
         if (homingSprite === 0 || homingSprite === '0' || homingSprite === '') {
@@ -2967,15 +3056,15 @@ export function generateLuaCode(project: WeaponProject): string {
           lines.push(`          sprite = ${luaQuote(String(homingSprite))},`);
         }
       }
-      const homingAnimation = override('missile.homing.animation');
+      const homingAnimation = groupVal('missile.homing.animation');
       if (fullGroup || homingAnimation !== undefined) {
         lines.push(`          animation = ${homingAnimation ?? 0},`);
       }
 
-      const homingTrailSprite = override('missile.homing.trail.sprite');
-      const homingTrailPower = override('missile.homing.trail.power');
-      const homingTrailSpeed = override('missile.homing.trail.speed');
-      const homingTrailBubbles = override('missile.homing.trail.bubbles_per_second');
+      const homingTrailSprite = groupVal('missile.homing.trail.sprite');
+      const homingTrailPower = groupVal('missile.homing.trail.power');
+      const homingTrailSpeed = groupVal('missile.homing.trail.speed');
+      const homingTrailBubbles = groupVal('missile.homing.trail.bubbles_per_second');
       // Written in full on an action switch: 0xB4 is also the bounce sound, so
       // a donor's leftover (the grenade's 113) would be drawn as the homing
       // trail's sprite -- `oildrum4` with its own odd particle gravity.
@@ -2987,15 +3076,14 @@ export function generateLuaCode(project: WeaponProject): string {
         homingTrailBubbles !== undefined
       ) {
         lines.push('          trail = {');
-        if (fullGroup) {
-          lines.push('            sprite = 0,');
-        } else if (homingTrailSprite !== undefined) {
-          if (homingTrailSprite === 0 || homingTrailSprite === '0' || homingTrailSprite === '') {
+        const hts = fullGroup ? (homingTrailSprite ?? 0) : homingTrailSprite;
+        if (hts !== undefined) {
+          if (hts === 0 || hts === '0' || hts === '') {
             lines.push('            sprite = 0,');
-          } else if (!isNaN(Number(homingTrailSprite))) {
-            lines.push(`            sprite = ${Number(homingTrailSprite)},`);
+          } else if (!isNaN(Number(hts))) {
+            lines.push(`            sprite = ${Number(hts)},`);
           } else {
-            lines.push(`            sprite = ${luaQuote(String(homingTrailSprite))},`);
+            lines.push(`            sprite = ${luaQuote(String(hts))},`);
           }
         }
         if (fullGroup || homingTrailPower !== undefined) {
@@ -3469,6 +3557,7 @@ export function generateLuaCode(project: WeaponProject): string {
           'bounciness',
           'bounces',
           'bounce_explode',
+          'bounce_power',
           'bounce_hits',
           'bounce_terrain_keep_speed_pct',
           'bounce_sound',
@@ -3796,17 +3885,59 @@ export function generateLuaCode(project: WeaponProject): string {
     }
     return rows;
   };
-  const NATIVE_GROUPS: { group: string; fields: string[] }[] = [
-    { group: 'fires', fields: ['launch_power_pct', 'creates_projectile'] },
-    { group: 'arrow', fields: ['damage'] },
-    { group: 'baseball_bat', fields: ['damage', 'knockback_scale'] },
-    { group: 'fire_punch', fields: ['damage', 'knockback'] },
-    { group: 'drill', fields: ['duration_ms'] },
-    { group: 'jet_pack', fields: ['fuel'] },
-    { group: 'parachute', fields: ['wind_pct'] },
-    { group: 'utility', fields: ['effect'] },
+  const isMissileFamily =
+    project.fireType === 'power' || (project.fireType === 'drop' && !!project.body.fuse);
+  const firesRows: string[] = [];
+  if (firesSubtypeChanged) {
+    firesRows.push(`        subtype = ${firesSubtype},`);
+  }
+  const firesFields = isMissileFamily
+    ? ['launch_power_pct', 'creates_projectile']
+    : ['creates_projectile'];
+  firesRows.push(...nativeGroupRows('fires', firesFields));
+  if (firesRows.length === 1 && firesSubtypeChanged) {
+    lines.push(`      fires = { subtype = ${firesSubtype} },`);
+  } else if (firesRows.length > 0) {
+    lines.push('      fires = {');
+    lines.push(...firesRows);
+    lines.push('      },');
+  }
+  const gateSubtype = firesSubtype ?? project.specialSubtype;
+  const NATIVE_GROUPS: { group: string; fields: string[]; allow: boolean }[] = [
+    { group: 'arrow', fields: ['damage'], allow: project.fireType === 'arrow' },
+    {
+      group: 'baseball_bat',
+      fields: ['damage', 'knockback_scale'],
+      allow: project.fireType === 'special' && gateSubtype === 2,
+    },
+    {
+      group: 'fire_punch',
+      fields: ['damage', 'knockback'],
+      allow: project.fireType === 'special' && gateSubtype === 1,
+    },
+    {
+      group: 'drill',
+      fields: ['duration_ms'],
+      allow: project.fireType === 'special' && gateSubtype === 8,
+    },
+    {
+      group: 'jet_pack',
+      fields: ['fuel'],
+      allow: project.fireType === 'special' && gateSubtype === 23,
+    },
+    {
+      group: 'parachute',
+      fields: ['wind_pct'],
+      allow: project.fireType === 'special' && gateSubtype === 12,
+    },
+    {
+      group: 'utility',
+      fields: ['effect'],
+      allow: project.fireType === 'special' && gateSubtype === 19,
+    },
   ];
-  for (const { group, fields } of NATIVE_GROUPS) {
+  for (const { group, fields, allow } of NATIVE_GROUPS) {
+    if (!allow) continue;
     const rows = nativeGroupRows(group, fields);
     if (rows.length === 0) continue;
     lines.push(`      ${group} = {`);
@@ -3850,9 +3981,6 @@ export function generateLuaCode(project: WeaponProject): string {
   // is single-valued, so the three have to share one function or one of them
   // replaces the others.
   const onFire: string[] = [];
-  if (launchSoundPlay && !usesFireSequence) {
-    onFire.push('      -- Launch sound: WA fires the weapon, so `on_fire` runs once.');
-  }
   if (usesFireSequence) {
     const f = fireSequence!;
     const count = Math.max(1, Math.round(f.count));
@@ -3953,7 +4081,7 @@ export function generateLuaCode(project: WeaponProject): string {
   // registration above, which runs on the round WA did build.
   if (onFire.length > 0) {
     lines.push('      on_fire = function(ev)');
-    if (launchSoundPlay) {
+    if (launchInOnFire) {
       lines.push(`        ${launchSoundPlay} -- the launch WAV, once per trigger`);
     }
     lines.push(...onFire);
@@ -3968,8 +4096,14 @@ export function generateLuaCode(project: WeaponProject): string {
     // indentation the last export gave it, so a blind prefix would add six more
     // spaces every round trip.
     const [head, ...body] = hook.text.split('\n');
+    if (hook.key === 'on_select' && project.fireType === 'cursor' && project.teleport) {
+      lines.push(`      on_select = { cursor = true, on = ${head.trim()}`);
+      if (body.length > 0) lines.push(...reindentCode(body.join('\n'), '      '));
+      lines.push('      },');
+      continue;
+    }
     lines.push(`      ${hook.key} = ${head.trim()}`);
-    lines.push(...reindentCode(body.join('\n'), '      '));
+    if (body.length > 0) lines.push(...reindentCode(body.join('\n'), '      '));
     lines.push('      ,');
   }
 
@@ -4233,6 +4367,21 @@ export function generateLuaCode(project: WeaponProject): string {
   }
 
 
+  if (usesStandaloneLaunchSound) {
+    lines.push('    -- Launch sound: played on WA release message so we do not claim `on_fire`');
+    lines.push('    -- (claiming `on_fire` replaces WA\'s own shot).');
+    lines.push('    local LAUNCH_SOUND = {');
+    lines.push(`      path = ${luaQuote(launchSoundPath!)},`);
+    lines.push(`      priority = ${launchSoundPriority},`);
+    lines.push('    }');
+    lines.push('    wa.on.worm_message(function(worm)');
+    lines.push('      if worm.turn and worm.weapon == ctx.id then');
+    lines.push('        wa.sound.play(worm, LAUNCH_SOUND.path, LAUNCH_SOUND.priority)');
+    lines.push('      end');
+    lines.push('    end, { msgs = { wa.msg.WEAPON_RELEASED } })');
+    lines.push('');
+  }
+
   // A pack WAV on a fixed interval while the round flies. `wa.on.missile_frame`
   // has no owner handle, so the voice rides the firing worm (whose turn it is,
   // else any living worm): WA's positional sound needs a game entity, and a
@@ -4290,20 +4439,20 @@ export function generateLuaCode(project: WeaponProject): string {
     if (m.pingpong && m.frames > 1) {
       lines.push('      pingpong = true,');
     }
-    if (m.animSpeed && m.animSpeed !== 1.0) {
-      lines.push(`      anim_speed = ${m.animSpeed},`);
+    if (m.animSpeed !== undefined && m.animSpeed !== 1.0) {
+      lines.push(`      anim_speed = ${formatNumber(m.animSpeed)},`);
     }
-    if (m.spinRate && m.spinRate !== 1.0) {
-      lines.push(`      spin = ${m.spinRate},`);
+    if (m.spinRate !== undefined && m.spinRate !== 1.0) {
+      lines.push(`      spin = ${formatNumber(m.spinRate)},`);
     }
-    if (m.scale && m.scale !== 1.0) {
-      lines.push(`      scale = ${m.scale},`);
+    if (m.scale !== undefined && m.scale !== 1.0) {
+      lines.push(`      scale = ${formatNumber(m.scale)},`);
     }
     if (m.mirror === false) {
       lines.push('      mirror = false,');
     }
     if (m.z !== undefined && m.z !== 5.0) {
-      lines.push(`      z = ${m.z},`);
+      lines.push(`      z = ${formatNumber(m.z)},`);
     }
     // Weapon-wide builder parameters: one size multiplier for every role's
     // sheet, a rotation offset for art that does not point up, and an x/y nudge
@@ -4339,7 +4488,23 @@ export function generateLuaCode(project: WeaponProject): string {
       }
       lines.push('      },');
     } else if (bitMode === 'inherit') {
-      lines.push('      bits = "inherit",');
+      if (bitHomingBuilder) {
+        lines.push('      bits = {');
+        lines.push(`        sheet = ${luaQuote(missileFlightSheetPath(project))},`);
+        for (const row of roleArtRows(m, '        ')) lines.push(row);
+        lines.push('        homing = {');
+        lines.push(
+          `          sheet = ${luaQuote(behaviorStateSheetPath(project, 'homing_bit'))},`,
+        );
+        lines.push(homingWindowRow(project.body.clustlet, '          '));
+        for (const row of roleArtRows(project.behaviorArt!.homing_bit!, '          ')) {
+          lines.push(row);
+        }
+        lines.push('        },');
+        lines.push('      },');
+      } else {
+        lines.push('      bits = "inherit",');
+      }
     }
 
     // Homing art for the primary: WA arms the missile after `arm` ms and steers
@@ -4621,9 +4786,12 @@ export function availableRequiresForCheck(
   }
   const hasExternalDep = [...depSet].some((dep) => !(dep in SDK_MODULE_EXPORTS));
   if (hasExternalDep) {
-    const reqPattern = /(?:^|[^A-Za-z0-9_.])require\s*\(\s*["']([^"']+)["']\s*\)/g;
+    const reqPattern = /(?:^|[^A-Za-z0-9_.])require(?:\s*\(\s*|\s+)["']([^"']+)["']/g;
+    const maskedLua = maskLuaCode(luaSource);
     let m: RegExpExecArray | null;
     while ((m = reqPattern.exec(luaSource)) !== null) {
+      const reqWordAt = m.index + m[0].indexOf('require');
+      if (maskedLua.slice(reqWordAt, reqWordAt + 7) !== 'require') continue;
       const target = m[1];
       const owner = SDK_MODULE_PREFIXES.find((entry) => target.startsWith(entry.prefix));
       if (!owner || depSet.has(owner.id)) allowed.add(target);
@@ -4658,9 +4826,16 @@ export function autoDependenciesForProject(
     !!project.terrainStamp?.enabled &&
     supportsTerrainStamp(project) &&
     stampImpact.kind === 'taze';
+  const hasCarriedOnFire = (project.carriedLua?.hooks ?? []).some(
+    (h) => !h.disabled && h.key === 'on_fire' && hookBodyOf(h.text).body.trim().length > 0,
+  );
   const usesFireSequence =
     !!project.fireSequence?.enabled &&
-    !(project.enableCustomLua && /(?:^|\n)[ \t]*on_fire\s*=/.test(project.customLuaSnippet || '')) &&
+    !(
+      project.enableCustomLua &&
+      /(?:^|\n)[ \t]*on_fire\s*=/.test(maskLuaCode(project.customLuaSnippet || ''))
+    ) &&
+    !hasCarriedOnFire &&
     supportsFireSequence(project);
 
   const out: { id: string; reason: string }[] = [];
@@ -4784,7 +4959,7 @@ export function weaponManifestPart(project: WeaponProject): WeaponManifestPart {
 
   // Sprites declarations
   const emitted = new Set<string>();
-  if (project.missileSprite?.enabled && project.missileSprite.mode === 'custom') {
+  if (primaryBuilderOn(project)) {
     const missilePath = missileFlightSheetPath(project);
     emitted.add(missilePath);
     lines.push('');
@@ -4863,9 +5038,13 @@ export function weaponManifestPart(project: WeaponProject): WeaponManifestPart {
   // carries (see `modExporter`).
   if (stampSheet && !emitted.has(stampSheet)) {
     emitted.add(stampSheet);
+    const stampFrames = Math.max(
+      1,
+      Math.round(project.terrainStamp?.sheet?.frames || STAMP_FRAMES),
+    );
     lines.push('');
     lines.push(`[sprites.${luaQuote(stampSheet)}]`);
-    lines.push(`frames = ${STAMP_FRAMES}`);
+    lines.push(`frames = ${stampFrames}`);
   }
 
   // The hold picture's cell count, which is not always what the hold plays: the
@@ -4930,6 +5109,18 @@ export function weaponManifestPart(project: WeaponProject): WeaponManifestPart {
   return { dependencies, modIcon, block: lines.join('\n') };
 }
 
+/** Path of the bundle's own icon inside the pack, avoiding weapon icon collisions. */
+export function packIconBundlePath(pack: PackProject): string | undefined {
+  if (!pack.iconFile) return undefined;
+  const folder = sanitizeModFolder(pack.id);
+  const collides = pack.weapons.some(
+    (weapon) =>
+      !!weapon.customIconFile &&
+      sanitizeModFolder(weapon.id).toLowerCase() === folder.toLowerCase(),
+  );
+  return collides ? `sprites/${folder}/mod_icon.png` : `sprites/${folder}/icon.png`;
+}
+
 /** The bundle header and every weapon's block: one file, N components. */
 export function generatePackToml(pack: PackProject): string {
   const parts = pack.weapons.map(weaponManifestPart);
@@ -4957,7 +5148,7 @@ export function generatePackToml(pack: PackProject): string {
   // The bundle's one icon. An uploaded file is written into the bundle's own
   // folder and named by `mod_icon`; without one the first weapon's icon stands
   // in, and a bundle with neither is legal (the mod loader shows initials).
-  const packIconPath = pack.iconFile ? `sprites/${sanitizeModFolder(pack.id)}/icon.png` : undefined;
+  const packIconPath = packIconBundlePath(pack);
   const modIcon = packIconPath || pack.modIcon || parts.find((part) => part.modIcon)?.modIcon;
   if (modIcon) lines.push(`mod_icon = ${luaQuote(modIcon)}`);
   if (pack.replaces?.length) {
@@ -5040,7 +5231,12 @@ export function generatePackProfile(pack: PackProject): string {
       lines.push(`${luaQuote(key)} = true`);
     }
   }
-  lines.push('"stock.ninja_rope" = true', '"stock.skip_go" = true', '');
+  for (const key of ['stock.ninja_rope', 'stock.skip_go']) {
+    if (placed.has(key)) continue;
+    placed.add(key);
+    lines.push(`${luaQuote(key)} = true`);
+  }
+  lines.push('');
 
   for (const project of pack.weapons) {
     if (project.defaults.ammo !== -1) continue;

@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import type { WeaponProject } from '../src/types/weapon';
 import type { ModFile } from '../src/utils/modLib/scan';
 import { readBundles, readWeapons } from '../src/utils/modLib/scan';
+import { parseToml } from '../src/utils/modLib/modToml';
 import { importBundleWeapon } from '../src/utils/modLib/importWeapon';
 import {
   extraHandSheetPath,
@@ -1342,10 +1343,45 @@ return {
     ),
     'the damage (and its kind) has to stay in the weapon, not in the library',
   );
+  // A strike used to keep the trigger with `eat_fire`, which skipped WA's whole
+  // shot: no ammo, no launch step, and the clip then zeroed the turn clock, so
+  // the turn ended whether or not the record asked for it. Now the record fires
+  // a ghost and WA owns the turn.
   check(
-    'WF 50: a strike owns the trigger',
-    /eat_fire = true,/.test(lua) && lua.includes('local hold = sb.hold(ctx, {'),
-    'WA would fire the donor record as well as swinging',
+    'WF 50: a strike does not eat the trigger',
+    !lua.includes('eat_fire') && lua.includes('local hold = sb.hold(ctx, {'),
+    'the claim still swallows FireWeapon, so WA never takes the shot',
+  );
+  check(
+    'WF 50: the shot it fires is a ghost',
+    ['sprite = 0,', 'trail = { sprite = 0 },', 'action = "none",', 'burst = "nothing",', 'retreat = 5000,'].every(
+      (row) => lua.includes(row),
+    ),
+    'a melee that fires a real shot would draw, blast and hurt',
+  );
+  // WA hands the turn over when the shot it fired is gone or the retreat runs
+  // out, so a ghost that detonated on contact at the worm's feet still ended the
+  // turn a frame after the swing. A nonzero `fuse` is also WA's "timed, not
+  // impact detonated" switch, so the ghost lives exactly the retreat window.
+  check(
+    'WF 50: the ghost outlives the retreat',
+    lua.includes('fuse = 5000,'),
+    'a contact-detonated ghost ends the turn before the retreat window is seen',
+  );
+  const ownRetreat: WeaponProject = {
+    ...full,
+    recordOverrides: { ...full.recordOverrides, 'handling.retreat': 8000 },
+  };
+  const ownRetreatLua = generateLuaCode(ownRetreat);
+  check(
+    'WF 50: an author retreat moves the fuse with it',
+    ownRetreatLua.includes('retreat = 8000,') && ownRetreatLua.includes('fuse = 8000,'),
+    'the window and the ghost lifetime disagreed, so the shorter one ended the turn',
+  );
+  check(
+    'WF 50: the clip leaves the turn to the game',
+    !lua.includes('finish = "end_turn"'),
+    'zeroing the turn clock at the clip end is the arbitrary turn end',
   );
   check(
     'WF 50: the base is the Sheep Launcher',
@@ -1582,6 +1618,385 @@ entry = "weapons/herd.lua"
       decl < 0 ? 'the hold sheet is not declared' : toml.slice(decl, decl + 120),
     );
   }
+}
+
+// ---- launch WAV + explosion WAV round-trip cleanly without duplication ----
+{
+  const wavBytes = new Uint8Array([82, 73, 70, 70]);
+  const baseProject: WeaponProject = {
+    ...fullProject(
+      {
+        ...projects.get('WF 23 Custom Sounds')!,
+        customSounds: {
+          launchEnabled: true,
+          launch: { file: new File([wavBytes], 'launch.wav', { type: 'audio/wav' }), fileName: 'launch.wav', previewUrl: '', size: 4 },
+          launchPriority: 4,
+          explosionEnabled: true,
+          explosion: { file: new File([wavBytes], 'explosion.wav', { type: 'audio/wav' }), fileName: 'explosion.wav', previewUrl: '', size: 4 },
+          explosionPriority: 16,
+          shotEnabled: false,
+          shotEvery: 1,
+          shotPriority: 8,
+          intervalEnabled: false,
+          intervalMs: 400,
+          intervalDelayMs: 0,
+          intervalLimit: 0,
+          intervalPriority: 8,
+        },
+      } as WeaponProject,
+      'Launch Boom',
+    ),
+    id: 't.launch.boom',
+  };
+  const lua1 = generateLuaCode(baseProject);
+  const toml1 = generateModToml(baseProject);
+  const sFiles: ModFile[] = [
+    { path: 'launch_boom/mod.toml', text: toml1 },
+    { path: 'launch_boom/weapons/boom.lua', text: lua1 },
+    { path: 'launch_boom/sounds/boom/launch.wav', text: '', bytes: wavBytes },
+    { path: 'launch_boom/sounds/boom/explosion.wav', text: '', bytes: wavBytes },
+  ];
+  const sBundle = readBundles(sFiles);
+  const sWeapon = readWeapons(sBundle, sFiles)[0];
+  check('launch + explosion bundle scans', !!sWeapon);
+  if (sWeapon) {
+    const imp = await importBundleWeapon(sWeapon, sFiles);
+    const ip = imp.project as WeaponProject;
+    near('launch WAV priority round-trips', ip.customSounds?.launchPriority, 4);
+    near('explosion WAV priority does not collide with launch priority', ip.customSounds?.explosionPriority, 16);
+    near('no carried hooks from own launch WAV', ip.carriedLua?.hooks?.length ?? 0, 0);
+    near('no carried registrations from own launch WAV', ip.carriedLua?.registrations?.length ?? 0, 0);
+    const lua2 = generateLuaCode({
+      ...fullProject(ip, baseProject.name),
+      id: baseProject.id,
+      name: baseProject.name,
+      donorBaseline: ip.donorBaseline,
+    });
+    check('launch + explosion WAV Lua round-trip is byte-identical', lua2 === lua1, 'lua changed on re-export');
+  }
+  // Even when `on_fire` itself contains an earlier `wa.sound.play(ev.worm, ...)`
+  // (e.g. a sequential-fire burst with launch WAV), `explosionPriority` must
+  // still match the explosion WAV's own priority.
+  const seqBoomProject: WeaponProject = {
+    ...baseProject,
+    fireSequence: {
+      ...DEFAULT_FIRE_SEQUENCE,
+      enabled: true,
+      mode: 'missiles',
+      count: 2,
+      delay: 6,
+      speed: 20,
+    },
+  };
+  const seqFiles: ModFile[] = [
+    { path: 'seq_boom/mod.toml', text: generateModToml(seqBoomProject) },
+    { path: 'seq_boom/weapons/boom.lua', text: generateLuaCode(seqBoomProject) },
+    { path: 'seq_boom/sounds/boom/launch.wav', text: '', bytes: wavBytes },
+    { path: 'seq_boom/sounds/boom/explosion.wav', text: '', bytes: wavBytes },
+  ];
+  const seqW = readWeapons(readBundles(seqFiles), seqFiles)[0];
+  if (seqW) {
+    const imp = await importBundleWeapon(seqW, seqFiles);
+    const ip = imp.project as WeaponProject;
+    near('launch WAV priority inside on_fire', ip.customSounds?.launchPriority, 4);
+    near('explosion WAV priority ignores earlier on_fire play', ip.customSounds?.explosionPriority, 16);
+  }
+
+  // `fires.subtype` must survive import and re-export.
+  const subFiles: ModFile[] = [
+    {
+      path: 'sub/mod.toml',
+      text: 'id = "t.sub"\nname = "Sub"\nversion = "0.1.0"\n\n[[components]]\nid = "t.sub.item"\ntype = "weapon"\nname = "Sub"\nentry = "weapons/item.lua"\n',
+    },
+    {
+      path: 'sub/weapons/item.lua',
+      text: 'return {\n  install = function(ctx)\n    wa.weapons.replace{\n      name = "Sub",\n      copy_from = "stock.grenade",\n      fires = { subtype = 4 },\n    }\n  end,\n}',
+    },
+  ];
+  const subW = readWeapons(readBundles(subFiles), subFiles)[0];
+  if (subW) {
+    const imp = await importBundleWeapon(subW, subFiles);
+    const ip = imp.project as WeaponProject;
+    near('fires.subtype survives import in specialSubtype', ip.specialSubtype, 4);
+    const reLua = generateLuaCode(fullProject(ip, 'Sub'));
+    check('fires.subtype survives re-export', reLua.includes('subtype = 4'), reLua);
+  }
+
+  // ---- F11: import / re-export symmetry ------------------------------------
+  const pngBytes = new Uint8Array([137, 80, 78, 71]);
+  const pngSheet = new File([pngBytes], 'sheet.png', { type: 'image/png' });
+  const holdSymProj = {
+    ...fullProject(projects.get('WF 01 Builder Track')!, 'Hold Sym'),
+    id: 't.hold_sym',
+    hold: {
+      ...DEFAULT_IMPORT_HOLD,
+      enabled: true,
+      sheetFile: pngSheet,
+      sheetWidth: 60,
+      sheetHeight: 60,
+      frames: 1,
+      drawHand: false,
+      handScale: 2,
+      flashFile: pngSheet,
+      flashWidth: 60,
+      flashHeight: 60,
+      fireDrawHand: true,
+      fireHandRadius: 0,
+      fireHandScale: 1,
+    },
+  } as WeaponProject;
+  const holdSymFiles: ModFile[] = [
+    { path: 'hold_sym/mod.toml', text: generateModToml(holdSymProj) },
+    { path: 'hold_sym/weapons/hold_sym.lua', text: generateLuaCode(holdSymProj) },
+    { path: 'hold_sym/sprites/hold_sym/hold.png', text: '', bytes: pngBytes },
+    { path: 'hold_sym/sprites/hold_sym/flash.png', text: '', bytes: pngBytes },
+  ];
+  const holdSymW = readWeapons(readBundles(holdSymFiles), holdSymFiles)[0];
+  if (holdSymW) {
+    const imp = await importBundleWeapon(holdSymW, holdSymFiles);
+    const ip = imp.project as WeaponProject;
+    check(
+      'hold firing role preserves fireDrawHand=true, fireHandRadius=0, fireHandScale=1',
+      ip.hold?.fireDrawHand === true && ip.hold?.fireHandRadius === 0 && ip.hold?.fireHandScale === 1,
+      JSON.stringify({
+        draw: ip.hold?.fireDrawHand,
+        rad: ip.hold?.fireHandRadius,
+        scale: ip.hold?.fireHandScale,
+      }),
+    );
+  }
+
+  // 2. Melee omitted sounds default to 0 / priority 8
+  const meleeMinLua = `local sb = require("wf-lib/wfws_sprite_builder")
+return {
+  install = function(ctx)
+    local hold = sb.hold(ctx, {
+      sheet = "sprites/mm/hold.png",
+      cell_w = 60,
+      cell_h = 60,
+      melee = {
+        radius = 30,
+        width = 12,
+        hits = { { frame = 4, damage = 10, power = 2, lift = 0 } },
+      },
+    })
+    wa.weapons.replace{ name = "Melee Min", copy_from = "stock.grenade", hold = hold }
+  end,
+}`;
+  const mmFiles: ModFile[] = [
+    { path: 'mm/mod.toml', text: 'id = "t.mm"\nname = "MM"\nversion = "0.1.0"\ndependencies = ["wf.sdk", "wfws.sdk"]\n\n[[components]]\nid = "t.mm.item"\ntype = "weapon"\nname = "Melee Min"\nentry = "weapons/mm.lua"\n' },
+    { path: 'mm/weapons/mm.lua', text: meleeMinLua },
+    { path: 'mm/sprites/mm/hold.png', text: '', bytes: pngBytes },
+  ];
+  const mmW = readWeapons(readBundles(mmFiles), mmFiles)[0];
+  if (mmW) {
+    const imp = await importBundleWeapon(mmW, mmFiles);
+    check(
+      'omitted melee sounds default to miss id = 0 and priority = 8',
+      imp.project.melee?.missSound.id === 0 &&
+        imp.project.melee?.missSound.priority === 8 &&
+        imp.project.melee?.hitSound.priority === 8,
+      JSON.stringify({ hit: imp.project.melee?.hitSound, miss: imp.project.melee?.missSound }),
+    );
+  }
+
+  // 3. stamp_hit electric does not force fx.burst damageType to 'electric'; comment in stamp_clear respected
+  const pierceOverlayLua = `local zap = require("wf-lib/electric/damage")
+local fx = require("wf-lib/effects/px_effects")
+local function stamp_hit(ev)
+  zap.set_message_electric(20, 0, -4, true, 2)
+end
+return {
+  install = function(ctx)
+    wa.weapons.replace{
+      name = "Pierce Overlay",
+      copy_from = "stock.bazooka",
+      on_explode = function(ev)
+        if stamp_hit(ev) then return end
+        if stamp_clear(ev.x, ev.y) then
+          -- end
+          wa.land.stamp{ sprite = "sprites/po/stamp.png", frame = 0, x = ev.x, y = ev.y }
+        end
+        fx.burst{ x = ev.x, y = ev.y }
+        wa.log("keep_custom")
+      end,
+    }
+  end,
+}`;
+  const poFiles: ModFile[] = [
+    { path: 'po/mod.toml', text: 'id = "t.po"\nname = "PO"\nversion = "0.1.0"\ndependencies = ["effects.sdk", "px.electric"]\n\n[[components]]\nid = "t.po.item"\ntype = "weapon"\nname = "Pierce Overlay"\nentry = "weapons/po.lua"\n' },
+    { path: 'po/weapons/po.lua', text: pierceOverlayLua },
+    { path: 'po/sprites/po/stamp.png', text: '', bytes: pngBytes },
+  ];
+  const poW = readWeapons(readBundles(poFiles), poFiles)[0];
+  if (poW) {
+    const imp = await importBundleWeapon(poW, poFiles);
+    const carriedExplode = imp.project.carriedLua?.hooks?.find((h) => h.key === 'on_explode')?.text ?? '';
+    check(
+      'stamp_hit zap does not flip fx.burst overlay damageType to electric and masked stamp_clear keeps custom body',
+      imp.project.explosionEffect?.damageType === 'blast' &&
+        carriedExplode.includes('wa.log("keep_custom")'),
+      `${imp.project.explosionEffect?.damageType} | ${carriedExplode}`,
+    );
+  }
+  const customZapFiles: ModFile[] = [
+    { path: 'cz/mod.toml', text: 'id = "t.cz"\nname = "CZ"\nversion = "0.1.0"\n\n[[components]]\nid = "t.cz.item"\ntype = "weapon"\nname = "Custom Zap"\nentry = "weapons/cz.lua"\n' },
+    {
+      path: 'cz/weapons/cz.lua',
+      text: 'local zap = require("wf-lib/electric/damage")\nreturn {\n  install = function(ctx)\n    wa.weapons.replace{\n      name = "Custom Zap",\n      copy_from = "stock.bazooka",\n      on_explode = function(ev)\n        zap.set_message_electric_missile(20, ev.worm, 2)\n      end,\n    }\n  end,\n}',
+    },
+  ];
+  const czW = readWeapons(readBundles(customZapFiles), customZapFiles)[0];
+  if (czW) {
+    const imp = await importBundleWeapon(czW, customZapFiles);
+    const czExplode = imp.project.carriedLua?.hooks?.find((h) => h.key === 'on_explode')?.text ?? '';
+    check(
+      'standalone zap.set_message_electric_missile is preserved in carried on_explode when stripOwnedBurst is false',
+      czExplode.includes('zap.set_message_electric_missile(20, ev.worm, 2)'),
+      czExplode,
+    );
+  }
+
+  // 4. Sequential fire offsetY = 0 & liveAim = false
+  const seqZeroProj = {
+    ...fullProject(projects.get('WF 01 Builder Track')!, 'Seq Zero'),
+    id: 't.seqzero',
+    fireSequence: {
+      ...DEFAULT_FIRE_SEQUENCE,
+      enabled: true,
+      offsetX: 0,
+      offsetY: 0,
+      liveAim: false,
+    },
+  } as WeaponProject;
+  const seqZeroFiles: ModFile[] = [
+    { path: 'sz/mod.toml', text: generateModToml(seqZeroProj) },
+    { path: 'sz/weapons/seqzero.lua', text: generateLuaCode(seqZeroProj) },
+  ];
+  const szW = readWeapons(readBundles(seqZeroFiles), seqZeroFiles)[0];
+  if (szW) {
+    const imp = await importBundleWeapon(szW, seqZeroFiles);
+    check(
+      'seq zero offsetY=0 and liveAim=false round-trip without custom on_fire warning',
+      imp.project.fireSequence?.offsetY === 0 &&
+        imp.project.fireSequence?.liveAim === false &&
+        !imp.notes.some((n) => n.includes('custom code beyond the sequential-fire burst')),
+      `${imp.project.fireSequence?.offsetY} | notes=${imp.notes.join(';')}`,
+    );
+  }
+
+  // 5. Air Strike fireType, Teleport on_select, single-weapon slot
+  const strikeTeleFiles: ModFile[] = [
+    {
+      path: 'st/mod.toml',
+      text: `id = "t.st"\nname = "ST"\nversion = "0.1.0"\n\n[[components]]\nid = "t.st.strike"\ntype = "weapon"\nname = "Strike"\nentry = "weapons/strike.lua"\ndefault_position = { row = "F2", column = 1 }\n\n[[components]]\nid = "t.st.tele"\ntype = "weapon"\nname = "Tele"\nentry = "weapons/tele.lua"\n`,
+    },
+    {
+      path: 'st/weapons/strike.lua',
+      text: 'return {\n  install = function(ctx)\n    wa.weapons.replace{\n      name = "Strike",\n      copy_from = "stock.air_strike",\n      missile = { wind_pct = 80 },\n    }\n  end,\n}',
+    },
+    {
+      path: 'st/weapons/tele.lua',
+      text: 'return {\n  install = function(ctx)\n    wa.weapons.replace{\n      name = "Tele",\n      copy_from = "stock.grenade",\n      on_select = { cursor = true },\n    }\n  end,\n}',
+    },
+  ];
+  const stWs = readWeapons(readBundles(strikeTeleFiles), strikeTeleFiles);
+  if (stWs.length === 2) {
+    const sImp = await importBundleWeapon(stWs[0], strikeTeleFiles);
+    const tImp = await importBundleWeapon(stWs[1], strikeTeleFiles);
+    check(
+      'air strike keeps cursor fireType and single-weapon slot reads manifest default_position',
+      sImp.project.fireType === 'cursor' && sImp.project.slot === 'grenade',
+      `${sImp.project.fireType} | ${sImp.project.slot}`,
+    );
+    check(
+      'teleport on_select = { cursor = true } sets fireType = cursor',
+      tImp.project.fireType === 'cursor',
+      String(tImp.project.fireType),
+    );
+  }
+
+  // 6. Partial missile.trail & clusters.bit.homing stock names
+  // 7. Unreferenced sprites = { "sprites/x/trail.png" } does not become packArt.missile_trail
+  // 8. rec.<path> = <literal> merges into recordExtra
+  const extraFiles: ModFile[] = [
+    {
+      path: 'ex/mod.toml',
+      text: 'id = "t.ex"\nname = "Ex"\nversion = "0.1.0"\n\n[[components]]\nid = "t.ex.item"\ntype = "weapon"\nname = "Ex"\nentry = "weapons/ex.lua"\n',
+    },
+    {
+      path: 'ex/weapons/ex.lua',
+      text: `return {
+  install = function(ctx)
+    local rec = {
+      name = "Ex",
+      copy_from = "stock.grenade",
+      sprites = { "sprites/ex/trail.png" },
+      missile = {
+        trail = { power = 7 },
+      },
+      clusters = {
+        bit = {
+          action = "homing",
+          homing = { kind = "lock", sprite = "missile", trail = { sprite = "smklt25" } },
+        },
+      },
+    }
+    rec.missile = rec.missile or {}
+    rec.missile.extra_tag = "ok"
+    wa.weapons.replace(rec)
+  end,
+}`,
+    },
+    { path: 'ex/sprites/ex/trail.png', text: '', bytes: pngBytes },
+  ];
+  const exW = readWeapons(readBundles(extraFiles), extraFiles)[0];
+  if (exW) {
+    const imp = await importBundleWeapon(exW, extraFiles);
+    check(
+      'partial missile.trail without sprite does not force enabled = false',
+      imp.project.recordOverrides?.['missile.trail.enabled'] === true &&
+        imp.project.recordOverrides?.['missile.trail.power'] === 7,
+      String(imp.project.recordOverrides?.['missile.trail.enabled']),
+    );
+    check(
+      'clusters.bit.homing resolves stock sprite names missile and smklt25 to numeric ids',
+      imp.project.body?.clustlet.homing_sprite === 48 &&
+        imp.project.body?.clustlet.homing_trail_sprite === 609,
+      JSON.stringify({
+        hs: imp.project.body?.clustlet.homing_sprite,
+        hts: imp.project.body?.clustlet.homing_trail_sprite,
+      }),
+    );
+    check(
+      'unreferenced sprites/ex/trail.png stem is not promoted to packArt.missile_trail',
+      imp.project.packArt?.missile_trail === undefined,
+      String(imp.project.packArt?.missile_trail),
+    );
+    check(
+      'post-literal rec.missile.extra_tag = "ok" round-trips through recordExtra',
+      (imp.project.recordExtra?.missile as Record<string, unknown> | undefined)?.extra_tag === 'ok',
+      JSON.stringify(imp.project.recordExtra),
+    );
+  }
+
+  // 9. modToml handles trailing comments, escaped quotes, and typed arrays
+  const parsedToml = parseToml(`
+id = "t.toml" # package id
+nums = [1, 2, "three"] # mixed array
+quoted = ["a\\"b,c", "d"] # escaped quote with comma
+`);
+  check(
+    'modToml strips inline comments, preserves escapes in arrays, and types array elements',
+    parsedToml.values.id === 't.toml' &&
+      Array.isArray(parsedToml.values.nums) &&
+      parsedToml.values.nums[0] === 1 &&
+      parsedToml.values.nums[2] === 'three' &&
+      Array.isArray(parsedToml.values.quoted) &&
+      parsedToml.values.quoted.length === 2 &&
+      parsedToml.values.quoted[0] === 'a"b,c',
+    JSON.stringify(parsedToml.values),
+  );
 }
 
 if (failures.length > 0) {

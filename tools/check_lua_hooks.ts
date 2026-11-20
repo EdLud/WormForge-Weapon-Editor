@@ -332,6 +332,7 @@ const lines = (...rows: string[]) => rows.join(nl);
   const trail = lines(
     'return {',
     '  install = function(ctx)',
+    '    local trail = require("wf-lib/effects/trail")',
     '    local TRAIL = { max = 6, every = 1, vanish = 2 }',
     '    local function trail_worm() return nil end',
     '    local trailed = {}',

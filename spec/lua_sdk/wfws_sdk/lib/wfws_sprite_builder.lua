@@ -2011,9 +2011,17 @@ local function swing_ensure()
         elseif holds and space and not st.space then
           -- One press, one swing: the edge is the turn player's synchronised
           -- keyboard, so every peer starts on the same frame. No aiming state
-          -- test: the claim eats WA's fire, and a melee record resolves its own
-          -- hit in a frame, so the state is never there to be tested.
-          local took = w.take and w:take{ turn = "freeze" } or false
+          -- test: a clip-only claim eats WA's fire, and a melee claim fires the
+          -- ghost shot WA ends the turn for, so the swing starts from the key
+          -- edge and never from what WA says about the worm.
+          -- `fire = true` is the half that lets the melee's ghost shot happen:
+          -- a taken worm's fire messages are the engine's to eat, so a hold that
+          -- took the worm silently swallowed the press and WA never fired, never
+          -- took the ammo and never ran its own retreat, which is the turn flow a
+          -- melee weapon wants (WA ends the turn when the shot is gone). A
+          -- clip-only claim still eats the shot at dispatch (`eat_fire`), so this
+          -- changes nothing for one that did not ask for a shot.
+          local took = w.take and w:take{ turn = "freeze", fire = true } or false
           st.worm = w
           st.worm_id = w.id
           st.start = now

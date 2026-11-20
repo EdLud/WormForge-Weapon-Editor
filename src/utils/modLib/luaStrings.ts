@@ -33,8 +33,13 @@ import type { LuaTable, LuaValue } from './luaTable';
 export function stringConstants(code: string): Map<string, string> {
   const constants = new Map<string, string>();
   const decls: { name: string; expr: string }[] = [];
-  for (const match of code.matchAll(/\blocal\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^\n;]+)/g)) {
-    decls.push({ name: match[1], expr: match[2] });
+  const masked = maskLuaCode(code);
+  for (const match of masked.matchAll(/\blocal\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^\n;]+)/g)) {
+    const rawExpr = code.slice(
+      match.index! + match[0].length - match[2].length,
+      match.index! + match[0].length,
+    );
+    decls.push({ name: match[1], expr: rawExpr });
   }
   // Two passes settle `local A = "x"` then `local B = A .. "y"`, and a third
   // covers `C = B .. D`; the loop stops as soon as nothing new resolves, so a
@@ -101,8 +106,8 @@ function splitConcat(text: string): string[] {
     else if (ch === ')') depth -= 1;
     else if (ch === '.' && masked[i + 1] === '.' && depth === 0) {
       parts.push(text.slice(start, i));
-      i += 2;
-      start = i;
+      i += 1;
+      start = i + 1;
       continue;
     }
   }
@@ -111,9 +116,29 @@ function splitConcat(text: string): string[] {
 }
 
 function stripTrailingComment(expr: string): string {
-  const masked = maskLuaCode(expr);
-  const dash = masked.indexOf('--');
-  return dash >= 0 ? expr.slice(0, dash) : expr;
+  let quote: string | null = null;
+  let escaped = false;
+  for (let i = 0; i < expr.length; i += 1) {
+    const ch = expr[i];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === '-' && expr[i + 1] === '-') return expr.slice(0, i);
+  }
+  return expr;
 }
 
 /**
@@ -148,9 +173,10 @@ export function resolveTableStrings(
       key = String(index);
       expr = chunk;
     }
-    const trimmed = expr.trim();
+    const exprTrimStart = expr.trimStart();
+    const trimmed = exprTrimStart.trim();
     if (!trimmed) continue;
-    const nested = masked.slice(from + (chunk.length - trimmed.length), to).trimStart();
+    const nested = masked.slice(from + (chunk.length - exprTrimStart.length), to).trimStart();
     if (trimmed.startsWith('{') && nested.startsWith('{')) {
       const existing = table[key];
       if (existing && typeof existing === 'object') {
@@ -194,7 +220,7 @@ function topLevelFields(masked: string, open: number, close: number): [number, n
     const ch = masked[i];
     if (ch === '{' || ch === '(' || ch === '[') depth += 1;
     else if (ch === '}' || ch === ')' || ch === ']') depth -= 1;
-    else if (ch === ',' && depth === 0) {
+    else if ((ch === ',' || ch === ';') && depth === 0) {
       fields.push([start, i]);
       start = i + 1;
     }

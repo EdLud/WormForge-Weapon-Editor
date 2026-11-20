@@ -133,12 +133,15 @@ const lineAt = (code: string, index: number) => code.slice(0, index).split('\n')
  */
 class Depth {
   brackets = 0;
-  blocks = 0;
-  private pendingDo = false;
+  private stack: ('block' | 'loop_header')[] = [];
+
+  get blocks(): number {
+    return this.stack.length;
+  }
 
   /** True when neither a bracket nor a block is open. */
   get top(): boolean {
-    return this.brackets === 0 && this.blocks === 0;
+    return this.brackets === 0 && this.stack.length === 0;
   }
 
   /** Accounts for a bracket character; returns false for anything else. */
@@ -162,18 +165,20 @@ class Depth {
     const word = WORD.exec(masked.slice(i, i + 24))?.[0] ?? '';
     let closes = false;
     if (word === 'function' || word === 'if' || word === 'repeat') {
-      this.blocks += 1;
-      this.pendingDo = false;
+      this.stack.push('block');
     } else if (word === 'for' || word === 'while') {
-      this.blocks += 1;
-      this.pendingDo = true;
+      this.stack.push('loop_header');
     } else if (word === 'do') {
-      if (this.pendingDo) this.pendingDo = false;
-      else this.blocks += 1;
-    } else if (word === 'end' || word === 'until') {
-      this.blocks -= 1;
-      this.pendingDo = false;
+      if (this.stack[this.stack.length - 1] === 'loop_header') {
+        this.stack[this.stack.length - 1] = 'block';
+      } else {
+        this.stack.push('block');
+      }
+    } else if (word === 'end') {
+      this.stack.pop();
       closes = this.top;
+    } else if (word === 'until') {
+      this.stack.pop();
     }
     return { length: Math.max(1, word.length), closes };
   }
@@ -337,7 +342,8 @@ function bodyRegion(
     if (open === -1) return null;
     const close = closeParen(masked, open);
     if (close === -1 || close >= end) return null;
-    return { start: close, end };
+    const bodyEnd = masked.slice(Math.max(start, end - 3), end) === 'end' ? end - 3 : end;
+    return { start: close, end: bodyEnd };
   }
   if (/^\s*repeat\b/.test(head)) {
     const until = masked.lastIndexOf('until', end);
@@ -350,7 +356,8 @@ function bodyRegion(
   const opener = header[1] === 'do' ? /\bdo\b/ : /\b(?:then|do)\b/;
   const at = opener.exec(head);
   if (!at) return null;
-  return { start: start + at.index + at[0].length, end };
+  const bodyEnd = masked.slice(Math.max(start, end - 3), end) === 'end' ? end - 3 : end;
+  return { start: start + at.index + at[0].length, end: bodyEnd };
 }
 
 /**
@@ -444,7 +451,7 @@ function findInstall(
 ): { param: string; bodyStart: number; bodyEnd: number; at: number } | null {
   const patterns = [
     /\binstall\s*=\s*function\b/g,
-    /\bfunction\s+[A-Za-z_][A-Za-z0-9_.:]*install\s*\(/g,
+    /\bfunction\s+(?:[A-Za-z_][A-Za-z0-9_.:]*[.:])?install\s*\(/g,
   ];
   for (const pattern of patterns) {
     const match = pattern.exec(masked);
@@ -585,13 +592,35 @@ export function splitModule(code: string): SplitModule {
     'return',
     'local',
   ]);
+  let claimFrom = 0;
+  let claimTo = masked.length;
+  const replaceCall = /(?:^|[^A-Za-z0-9_.])wa\s*\.\s*weapons\s*\.\s*replace\s*(?:\(\s*)?\{/.exec(
+    masked,
+  );
+  if (replaceCall) {
+    const openBrace = replaceCall.index + replaceCall[0].length - 1;
+    let bDepth = 0;
+    for (let k = openBrace; k < masked.length; k += 1) {
+      if (masked[k] === '{') bDepth += 1;
+      else if (masked[k] === '}') {
+        bDepth -= 1;
+        if (bDepth === 0) {
+          claimFrom = openBrace;
+          claimTo = k + 1;
+          break;
+        }
+      }
+    }
+  }
+  const claimSlice = masked.slice(claimFrom, claimTo);
   const hookRanges: { key: ClaimHookKey; from: number; to: number }[] = [];
   for (const key of CLAIM_HOOK_KEYS) {
     const hook = new RegExp(
-      `(^|[^A-Za-z0-9_.])${key}\\s*=\\s*(function|\\{\\s*on\\s*=\\s*function)`,
-    ).exec(masked);
+      `(^|[^A-Za-z0-9_.])${key}\\s*=\\s*(function|\\{\\s*(?:[A-Za-z_][A-Za-z0-9_]*\\s*=\\s*[^,}]+,\\s*)*on\\s*=\\s*function)`,
+    ).exec(claimSlice);
     if (hook) {
-      const fnAt = masked.indexOf('function', hook.index);
+      const hookAt = claimFrom + hook.index;
+      const fnAt = masked.indexOf('function', hookAt);
       const end = scanBlockEnd(masked, fnAt + 'function'.length);
       if (end === -1) {
         notes.push(`the ${key} body on line ${lineAt(code, fnAt)} could not be closed, so it was not read`);
@@ -599,25 +628,25 @@ export function splitModule(code: string): SplitModule {
       }
       const stop = masked.startsWith('until', end) ? end + 5 : end + 3;
       split.hooks[key] = code.slice(fnAt, stop);
-      split.hookLines[key] = lineAt(code, hook.index);
-      split.hookScopes[key] = scopesOf(hook.index);
+      split.hookLines[key] = lineAt(code, hookAt);
+      split.hookScopes[key] = scopesOf(hookAt);
       hookRanges.push({ key, from: fnAt, to: stop });
       continue;
     }
 
     const namedPattern = new RegExp(
-      `(^|[^A-Za-z0-9_.])${key}\\s*=\\s*(\\{\\s*on\\s*=\\s*)?([A-Za-z_][A-Za-z0-9_.]*)`,
+      `(^|[^A-Za-z0-9_.])${key}\\s*=\\s*(\\{\\s*(?:[A-Za-z_][A-Za-z0-9_]*\\s*=\\s*[^,}]+,\\s*)*on\\s*=\\s*)?([A-Za-z_][A-Za-z0-9_.]*)`,
       'g',
     );
     let named: RegExpExecArray | null;
-    while ((named = namedPattern.exec(masked)) !== null) {
-      const keyStart = named.index + named[1].length;
+    while ((named = namedPattern.exec(claimSlice)) !== null) {
+      const keyStart = claimFrom + named.index + named[1].length;
       const before = masked.slice(Math.max(0, keyStart - 16), keyStart);
       if (/\blocal\s+$/.test(before)) continue;
       const target = named[3];
       const root = target.split('.')[0];
       if (LUA_KEYWORDS.has(root)) continue;
-      let after = named.index + named[0].length;
+      let after = claimFrom + named.index + named[0].length;
       while (after < masked.length && (masked[after] === ' ' || masked[after] === '\t')) after += 1;
       if (named[2]) {
         if (masked[after] !== '}') continue;

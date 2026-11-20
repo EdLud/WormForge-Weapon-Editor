@@ -12,7 +12,10 @@ not the bundle, so an effect made by a second weapon of the same bundle was
 painted by no callback at all (the saw's aura on a placed saw, the death mark's
 thunder). An effect whose component never installed `fx` is now assigned to the
 installer whose id shares the longest prefix with it, once, in install order,
-and the log names it.
+and the log names it. 0.4.4 fixes `custom_explosion.explode` forwarding
+`core` and `rainbow` to `fx.burst`, allows explicit `spark = true`/`glow = true`
+when `preset = "thunder"`, and preserves explicit `trail` / `reach` RGB when
+top-level `color` is set.
 
 Shared effect helpers for the Project X ports. This is a library bundle: it
 declares no components, so it never takes a panel slot. A weapon bundle pulls

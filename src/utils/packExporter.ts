@@ -21,8 +21,10 @@ import {
   extraHandSheetPath,
   flashSheetPath,
   holdNeedsAimLayer,
+  holdSheetPath,
   missileFlightSheetPath,
   packArtPath,
+  packIconBundlePath,
   silentHoldSheetPath,
   wfwsRoleFlags,
   PACK_ART_SLOTS,
@@ -30,6 +32,8 @@ import {
   terrainStampPath,
   wepBundlePath,
 } from './luaGenerator';
+import { supportsTerrainStamp } from '../data/terrainStamp';
+import { meleeStrikes } from '../data/melee';
 import {
   bitBuilderMode,
   primaryBuilderOn,
@@ -112,7 +116,7 @@ export async function weaponBundlePart(project: WeaponProject): Promise<WeaponBu
     const holdBlob = project.hold.sheetFile
       ? project.hold.sheetFile
       : await createDefaultHoldSheet(project, project.hold.frames);
-    addSheet(`sprites/${modFolder}/hold.png`, holdBlob);
+    addSheet(holdSheetPath(project), holdBlob);
     // The optional firing-state sprite. Only declared in the Lua when a file
     // exists, so nothing dangles when it is off.
     if (project.hold.flashFile) {
@@ -210,7 +214,7 @@ export async function weaponBundlePart(project: WeaponProject): Promise<WeaponBu
   // The terrain stamp's baked 32-frame strip. `terrainStampPath` returns null
   // unless the card is on with a sheet, so the declaration and the file are
   // written from the same test and a declared path always exists.
-  const stampPath = terrainStampPath(project);
+  const stampPath = supportsTerrainStamp(project) ? terrainStampPath(project) : null;
   if (stampPath && project.terrainStamp?.sheet?.file) {
     addSheet(stampPath, project.terrainStamp.sheet.file);
   }
@@ -240,11 +244,16 @@ export async function weaponBundlePart(project: WeaponProject): Promise<WeaponBu
       plain.push({ path, source: sound.file });
     }
   }
-  // A combo strike that names its own sample: one file per strike, so a lighter
-  // first hit stays lighter instead of playing the weapon's single hit WAV.
-  for (const [index, strike] of (project.melee?.hits ?? []).entries()) {
-    const path = meleeSoundPath(project, 'hit', index);
-    if (path && strike.sound?.file?.file) plain.push({ path, source: strike.sound.file.file });
+  // A combo strike that names its own sample: one file per strike, sorted by frame
+  // so paths match `meleeStrikes` order in `luaGenerator.ts`.
+  if (project.melee?.enabled) {
+    const sortedStrikes = meleeStrikes(project.melee);
+    if (sortedStrikes.length > 1) {
+      for (const [index, strike] of sortedStrikes.entries()) {
+        const path = meleeSoundPath(project, 'hit', index);
+        if (path && strike.sound?.file?.file) plain.push({ path, source: strike.sound.file.file });
+      }
+    }
   }
 
   // WAVs a carried block plays by path (M6). The four roles above are the
@@ -365,8 +374,9 @@ export async function emitPackFiles(
   // The bundle's own icon, one per bundle: `mod_icon` names a single file, so it
   // lives in the bundle's folder rather than in any weapon's. Written before the
   // manifest is validated, so a declared `mod_icon` always has its file.
-  if (pack.iconFile) {
-    await put(`${packFolder}/sprites/${packFolder}/icon.png`, pack.iconFile);
+  const bundleIconPath = packIconBundlePath(pack);
+  if (pack.iconFile && bundleIconPath) {
+    await put(`${packFolder}/${bundleIconPath}`, pack.iconFile);
   }
 
   for (const part of parts) {
@@ -532,8 +542,19 @@ export function validateBundle(
     if (soundsMatch) {
       for (const s of soundsMatch[1].matchAll(/"([^"]+)"/g)) {
         const wav = s[1];
+        if (wav.startsWith('soundbank/')) continue;
         if (!present(wav)) {
           problems.push(`${project.name || project.id}: declared sound \`${wav}\` is not in the bundle`);
+        }
+      }
+    }
+    const spritesMatch = /\bsprites\s*=\s*\{([^}]*)\}/.exec(source);
+    if (spritesMatch) {
+      for (const s of spritesMatch[1].matchAll(/(["'])([^"']+)\1/g)) {
+        const spritePath = s[2];
+        if (!spritePath.includes('/') || spritePath.startsWith('wf-lib/')) continue;
+        if (!present(spritePath)) {
+          problems.push(`${project.name || project.id}: declared sprite \`${spritePath}\` is not in the bundle`);
         }
       }
     }

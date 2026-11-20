@@ -284,6 +284,13 @@ class Reader {
     return out;
   }
 
+  /** True when the cursor starts an infix operator that combines with a literal. */
+  private hasInfixOp(): boolean {
+    const next = this.peek();
+    if (!next || next.kind !== 'punct') return false;
+    return '+-*/%^'.includes(next.value) || (next.value === '.' && this.isPunct('.', 1));
+  }
+
   /** A single value. Returns SKIP for anything that is not literal data. */
   value(): LuaValue | typeof SKIP {
     const token = this.peek();
@@ -292,10 +299,18 @@ class Reader {
     if (token.kind === 'punct' && token.value === '{') return this.table();
     if (token.kind === 'string') {
       this.next();
+      if (this.hasInfixOp()) {
+        this.skipExpression();
+        return SKIP;
+      }
       return token.value;
     }
     if (token.kind === 'number') {
       this.next();
+      if (this.hasInfixOp()) {
+        this.skipExpression();
+        return SKIP;
+      }
       return Number(token.value);
     }
     if (token.kind === 'name') {
@@ -319,6 +334,10 @@ class Reader {
     if (token.kind === 'punct' && token.value === '-' && this.peek(1)?.kind === 'number') {
       this.next();
       const number = this.next()!;
+      if (this.hasInfixOp()) {
+        this.skipExpression();
+        return SKIP;
+      }
       return -Number(number.value);
     }
     this.skipExpression();
@@ -343,7 +362,12 @@ class Reader {
           depth -= 1;
         }
       } else if (isBlockWord) {
-        if (token.value === 'do' || token.value === 'function' || token.value === 'if') {
+        if (
+          token.value === 'do' ||
+          token.value === 'function' ||
+          token.value === 'if' ||
+          token.value === 'repeat'
+        ) {
           blockDepth += 1;
         }
       } else if (token.kind === 'name' && token.value === 'end' && blockDepth > 0) {
@@ -536,14 +560,28 @@ export function readCallTable(
     // nested call before it.
     let k = j;
     let depth = 0;
+    let inParens = false;
     while (k < tokens.length) {
       const token = tokens[k];
       if (token.kind === 'punct') {
-        if (token.value === '(') depth += 1;
-        else if (token.value === ')') {
+        if (token.value === '(') {
+          depth += 1;
+          inParens = true;
+        } else if (token.value === ')') {
           if (depth === 0) break;
           depth -= 1;
-        } else if (token.value === '{' && depth <= 1) break;
+          if (inParens && depth === 0) break;
+        } else if (token.value === '{' && depth <= 1) {
+          break;
+        } else if (token.value === ';' && depth === 0) {
+          break;
+        }
+      } else if (
+        token.kind === 'name' &&
+        depth === 0 &&
+        ['then', 'end', 'local', 'return', 'do', 'else', 'elseif'].includes(token.value)
+      ) {
+        break;
       }
       k += 1;
     }
@@ -609,4 +647,88 @@ export function readAssignmentTable(
     return { table, text: code.slice(tokens[j].at, (end?.at ?? tokens[j].at) + closer) };
   }
   return undefined;
+}
+
+function cloneLuaTable(value: LuaTable): LuaTable {
+  const out: LuaTable = {};
+  for (const [k, v] of Object.entries(value)) {
+    out[k] = isTable(v) ? cloneLuaTable(v) : v;
+  }
+  return out;
+}
+
+/**
+ * Applies post-literal path assignments (`rec.missile.extra = 42`,
+ * `rec["odd-key"].x = { 1, 2 }`) targeting any variable in `targetNames`
+ * onto a cloned copy of `base`, skipping non-literal initializers (`rec.m = rec.m or {}`).
+ */
+export function applyPathAssignments(
+  code: string,
+  base: LuaTable,
+  targetNames: string[],
+): { table: LuaTable; applied: number } {
+  const { tokens } = tokenize(code);
+  const targetParts = targetNames
+    .filter(Boolean)
+    .map((name) => name.split('.'));
+  if (targetParts.length === 0) return { table: base, applied: 0 };
+
+  let out: LuaTable | null = null;
+  let applied = 0;
+
+  for (let i = 0; i < tokens.length; i += 1) {
+    if (i > 0 && tokens[i - 1].kind === 'punct' && tokens[i - 1].value === '.') continue;
+    if (tokens[i].kind !== 'name') continue;
+
+    // Parse full lvalue segments: `a.b["k"].c`
+    const segs: string[] = [tokens[i].value];
+    let j = i + 1;
+    while (j < tokens.length) {
+      if (tokens[j]?.kind === 'punct' && tokens[j].value === '.' && tokens[j + 1]?.kind === 'name') {
+        segs.push(tokens[j + 1].value);
+        j += 2;
+        continue;
+      }
+      if (
+        tokens[j]?.kind === 'punct' &&
+        tokens[j].value === '[' &&
+        tokens[j + 1]?.kind === 'string' &&
+        tokens[j + 2]?.kind === 'punct' &&
+        tokens[j + 2].value === ']'
+      ) {
+        segs.push(tokens[j + 1].value);
+        j += 3;
+        continue;
+      }
+      break;
+    }
+
+    const matchedTarget = targetParts.find(
+      (parts) =>
+        segs.length > parts.length && parts.every((part, idx) => segs[idx] === part),
+    );
+    if (!matchedTarget) continue;
+    if (!(tokens[j]?.kind === 'punct' && tokens[j].value === '=')) continue;
+
+    const reader = new Reader(tokens, j + 1);
+    const val = reader.value();
+    if (val === SKIP || val === null) continue;
+
+    const leafPath = segs.slice(matchedTarget.length);
+    if (!out) out = cloneLuaTable(base);
+    let node: LuaTable = out;
+    for (let k = 0; k < leafPath.length - 1; k += 1) {
+      const seg = leafPath[k];
+      if (!isTable(node[seg])) node[seg] = {};
+      node = node[seg] as LuaTable;
+    }
+    const leaf = leafPath[leafPath.length - 1];
+    if (isTable(val) && Object.keys(val).length === 0 && isTable(node[leaf])) {
+      continue;
+    }
+    node[leaf] = val;
+    applied += 1;
+  }
+
+  return { table: out ?? base, applied };
 }

@@ -32,7 +32,12 @@
  */
 import type { LuaRegistration, SplitModule } from './splitModule';
 
-export type OwnFeature = 'ribbon-trail' | 'interval-sound' | 'fuse-sampler' | 'emitter';
+export type OwnFeature =
+  | 'ribbon-trail'
+  | 'interval-sound'
+  | 'launch-sound'
+  | 'fuse-sampler'
+  | 'emitter';
 
 export interface OwnEmission {
   feature: OwnFeature;
@@ -74,6 +79,7 @@ const EMISSIONS: Record<OwnFeature, (registration: LuaRegistration, split: Split
     if (!registration.handler.includes('trail.add(')) return null;
     if (!/(^|\W)TRAIL\b/.test(registration.handler)) return null;
     if (!declares(split, 'local TRAIL = {')) return null;
+    if (!declares(split, 'wf-lib/effects/trail')) return null;
     return 'missile_frame calling trail.add with the TRAIL table';
   },
   emitter: (registration, split) => {
@@ -113,11 +119,19 @@ const EMISSIONS: Record<OwnFeature, (registration: LuaRegistration, split: Split
     if (!declares(split, 'local SOUND = {')) return null;
     return 'missile_frame ticking sound_ticks and playing SOUND.path';
   },
+  'launch-sound': (registration, split) => {
+    if (registration.event !== 'worm_message') return null;
+    if (!registration.options?.includes('WEAPON_RELEASED')) return null;
+    if (!registration.handler.includes('LAUNCH_SOUND.path')) return null;
+    if (!declares(split, 'local LAUNCH_SOUND = {')) return null;
+    return 'worm_message on WEAPON_RELEASED playing LAUNCH_SOUND.path';
+  },
 };
 
 const PANELS: Record<OwnFeature, string> = {
   'ribbon-trail': 'ribbon trail',
   'interval-sound': 'interval sound',
+  'launch-sound': 'launch sound',
   'fuse-sampler': 'fuse sampler',
   emitter: 'emitter',
 };

@@ -1,4 +1,7 @@
 import { LUA_KEYWORDS, lineOf, maskLuaCode, notGeneratedLineRanges, scanBlockEnd } from './luaText';
+import { CLAIM_HOOK_KEYS } from '../data/luaHooks';
+
+const CLAIM_HOOK_SET = new Set<string>(CLAIM_HOOK_KEYS);
 
 /**
  * The editor's own reading of a piece of Lua, checked against the rules the
@@ -180,14 +183,15 @@ export function checkLua(code: string, options: LuaCheckOptions = {}): LuaFindin
   let m: RegExpExecArray | null;
   while ((m = mathCall.exec(masked)) !== null) {
     const name = m[2];
-    const at = m.index + m[0].length - name.length - 1;
+    const at = m.index + m[1].length;
+    const afterName = m.index + m[0].length;
     if (STRIPPED_CALLS.has(name)) {
       // Not muted in the draw band: the sandbox nils the generator outright, so
       // the call raises even from a render callback. `math.random(a, b)` and
       // `wa.random(a, b)` mean the same range, so that form is fixable; the float
       // form is not (`wa.random()` is the raw 32-bit draw), and `randomseed` has
       // nothing to rewrite to.
-      const floatForm = name === 'random' && /^\s*\(\s*\)/.test(masked.slice(at + name.length + 2));
+      const floatForm = name === 'random' && /^\s*\(\s*\)/.test(masked.slice(afterName));
       push({
         rule: 'lockstep-rng',
         severity: 'error',
@@ -235,12 +239,12 @@ export function checkLua(code: string, options: LuaCheckOptions = {}): LuaFindin
   // ---- requires ------------------------------------------------------------
   if (options.availableRequires) {
     const available = new Set(options.availableRequires);
-    // The path is a string, so it is blank in the masked copy: find the call
-    // there and read the argument from the original text at the same offset.
-    const requireCall = /(^|[^A-Za-z0-9_.])require\s*\(/g;
+    // The path is a string, so it is blank in the masked copy: find both
+    // `require("x")` and paren-less `require "x"` against the original text.
+    const requireCall = /(^|[^A-Za-z0-9_.])require(?:\s*\(|\s+)/g;
     while ((m = requireCall.exec(masked)) !== null) {
       const at = m.index + m[1].length;
-      const afterCall = at + m[0].length - m[1].length;
+      const afterCall = m.index + m[0].length;
       const arg = /^[ \t]*["']([^"']+)["']/.exec(code.slice(afterCall));
       if (!arg) continue;
       const id = arg[1];
@@ -256,10 +260,19 @@ export function checkLua(code: string, options: LuaCheckOptions = {}): LuaFindin
 
   // ---- a `wa` read at module level -----------------------------------------
   if (options.mode === 'module') {
+    const isImmediate = (body: FnBody): boolean => {
+      let k = body.start - 1;
+      while (k >= 0 && /\s/.test(masked[k])) k -= 1;
+      if (k < 0 || masked[k] !== '(') return false;
+      const prefix = masked.slice(Math.max(0, k - 12), k).trimEnd();
+      if (/(?:^|[^A-Za-z0-9_])x?pcall$/.test(prefix)) return true;
+      return /^\s*\)\s*\(/.test(masked.slice(body.end, body.end + 40));
+    };
     const waRead = /(^|[^A-Za-z0-9_.])wa\s*[.:]/g;
     while ((m = waRead.exec(masked)) !== null) {
       const at = m.index + m[1].length;
-      if (bodies.some((body) => at >= body.start && at < body.end)) continue;
+      const enclosing = bodies.filter((body) => at >= body.start && at < body.end);
+      if (enclosing.length > 0 && !enclosing.every(isImmediate)) continue;
       push({
         rule: 'module-wa',
         severity: 'error',
@@ -336,29 +349,28 @@ function checkBrackets(code: string, masked: string): LuaFinding[] {
  */
 function checkBlocks(code: string, masked: string): LuaFinding[] {
   const word = /[A-Za-z_][A-Za-z0-9_]*/g;
-  const stack: { kind: string; at: number }[] = [];
-  let pendingDo = false;
+  const stack: { kind: string; at: number; expectDo?: boolean }[] = [];
   let m: RegExpExecArray | null;
   while ((m = word.exec(masked)) !== null) {
     const name = m[0];
     if (name === 'for' || name === 'while') {
-      stack.push({ kind: name, at: m.index });
-      pendingDo = true;
+      stack.push({ kind: name, at: m.index, expectDo: true });
       continue;
     }
     if (name === 'function' || name === 'if' || name === 'repeat') {
       stack.push({ kind: name, at: m.index });
-      pendingDo = false;
       continue;
     }
     if (name === 'do') {
-      // The `do` of `for ... do` / `while ... do` opens nothing of its own.
-      if (pendingDo) pendingDo = false;
+      // The `do` of `for ... do` / `while ... do` owns only the top loop header
+      // that has not seen its `do` yet: a nested `function() ... end` inside
+      // the loop header pushes and pops its own block without clearing it.
+      const top = stack[stack.length - 1];
+      if (top?.expectDo) top.expectDo = false;
       else stack.push({ kind: 'do', at: m.index });
       continue;
     }
     if (name === 'end' || name === 'until') {
-      pendingDo = false;
       const top = stack.pop();
       if (!top) {
         return [
@@ -417,7 +429,8 @@ function functionBodies(masked: string): FnBody[] {
   let m: RegExpExecArray | null;
   while ((m = word.exec(masked)) !== null) {
     if (m[0] !== 'function') continue;
-    const end = scanBlockEnd(masked, m.index + m[0].length);
+    const fnClose = scanBlockEnd(masked, m.index + m[0].length);
+    const fnEnd = fnClose === -1 ? masked.length : fnClose + 3;
     let name = '';
     // `function M:heal(...)` and `function helper(...)` name themselves.
     const named = /^\s*([A-Za-z_][A-Za-z0-9_.:]*)\s*\(/.exec(masked.slice(m.index + 8, m.index + 208));
@@ -429,7 +442,7 @@ function functionBodies(masked: string): FnBody[] {
       );
       if (assigned) name = assigned[1].split('.').pop() ?? '';
     }
-    bodies.push({ name, start: m.index, end: end === -1 ? masked.length : end + 3 });
+    bodies.push({ name, start: m.index, end: fnEnd });
   }
   return bodies;
 }
@@ -494,6 +507,16 @@ function checkGlobals(code: string, masked: string, options: LuaCheckOptions): L
   // `::label::` declares a label, and `goto label` is the only read of it.
   for (const label of masked.matchAll(/::\s*([A-Za-z_][A-Za-z0-9_]*)\s*::/g)) declared.add(label[1]);
 
+  // Function parameters are scoped to the `[start, end)` span of the function
+  // body that binds them so an unrelated read elsewhere in the module/fragment
+  // is not hidden by a helper's parameter name.
+  const scopedParams = new Map<string, [number, number][]>();
+  const addParam = (param: string, start: number, end: number) => {
+    const ranges = scopedParams.get(param) ?? [];
+    ranges.push([start, end]);
+    scopedParams.set(param, ranges);
+  };
+
   // `local a, b = ...`, `local function f`, `for k, v in`, `function f(a, b)`,
   // `function a.b:c(...)`, plus `x, y = 1, 2` (an assignment to new globals is
   // still a global, so the left side is left alone on purpose).
@@ -503,12 +526,16 @@ function checkGlobals(code: string, masked: string, options: LuaCheckOptions): L
     const name = m[0];
     const after = masked.slice(m.index + name.length);
     if (name === 'local' && !/^\s*\./.test(after)) {
-      // Names up to `=` or the end of the statement, past any `<const>`.
-      const tail = after.match(/^[ \t]+([^=\n]*)/);
+      if (/^[ \t]+function\b/.test(after)) continue;
+      // Only comma-separated variable names (with optional `<const>`/`<close>`),
+      // stopping before statements/calls (`;`, `(`, keywords, newline).
+      const tail = after.match(
+        /^[ \t]+([A-Za-z_][A-Za-z0-9_]*(?:[ \t]*<[A-Za-z_]+>)?(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*(?:[ \t]*<[A-Za-z_]+>)?)*)/,
+      );
       if (!tail) continue;
       for (const part of tail[1].split(',')) {
         const id = part.trim().match(/^([A-Za-z_][A-Za-z0-9_]*)/);
-        if (id) declared.add(id[1]);
+        if (id && !LUA_KEYWORDS.has(id[1])) declared.add(id[1]);
       }
       continue;
     }
@@ -533,10 +560,12 @@ function checkGlobals(code: string, masked: string, options: LuaCheckOptions): L
       // `function M.f()` declares `M`'s value, not a new local; only the bare
       // form is a declaration here. The `:` form binds `self` implicitly.
       if (dotted.length === 1 && !head[1]?.includes(':')) declared.add(dotted[0]);
-      if (head[1]?.includes(':')) declared.add('self');
+      const fnClose = scanBlockEnd(masked, m.index + name.length);
+      const fnEnd = fnClose === -1 ? masked.length : fnClose + 3;
+      if (head[1]?.includes(':')) addParam('self', m.index, fnEnd);
       for (const part of head[2].split(',')) {
         const id = part.trim().match(/^([A-Za-z_][A-Za-z0-9_]*)/);
-        if (id) declared.add(id[1]);
+        if (id) addParam(id[1], m.index, fnEnd);
       }
       continue;
     }
@@ -545,7 +574,13 @@ function checkGlobals(code: string, masked: string, options: LuaCheckOptions): L
   const findings: LuaFinding[] = [];
   const read = /[A-Za-z_][A-Za-z0-9_]*/g;
   read.lastIndex = 0;
+  let braceDepth = 0;
+  let braceCursor = 0;
   while ((m = read.exec(masked)) !== null) {
+    for (; braceCursor < m.index; braceCursor += 1) {
+      if (masked[braceCursor] === '{') braceDepth += 1;
+      else if (masked[braceCursor] === '}') braceDepth = Math.max(0, braceDepth - 1);
+    }
     const name = m[0];
     if (LUA_KEYWORDS.has(name)) continue;
     // Part of a number literal: the `x68` of `0x68`, the `e5` of `1e5`.
@@ -557,12 +592,29 @@ function checkGlobals(code: string, masked: string, options: LuaCheckOptions): L
     if (before.endsWith('::') || masked.slice(m.index + name.length, m.index + name.length + 2) === '::') {
       continue;
     }
-    // A table key (`{ k = 1 }`, `t[k]`) is not a read either.
-    if (/[[{,]?\s*$/.test(masked.slice(Math.max(0, m.index - 1), m.index))) {
-      const after = masked.slice(m.index + name.length);
-      if (/^\s*=(?!=)/.test(after)) continue;
+    // A table key (`{ k = 1 }`, `{ a = 1, k = 1 }`) inside `{ ... }` is not a read.
+    const isAssignLhs = /^\s*=(?!=)/.test(masked.slice(m.index + name.length));
+    if (braceDepth > 0 && isAssignLhs) {
+      let prev = m.index - 1;
+      while (prev >= 0 && /\s/.test(masked[prev])) prev -= 1;
+      const prevCh = prev >= 0 ? masked[prev] : '';
+      if (prevCh === '{' || prevCh === ',' || prevCh === ';') continue;
+    }
+    // Custom Lua fragments can open with a claim key (`on_explode = ...`),
+    // whereas module/free-name analysis must still flag undeclared globals.
+    if (
+      options.mode !== 'module' &&
+      options.editorAmbient !== false &&
+      braceDepth === 0 &&
+      isAssignLhs &&
+      CLAIM_HOOK_SET.has(name)
+    ) {
+      continue;
     }
     if (declared.has(name)) continue;
+    if (scopedParams.get(name)?.some(([start, end]) => m!.index >= start && m!.index < end)) {
+      continue;
+    }
     // `x or fallback` reads nil deliberately: an advisory, not a warning.
     const guarded = /^\s*or\b/.test(masked.slice(m.index + name.length));
     findings.push({
@@ -616,17 +668,18 @@ export function fixLockstepRng(code: string): string {
   while ((m = call.exec(masked)) !== null) {
     const name = m[2];
     const start = m.index + m[1].length;
+    const spanLen = m.index + m[0].length - start;
     if (STRIPPED_CALLS.has(name)) {
       if (name === 'randomseed') continue;
       // `math.random()` returns a float: no `wa.random` form means the same.
-      if (/^\s*\(\s*\)/.test(masked.slice(start + m[0].length - m[1].length))) continue;
-      edits.push({ at: start, length: `math.${name}`.length, to: 'wa.random' });
+      if (/^\s*\(\s*\)/.test(masked.slice(start + spanLen))) continue;
+      edits.push({ at: start, length: spanLen, to: 'wa.random' });
       continue;
     }
     const to = TRIG_CALLS[name];
     if (!to) continue;
     if (inRender(start)) continue;
-    edits.push({ at: start, length: `math.${name}`.length, to });
+    edits.push({ at: start, length: spanLen, to });
   }
   if (edits.length === 0) return code;
   let out = '';

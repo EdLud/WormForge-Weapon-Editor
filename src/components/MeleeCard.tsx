@@ -233,7 +233,8 @@ export const MeleeCard: React.FC<MeleeCardProps> = ({ project, onChange }) => {
           <p className="mt-1 max-w-2xl text-xs text-stone-500 dark:text-stone-400">
             The aiming phase is the attack. Space takes the worm for a beat, plays the held
             art&apos;s swing and lands the scan box below on every hit frame the table lists, so
-            nothing leaves the worm and the clip is its own clock. The red box in the Hold page&apos;s preview is this
+            the damage is the strike and not the record&apos;s shot, and the clip is its own
+            clock. The red box in the Hold page&apos;s preview is this
             box, drawn at the aim you have set there, and it stops where the Hold page&apos;s
             <span className="font-semibold"> Limit Aim</span> does.
           </p>
@@ -287,7 +288,7 @@ export const MeleeCard: React.FC<MeleeCardProps> = ({ project, onChange }) => {
                 strikes.length === 1
                   ? `${Math.round(strikes[0].frame * 20)} ms`
                   : `${strikes.map((hit) => Math.round(hit.frame * 20)).join(' / ')} ms`
-              } after Space: no projectile, no blast)`
+              } after Space: the hit is the strike, and the shot it fires is an invisible ghost)`
             : !melee.enabled
               ? ' (the strike is off)'
               : !project.hold?.enabled
@@ -298,6 +299,19 @@ export const MeleeCard: React.FC<MeleeCardProps> = ({ project, onChange }) => {
 
       {melee.enabled && (
         <>
+          {/* What Space does now: the strike, plus a shot WA can see the ammo and
+              the turn end for. It used to eat the trigger, which took the ammo
+              out of the shot and left the clip to end the turn itself. */}
+          <p
+            className="rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-[11px] leading-relaxed text-stone-600 dark:border-stone-800 dark:bg-stone-950/40 dark:text-stone-400"
+            title="A melee weapon fires a ghost: no art, no trail, no blast, no damage and no sound, so nothing leaves the worm a player can see. WA still builds the shot, which is what takes the ammo, plays the launch step and ends the turn when its own rules say so."
+          >
+            Space fires this weapon for real. The record&apos;s shot is a{' '}
+            <strong>ghost</strong>: no art, no trail, no blast, no damage, no sound, so nothing
+            leaves the worm. WA takes the ammo, plays its own launch step and ends the turn by its
+            own rules, and the <strong>retreat window</strong> (5 s unless Turn Handling says
+            otherwise) is the control the player keeps until the ghost dies or Space is pressed.
+          </p>
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
               <label
@@ -789,9 +803,10 @@ export const MeleeCard: React.FC<MeleeCardProps> = ({ project, onChange }) => {
 
           <p className="rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-[11px] leading-snug text-stone-600 dark:border-stone-700 dark:bg-stone-950/30 dark:text-stone-400">
             Tip: the Hold page&apos;s aim slider picks which posture the box is drawn at, and the
-            swing card there sets the angle the box follows. The strike needs no ammo and no
-            projectile: the swing takes the worm (<span className="font-mono">worm:take</span>), so
-            the clip is its own clock, WA&apos;s fire is eaten and the turn ends when the clip does.
+            swing card there sets the angle the box follows. The swing takes the worm
+            (<span className="font-mono">worm:take</span>), so the clip is its own clock, and the
+            weapon still fires: the record&apos;s shot is a ghost, which is what spends the ammo and
+            lets WA end the turn by its own rules.
           </p>
         </>
       )}

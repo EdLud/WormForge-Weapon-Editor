@@ -56,9 +56,10 @@ export function supportsExplosionSound(project: WeaponProject): boolean {
 
 /**
  * `on_fire` is WA's fire dispatch, so the launch WAV needs nothing but a weapon
- * WA actually fires. A melee claim eats the trigger (`eat_fire`) and takes the
- * worm on Space, so its `on_fire` never runs; its swing sounds the strikes
- * instead (`melee.hitSound` / `missSound`).
+ * WA actually fires. A melee claim does fire now (a ghost shot WA ends the turn
+ * for), but a launch WAV rides an `on_fire` hook, and giving a melee one would
+ * put a hand-written body in front of the ghost it needs WA to build. Its swing
+ * sounds the strikes instead (`melee.hitSound` / `missSound`).
  */
 export function supportsLaunchSound(project: WeaponProject): boolean {
   return project.fireType !== 'melee';

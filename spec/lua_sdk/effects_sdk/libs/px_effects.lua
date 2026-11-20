@@ -890,17 +890,21 @@ function fx.emitter(o)
   o = o or {}
   local preset = fx.PRESETS[o.preset or "electric"] or fx.PRESETS.electric
   local spark, glow
-  if preset.spark and o.spark ~= false then
-    spark = copy({}, preset.spark, SPARK_KEYS)
+  if o.spark ~= false and (preset.spark or o.spark == true or type(o.spark) == "table") then
+    local base_spark = type(preset.spark) == "table" and preset.spark or fx.PRESETS.electric.spark
+    spark = copy({}, base_spark, SPARK_KEYS)
     copy(spark, o.spark, SPARK_KEYS)
-    if o.color and spark.rainbow == nil then
+    local has_spark_rgb = type(o.spark) == "table" and (o.spark.r ~= nil or o.spark.g ~= nil or o.spark.b ~= nil)
+    if type(o.color) == "table" and spark.rainbow == nil and not has_spark_rgb then
       spark.r, spark.g, spark.b = o.color.r or spark.r, o.color.g or spark.g, o.color.b or spark.b
     end
   end
-  if preset.glow and o.glow ~= false then
-    glow = copy({}, preset.glow, GLOW_KEYS)
+  if o.glow ~= false and (preset.glow or o.glow == true or type(o.glow) == "table") then
+    local base_glow = type(preset.glow) == "table" and preset.glow or fx.PRESETS.electric.glow
+    glow = copy({}, base_glow, GLOW_KEYS)
     copy(glow, o.glow, GLOW_KEYS)
-    if o.color and glow.rainbow == nil then
+    local has_glow_rgb = type(o.glow) == "table" and (o.glow.r ~= nil or o.glow.g ~= nil or o.glow.b ~= nil)
+    if type(o.color) == "table" and glow.rainbow == nil and not has_glow_rgb then
       glow.r, glow.g, glow.b = o.color.r or glow.r, o.color.g or glow.g, o.color.b or glow.b
     end
   end
@@ -912,10 +916,12 @@ function fx.emitter(o)
   local tro = copy({}, preset.trail, TRAIL_KEYS)
   copy(tro, o.trail, TRAIL_KEYS)
   if type(o.color) == "table" then
-    if reach.rainbow == nil then
+    local has_reach_rgb = type(o.reach) == "table" and (o.reach.r ~= nil or o.reach.g ~= nil or o.reach.b ~= nil)
+    local has_trail_rgb = type(o.trail) == "table" and (o.trail.r ~= nil or o.trail.g ~= nil or o.trail.b ~= nil)
+    if reach.rainbow == nil and not has_reach_rgb then
       reach.r, reach.g, reach.b = o.color.r or reach.r, o.color.g or reach.g, o.color.b or reach.b
     end
-    if tro.rainbow == nil then
+    if tro.rainbow == nil and not has_trail_rgb then
       tro.r, tro.g, tro.b = o.color.r or tro.r, o.color.g or tro.g, o.color.b or tro.b
     end
   end

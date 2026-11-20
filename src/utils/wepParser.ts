@@ -388,7 +388,7 @@ export function parseWepBinary(buffer: ArrayBuffer, fileName: string): WepParseR
     flightSound = recNum(bodyRaw[0x90] ?? 0);
     explosionSoundEnabled = (bodyRaw[0x94] ?? 0) !== 0;
     explosionSound = recNum(bodyRaw[0x98] ?? 0);
-    explosionSoundBefore = recNum(bodyRaw[0x9c] ?? 0);
+    explosionSoundBefore = bodyRaw[0x9c] ?? 0;
     const impactWord = bodyRaw[0xa8] ?? 0;
     impactParticles = (impactWord & IMPACT_PARTICLES) !== 0;
     // Bounce and homing share the +A8..+D0 body slots. Decode only the active
@@ -419,10 +419,10 @@ export function parseWepBinary(buffer: ArrayBuffer, fileName: string): WepParseR
     if (missileAction === 4) {
       // DigAction shares the +B0..+C0 body slots with bounce/homing.
       digSound = recNum(bodyRaw[0xb0] ?? 0);
-      digDiveSprite = bodyRaw[0xb4] ?? 0;
-      digSprite1 = bodyRaw[0xb8] ?? 0;
-      digSprite2 = bodyRaw[0xbc] ?? 0;
-      digSprite3 = bodyRaw[0xc0] ?? 0;
+      digDiveSprite = recNum(bodyRaw[0xb4] ?? 0);
+      digSprite1 = recNum(bodyRaw[0xb8] ?? 0);
+      digSprite2 = recNum(bodyRaw[0xbc] ?? 0);
+      digSprite3 = recNum(bodyRaw[0xc0] ?? 0);
     }
     if (missileAction === 3) {
       // RoamAction shares the same body slots. Walk speed is raw/50 px/frame;
@@ -483,7 +483,7 @@ export function parseWepBinary(buffer: ArrayBuffer, fileName: string): WepParseR
     cFlightSound = recNum(bodyRaw[0x154] ?? 0);
     cExplosionSoundEnabled = (bodyRaw[0x158] ?? 0) !== 0;
     cExplosionSound = recNum(bodyRaw[0x15c] ?? 0);
-    cExplosionSoundBefore = recNum(bodyRaw[0x160] ?? 0);
+    cExplosionSoundBefore = bodyRaw[0x160] ?? 0;
     cExplodeOnSpace = (bodyRaw[0x164] ?? 0) !== 0;
     cSpriteCount = bodyRaw[0x120] ?? 0;
     if (cAction === 2) {
@@ -501,9 +501,9 @@ export function parseWepBinary(buffer: ArrayBuffer, fileName: string): WepParseR
       cBounces = bodyRaw[0x194] ?? 0;
       cBounceExplode = cBouncePower > 0;
     } else if (cAction === 1) {
-      cHomingSprite = bodyRaw[0x170] ?? 0;
+      cHomingSprite = recNum(bodyRaw[0x170] ?? 0);
       cHomingAnimation = bodyRaw[0x174] ?? 0;
-      cHomingTrailSprite = bodyRaw[0x178] ?? 0;
+      cHomingTrailSprite = recNum(bodyRaw[0x178] ?? 0);
       cHomingTrailPower = bodyRaw[0x17c] ?? 0;
       cHomingTrailSpeed = bodyRaw[0x180] ?? 0;
       cHomingTrailBubbles = (bodyRaw[0x184] ?? 0) / 4;
@@ -570,7 +570,7 @@ export function parseWepBinary(buffer: ArrayBuffer, fileName: string): WepParseR
     // keep the fire method (`record.rs` STRIKE_PLANE); the munition body
     // (damage/push/gravity/...) was decoded above from the shifted slab,
     // exactly as for a missile.
-    strikePlane = rawOffsets[0x38] ?? 0;
+    strikePlane = recNum(rawOffsets[0x38] ?? 0);
     strikeCount = rawOffsets[0x3c] ?? 0;
     strikeSpacing = rawOffsets[0x40] ?? 0;
     // `strike.munition_speed` is a fraction: raw / 100.
@@ -674,7 +674,7 @@ export function parseWepBinary(buffer: ArrayBuffer, fileName: string): WepParseR
 
   let burst: BurstPayload = 'nothing';
   if (isMissile || isStrike) {
-    burst = burstRaw === 1 ? 'clusters' : burstRaw === 2 ? 'fire' : 'nothing';
+    burst = burstRaw === 1 || burstRaw === 3 ? 'clusters' : burstRaw === 2 ? 'fire' : 'nothing';
   }
 
   const recordOverrides: Record<string, any> = {};
@@ -782,8 +782,11 @@ export function parseWepBinary(buffer: ArrayBuffer, fileName: string): WepParseR
     recordOverrides['strike.plane_sound'] = strikePlaneSound;
     recordOverrides['strike.munition'] = strikeMunition;
   }
+  recordOverrides['handling.remember_selection'] = (rawOffsets[0x0c] ?? 0) !== 0;
+  recordOverrides['handling.available_in_caves'] = (rawOffsets[0x10] ?? 0) !== 0;
+  recordOverrides['handling.ends_turn'] = (rawOffsets[0x18] ?? 0) !== 0;
   if (shots > 0) recordOverrides['handling.shots'] = shots;
-  if (retreat > 0) recordOverrides['handling.retreat'] = retreat;
+  recordOverrides['handling.retreat'] = retreat;
 
   // A decoded `.wep` has no bundle behind it, so the id is the weapon's own name
   // under the editor's **default** namespace. Nothing enforces that namespace: it
@@ -822,7 +825,7 @@ export function parseWepBinary(buffer: ArrayBuffer, fileName: string): WepParseR
       // A real homing record keeps 0 (immediate steering / no duration).
       homing_arm_ms: missileAction === 1 ? homingArm : 1000,
       homing_time_ms: missileAction === 1 ? homingTime : 8000,
-      cluster: (isMissile || isStrike) && burstRaw === 1,
+      cluster: (isMissile || isStrike) && (burstRaw === 1 || burstRaw === 3),
       custom_cluster: false,
       custom_site: 'explode',
       proximity: mineProx,
@@ -916,6 +919,15 @@ export function parseWepBinary(buffer: ArrayBuffer, fileName: string): WepParseR
             flight_2: roamFlight2,
             hits: maskFromBits(roamHits),
             flight_hits: maskFromBits(roamFlightHits),
+          }
+        : undefined,
+    fireConfig:
+      (isMissile || isStrike) && burst === 'fire'
+        ? {
+            spread_generations: Math.max(0, Math.floor((bodyRaw[0xf8] ?? 0) / 2)),
+            spread_delay_ms: bodyRaw[0xfc] ?? 0,
+            burn_time_ms: bodyRaw[0x100] ?? 0,
+            decay_mode: (bodyRaw[0x104] ?? 0) === 1 ? 'on_hit' : 'resting',
           }
         : undefined,
     enableCustomLua: false,

@@ -19,7 +19,7 @@
  *   dependents, which is how `require("wf-lib/…")` resolves at all.
  */
 
-export type TomlValue = string | number | boolean | string[] | Record<string, unknown>;
+export type TomlValue = string | number | boolean | TomlValue[] | Record<string, unknown>;
 
 export interface TomlDocument {
   /** Top-level scalars and arrays, plus `components` as an array of tables. */
@@ -49,6 +49,32 @@ function unquote(raw: string): string {
   return text;
 }
 
+function stripTomlComment(line: string): string {
+  let quote: string | null = null;
+  let escaped = false;
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === '\\' && quote === '"') {
+        escaped = true;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === '#') return line.slice(0, i);
+  }
+  return line;
+}
+
 /**
  * Split on `sep` outside quotes and outside nested `[]` / `{}`. The array and
  * inline-table readers below both need it: a `,` inside a nested value is not a
@@ -58,10 +84,19 @@ function splitTopLevel(body: string, sep: string): string[] {
   const parts: string[] = [];
   let current = '';
   let quote: string | null = null;
+  let escaped = false;
   let depth = 0;
   for (const ch of body) {
     if (quote) {
       current += ch;
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === '\\' && quote === '"') {
+        escaped = true;
+        continue;
+      }
       if (ch === quote) quote = null;
       continue;
     }
@@ -88,7 +123,7 @@ function parseValue(raw: string): TomlValue {
   if (text.startsWith('[')) {
     // `["a", "b"]`, possibly spread over lines (the caller joined them).
     const body = text.replace(/^\[/, '').replace(/\]$/, '');
-    return splitTopLevel(body, ',').map(unquote);
+    return splitTopLevel(body, ',').map(parseValue);
   }
   if (text.startsWith('{')) {
     // An inline table: `default_position = { row = "F2", column = 1 }`. A
@@ -191,7 +226,10 @@ export function parseToml(source: string): TomlDocument {
   };
 
   for (const rawLine of source.split(/\r?\n/)) {
-    const line = rawLine.replace(/^\s+/, '');
+    const trimmedLeading = rawLine.replace(/^\s+/, '');
+    if (!trimmedLeading || trimmedLeading.startsWith('#')) continue;
+    const line = stripTomlComment(trimmedLeading).trimEnd();
+    if (!line) continue;
 
     if (pending) {
       pending.text += ` ${line.trim()}`;
@@ -201,8 +239,6 @@ export function parseToml(source: string): TomlDocument {
       }
       continue;
     }
-
-    if (!line || line.startsWith('#')) continue;
 
     const arrayHeader = /^\[\[(.+?)\]\]/.exec(line);
     if (arrayHeader) {

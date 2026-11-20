@@ -156,11 +156,17 @@ function needs(block: LuaBlock, ambient: string[]): string[] {
  * emitted in source order so a forward call between two `local function`s still
  * resolves.
  */
-function findDeclaration(name: string, scopes: LuaBlock[][], skip?: LuaBlock): LuaBlock | null {
+function findDeclaration(
+  name: string,
+  scopes: LuaBlock[][],
+  skip?: LuaBlock,
+  beforeLine?: number,
+): LuaBlock | null {
   for (const region of scopes) {
     let found: LuaBlock | null = null;
     for (const block of region) {
       if (block === skip) continue;
+      if (beforeLine !== undefined && block.line >= beforeLine) continue;
       if (block.declares.includes(name)) found = block;
     }
     if (found) return found;
@@ -199,6 +205,7 @@ export function carryClosure(
   const dependencies: string[] = [];
   const installAmbient = [param];
   const preambleAll = split.preamble.filter((block) => block.declares.length > 0 || block.requires.length > 0);
+  const preambleSet = new Set(preambleAll);
   const prologueAll = (split.install?.statements ?? []).filter(
     (block) => block.declares.length > 0 || block.requires.length > 0,
   );
@@ -212,22 +219,32 @@ export function carryClosure(
   // A queue item carries the scopes of the point of use, innermost first, so a
   // name declared inside `function weapon.setup() … end` resolves where it was
   // written rather than at module level (`swim_suit`, `portal_gun`, `nuke_rocket`).
-  const queue: { name: string; scopes: LuaBlock[][]; from: string; skip?: LuaBlock }[] = [];
+  const queue: {
+    name: string;
+    scopes: LuaBlock[][];
+    from: string;
+    skip?: LuaBlock;
+    beforeLine?: number;
+    readerText: string;
+  }[] = [];
   /**
-   * The scopes a block's own needs are resolved in: its own enclosing blocks,
-   * then the install body (where a prologue block lives and where a carried
-   * block is hoisted to), then the module level.
+   * The scopes a block's own needs are resolved in: a preamble block sees only
+   * module-level declarations, while an install block sees its own enclosing
+   * blocks, then the install body, then the module level.
    */
-  const scopesOf = (block: LuaBlock): LuaBlock[][] => [
-    block.scope ?? [],
-    ...(block.enclosing ?? []),
-    prologueAll,
-    preambleAll,
-  ];
+  const scopesOf = (block: LuaBlock): LuaBlock[][] =>
+    preambleSet.has(block)
+      ? [preambleAll]
+      : [
+          block.scope ?? [],
+          ...(block.enclosing ?? []),
+          prologueAll,
+          preambleAll,
+        ];
   for (const seed of seeds) {
     const scopes = [...(seed.enclosing ?? []), prologueAll, preambleAll];
     for (const name of bodyFreeNames(seed.text, installAmbient)) {
-      queue.push({ name, scopes, from: seed.label });
+      queue.push({ name, scopes, from: seed.label, readerText: seed.text });
     }
   }
   /**
@@ -238,9 +255,11 @@ export function carryClosure(
    * nil, and the summary has to say which line that is rather than "nothing
    * declares it".
    */
-  const parameterOf = (name: string, scopes: LuaBlock[][]) => {
+  const parameterOf = (name: string, scopes: LuaBlock[][], readerText: string) => {
     for (const region of scopes) {
+      if (region === prologueAll || region === preambleAll) continue;
       for (const block of region) {
+        if (block.start !== undefined && !block.text.includes(readerText)) continue;
         const head = /function\s*([A-Za-z0-9_.:]*)\s*\(([^)]*)\)/.exec(block.text);
         if (!head) continue;
         const params = head[2].split(',').map((param) => param.trim()).filter(Boolean);
@@ -253,16 +272,16 @@ export function carryClosure(
   };
   const visited = new Set<string>();
   while (queue.length > 0) {
-    const { name, scopes, from, skip } = queue.shift()!;
+    const { name, scopes, from, skip, beforeLine, readerText } = queue.shift()!;
     // The skip is part of the identity: `x = …` asks for the `local x` while
     // excluding itself, and that is a different question from the earlier
     // lookup of `x` that found the assignment.
-    const key = `${name}|${skip?.line ?? 0}|${scopes.map((scope) => scope[0]?.line ?? 0).join(',')}`;
+    const key = `${name}|${skip?.line ?? 0}|${beforeLine ?? 0}|${scopes.map((scope) => scope[0]?.line ?? 0).join(',')}`;
     if (visited.has(key)) continue;
     visited.add(key);
-    const block = findDeclaration(name, scopes, skip);
+    const block = findDeclaration(name, scopes, skip, beforeLine);
     if (!block) {
-      const parameter = parameterOf(name, scopes);
+      const parameter = parameterOf(name, scopes, readerText);
       if (parameter) {
         // The block that reads it **is** carried when its other names resolve
         // (`utilities.cursor` installs `lib/cursor.lua`'s machinery with a spec
@@ -344,11 +363,11 @@ export function carryClosure(
     // inside `install` (lesson 21's shape, because that module reads `wa` while
     // it loads).
     const own = scopesOf(block);
-    if (origin === 'prologue' && !/^\s*local\b/.test(block.text)) {
-      queue.push({ name, scopes: own, from: name, skip: block });
+    if (!/^\s*local\b/.test(block.text)) {
+      queue.push({ name, scopes: own, from: name, skip: block, beforeLine: block.line, readerText: block.text });
     }
     for (const need of needs(block, nextScope === 'install' ? installAmbient : [])) {
-      queue.push({ name: need, scopes: own, from: name });
+      queue.push({ name: need, scopes: own, from: name, readerText: block.text });
     }
   }
 
@@ -372,10 +391,18 @@ export function carryClosure(
   // `STAMP_HIT`, the trail's own helpers). The comparison squashes whitespace,
   // because the export re-indents what it carries and a comment inside the block
   // is part of the text either way.
-  const emittedSquashed = emitted ? squash(emitted) : '';
+  const span = claimSpan(emitted);
+  const headSquashed = emitted ? squash(span ? emitted.slice(0, span.start) : emitted) : '';
+  const tailSquashed = emitted && span ? squash(emitted.slice(span.end)) : '';
   const dropBlocks = new Set<LuaBlock>();
-  for (const [block] of carried) {
-    if (emittedSquashed && emittedSquashed.includes(squash(block.text))) {
+  for (const [block, meta] of carried) {
+    const squashedBlock = squash(block.text);
+    const onlyRegistrations =
+      meta.neededBy.length > 0 && meta.neededBy.every((from) => from.startsWith('wa.on.'));
+    if (
+      (headSquashed && headSquashed.includes(squashedBlock)) ||
+      (onlyRegistrations && tailSquashed && tailSquashed.includes(squashedBlock))
+    ) {
       dropBlocks.add(block);
       continue;
     }
@@ -486,24 +513,76 @@ function squash(text: string): string {
   return text.replace(/\s+/g, '');
 }
 
+/** Span of the `wa.weapons.replace` claim (including `local rec = { ... }` if indirect). */
+function claimSpan(emitted: string): { start: number; end: number } | null {
+  if (!emitted) return null;
+  const masked = maskLuaCode(emitted);
+  const call = /(?:^|[^A-Za-z0-9_.])(wa\s*\.\s*weapons\s*\.\s*replace)\b/.exec(masked);
+  if (!call) return null;
+  const callStart = call.index + call[0].indexOf(call[1]);
+  let pos = call.index + call[0].length;
+  while (pos < masked.length && /\s/.test(masked[pos])) pos += 1;
+  const scanBalanced = (openAt: number, openCh: string, closeCh: string): number => {
+    let depth = 0;
+    for (let i = openAt; i < masked.length; i += 1) {
+      if (masked[i] === openCh) depth += 1;
+      else if (masked[i] === closeCh) {
+        depth -= 1;
+        if (depth === 0) return i + 1;
+      }
+    }
+    return -1;
+  };
+  let start = callStart;
+  let end = -1;
+  if (masked[pos] === '{') {
+    end = scanBalanced(pos, '{', '}');
+  } else if (masked[pos] === '(') {
+    end = scanBalanced(pos, '(', ')');
+    if (end > pos) {
+      const inner = masked.slice(pos + 1, end - 1).trim();
+      if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(inner)) {
+        const declRe = new RegExp(`(^|[^A-Za-z0-9_.])(local\\s+${inner}\\s*=\\s*\\{)`, 'g');
+        let lastDeclAt = -1;
+        let m: RegExpExecArray | null;
+        while ((m = declRe.exec(masked)) !== null && m.index < callStart) {
+          lastDeclAt = m.index + m[1].length;
+        }
+        if (lastDeclAt >= 0) start = lastDeclAt;
+      }
+    }
+  }
+  return end > start ? { start, end } : null;
+}
+
+function countUnprefixedMath(masked: string, fn: string): number {
+  const re = new RegExp(`(?:^|[^A-Za-z0-9_.])math\\s*\\.\\s*${fn}\\b`, 'g');
+  return masked.match(re)?.length ?? 0;
+}
+
 /** The `math.*` forms a rewrite actually changed, so the note can name them. */
 function rewrittenCalls(before: string, after: string): string[] {
   if (before === after) return [];
+  const maskedBefore = maskLuaCode(before);
+  const maskedAfter = maskLuaCode(after);
   const out: string[] = [];
-  const names = before.match(/math\s*\.\s*[A-Za-z_][A-Za-z0-9_]*/g) ?? [];
-  for (const name of names) {
-    const flat = name.replace(/\s+/g, '');
-    if (flat === 'math.random') out.push('math.random -> wa.random');
-    else if (flat === 'math.sin') out.push('math.sin -> wa.math.sin');
-    else if (flat === 'math.cos') out.push('math.cos -> wa.math.cos');
-    else if (flat === 'math.atan') out.push('math.atan -> wa.math.atan');
+  const mapping: [string, string][] = [
+    ['random', 'math.random -> wa.random'],
+    ['sin', 'math.sin -> wa.math.sin'],
+    ['cos', 'math.cos -> wa.math.cos'],
+    ['atan', 'math.atan -> wa.math.atan'],
+  ];
+  for (const [fn, label] of mapping) {
+    if (countUnprefixedMath(maskedBefore, fn) > countUnprefixedMath(maskedAfter, fn)) {
+      out.push(label);
+    }
   }
-  return [...new Set(out)];
+  return out;
 }
 
 /** `math.random()` returns a float: there is no `wa.random` form that matches. */
 function hasFloatRandom(code: string): boolean {
-  return /(^|[^A-Za-z0-9_.])math\s*\.\s*random\s*\(\s*\)/.test(code);
+  return /(^|[^A-Za-z0-9_.])math\s*\.\s*random\s*\(\s*\)/.test(maskLuaCode(code));
 }
 
 /**
@@ -530,41 +609,44 @@ export function rewriteBundlePaths(
   // sees) is recorded too: that is how a carried sheet stays declared and
   // written on the second pass instead of quietly leaving the zip.
   const seen = new Set<string>();
-  const out = text
-    .replace(
-      /(["'])((?:sprites|sounds)\/[^/"']+\/[^"']+)(["'])/g,
-      (whole, quote: string, path: string, close: string) => {
-        const slash = path.indexOf('/');
-        const kind = path.slice(0, slash);
-        const file = path.slice(path.indexOf('/', slash + 1) + 1);
-        const target = `${kind}/${folder}/${file}`;
-        // A path can contain neither a comma nor a newline, so the pair is a key.
-        const key = `${path},${target}`;
-        if (!seen.has(key)) {
-          seen.add(key);
-          moves.push({ source: path, target });
-        }
-        return target === path ? whole : `${quote}${target}${close}`;
-      },
-    )
-    .replace(
-      /(["'])((?:sprites|sounds)\/[^/"']+\/)(["'])/g,
-      (whole, quote: string, prefix: string, close: string) => {
-        const kind = prefix.slice(0, prefix.indexOf('/'));
-        const target = `${kind}/${folder}/`;
-        if (target === prefix) return whole;
-        // A folder prefix is how a bundle names a whole set of files
-        // (`local SND = "sounds/buffalo/"`, then `SND .. "start.wav"`). The move
-        // keeps the trailing slash so the caller can expand it into the folder's
-        // files: without that the path was rewritten but no file was attached or
-        // declared, and the export named a folder it never wrote.
-        const key = `${prefix},${target}`;
-        if (!seen.has(key)) {
-          seen.add(key);
-          moves.push({ source: prefix, target });
-        }
-        return `${quote}${target}${close}`;
-      },
-    );
+  const masked1 = maskLuaCode(text);
+  const pass1 = text.replace(
+    /(["'])((?:sprites|sounds)\/[^/"']+\/[^"']+)\1/g,
+    (whole, quote: string, path: string, offset: number) => {
+      if (masked1[offset] !== quote) return whole;
+      const slash = path.indexOf('/');
+      const kind = path.slice(0, slash);
+      const file = path.slice(path.indexOf('/', slash + 1) + 1);
+      const target = `${kind}/${folder}/${file}`;
+      // A path can contain neither a comma nor a newline, so the pair is a key.
+      const key = `${path},${target}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        moves.push({ source: path, target });
+      }
+      return target === path ? whole : `${quote}${target}${quote}`;
+    },
+  );
+  const masked2 = maskLuaCode(pass1);
+  const out = pass1.replace(
+    /(["'])((?:sprites|sounds)\/[^/"']+\/)\1/g,
+    (whole, quote: string, prefix: string, offset: number) => {
+      if (masked2[offset] !== quote) return whole;
+      const kind = prefix.slice(0, prefix.indexOf('/'));
+      const target = `${kind}/${folder}/`;
+      // A folder prefix is how a bundle names a whole set of files
+      // (`local SND = "sounds/buffalo/"`, then `SND .. "start.wav"`). The move
+      // keeps the trailing slash so the caller can expand it into the folder's
+      // files: without that the path was rewritten but no file was attached or
+      // declared, and the export named a folder it never wrote.
+      const key = `${prefix},${target}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        moves.push({ source: prefix, target });
+      }
+      if (target === prefix) return whole;
+      return `${quote}${target}${quote}`;
+    },
+  );
   return { text: out, moves };
 }

@@ -16,19 +16,25 @@
  */
 import {
   parseCustomLua,
+  hookBodyOf,
+  autoDependenciesForProject,
   generateLuaCode,
   generateModToml,
   generateProfileToml,
   customSoundPath,
   meleeSoundPath,
 } from '../src/utils/luaGenerator';
+import { DEFAULT_ROLE_ART, DEFAULT_DIG_ROLE_ART } from '../src/data/spriteBuilder';
+import { DEFAULT_CLUSTLET } from '../src/data/defaults';
 import { stockDonor, stockDonorBaseline } from '../src/data/stockDonors';
 import { DEFAULT_BODY } from '../src/data/defaults';
 import { DEFAULT_MELEE } from '../src/data/melee';
 import { DEFAULT_EMITTER, DEFAULT_EMITTER_RING, DEFAULT_EMITTER_TRAIL } from '../src/data/emitter';
 import { DEFAULT_EXPLOSION_EFFECT } from '../src/data/explosionPresets';
 import { scanLua } from '../src/utils/modLib/luaTable';
+import { parseWepBinary } from '../src/utils/wepParser';
 import { DEFAULT_IMPORT_HOLD, readBundleFeatures } from '../src/utils/modLib/importFeatures';
+import { weaponBundlePart } from '../src/utils/packExporter';
 import type { WeaponProject } from '../src/types/weapon';
 
 let failed = 0;
@@ -229,11 +235,10 @@ const makeProject = (patch: Partial<WeaponProject> = {}): WeaponProject => {
   );
 }
 
-// ---- the launch WAV rides `on_fire` --------------------------------------
+// ---- the launch WAV rides WEAPON_RELEASED (or inside an existing on_fire) -
 {
-  // `on_fire` is WA's fire dispatch, so the launch report is a claim key with no
-  // library behind it: the play is one line and the path has to be declared in
-  // the claim's `sounds` list, or the engine has nothing to play.
+  // Claiming `on_fire` replaces WA's shot dispatch, so a normal weapon plays
+  // its launch WAV from `wa.on.worm_message` filtered to `WEAPON_RELEASED`.
   const wav = new File([new Uint8Array([82, 73, 70, 70])], 'launch.wav', { type: 'audio/wav' });
   const asset = { file: wav, fileName: 'launch.wav', previewUrl: '', size: 4 };
   const plain = makeProject({
@@ -256,10 +261,12 @@ const makeProject = (patch: Partial<WeaponProject> = {}): WeaponProject => {
   const launchPath = customSoundPath(plain, 'launch')!;
   const text = generateLuaCode(plain);
   check(
-    'a launch WAV is played from on_fire',
-    text.includes('on_fire = function(ev)') &&
-      text.includes(`wa.sound.play(ev.worm, "${launchPath}", 10)`),
-    text.split(String.fromCharCode(10)).find((l) => l.includes('sound.play')) ?? 'no play',
+    'a standalone launch WAV does not emit on_fire (which would eat WA shot)',
+    !text.includes('on_fire = function') &&
+      text.includes('local LAUNCH_SOUND = {') &&
+      text.includes(`path = "${launchPath}",`) &&
+      text.includes('wa.msg.WEAPON_RELEASED'),
+    text.split(String.fromCharCode(10)).find((l) => l.includes('on_fire') || l.includes('LAUNCH_SOUND')) ?? 'no play',
   );
   check(
     'and its path is declared in the claim sounds list',
@@ -267,8 +274,19 @@ const makeProject = (patch: Partial<WeaponProject> = {}): WeaponProject => {
     'the engine would have nothing to load',
   );
 
-  // An author's own `on_fire` owns the key: emitting ours as well would write the
-  // same field twice and their handler would lose.
+  // Commented `-- on_fire =` must not disable the launch WAV or fireSequence.
+  const commentedOut = {
+    ...plain,
+    enableCustomLua: true,
+    customLuaSnippet: '-- on_fire = function(ev) end',
+  };
+  const commentedText = generateLuaCode(commentedOut);
+  check(
+    'a commented -- on_fire does not suppress the launch WAV',
+    commentedText.includes('local LAUNCH_SOUND = {') && commentedText.includes(`sounds = { "${launchPath}" },`),
+  );
+
+  // An author's own `on_fire` owns the trigger: keeping launch WAV out avoids conflict.
   const hand = {
     ...plain,
     enableCustomLua: true,
@@ -307,7 +325,7 @@ const makeProject = (patch: Partial<WeaponProject> = {}): WeaponProject => {
   const playAt = seqText.indexOf(`wa.sound.play(ev.worm, "${launchPath}"`);
   check(
     'a burst plays the launch WAV inside its own on_fire',
-    fireAt >= 0 && playAt > fireAt && playAt < seqText.indexOf('seq.fire_seq_mis{'),
+    fireAt >= 0 && playAt > fireAt && playAt < seqText.indexOf('seq.fire_seq_mis{') && !seqText.includes('LAUNCH_SOUND'),
     playAt < 0 ? 'no play' : 'the play is outside the trigger',
   );
 }
@@ -1133,6 +1151,446 @@ const makeProject = (patch: Partial<WeaponProject> = {}): WeaponProject => {
     'an ordinary hold declares the frames it plays',
     plainDecl >= 0 && /frames = 4/.test(plainToml.slice(plainDecl, plainDecl + 120)),
     plainDecl < 0 ? 'the hold sheet is not declared' : plainToml.slice(plainDecl, plainDecl + 120),
+  );
+}
+
+// ---- single `fires` block + native group gating ----------------------------
+{
+  const combined = makeProject({
+    specialSubtype: 4,
+    recordOverrides: { 'fires.launch_power_pct': 150 },
+  });
+  const combinedLua = generateLuaCode(combined);
+  check(
+    'fires.subtype and fires.launch_power_pct share one fires table',
+    (combinedLua.match(/^\s*fires = \{/gm) || []).length === 1 &&
+      combinedLua.includes('subtype = 4,') &&
+      combinedLua.includes('launch_power_pct = 150,'),
+    'duplicate or missing fires entries',
+  );
+
+  const nonMissile = makeProject({
+    fireType: 'hitscan',
+    based_on: 'uzi',
+    slot: 'uzi',
+    recordOverrides: { 'fires.launch_power_pct': 150 },
+  });
+  check(
+    'non-missile family omits fires.launch_power_pct',
+    !generateLuaCode(nonMissile).includes('launch_power_pct'),
+  );
+
+  const staleSpecial = makeProject({
+    fireType: 'special',
+    based_on: 'drill',
+    slot: 'drill',
+    specialSubtype: 8,
+    recordOverrides: { 'fire_punch.damage': 50, 'drill.duration_ms': 4000 },
+  });
+  const staleLua = generateLuaCode(staleSpecial);
+  check(
+    'special subtype 8 (drill) omits stale fire_punch table and emits drill',
+    !staleLua.includes('fire_punch =') && staleLua.includes('drill = {') && staleLua.includes('duration_ms = 4000'),
+  );
+}
+
+// ---- unsorted melee hits WAVs, hold cell_h with sheetFrames, extraHand firing reset ----
+{
+  const jabWav = new File([new Uint8Array([82, 73, 70, 70])], 'jab.wav', { type: 'audio/wav' });
+  const pngFile = new File([new Uint8Array([137, 80, 78, 71])], 'sheet.png', { type: 'image/png' });
+  const meleeUnsorted = makeProject({
+    fireType: 'melee',
+    hold: {
+      ...DEFAULT_IMPORT_HOLD,
+      enabled: true,
+      sheetFile: pngFile,
+      sheetWidth: 60,
+      sheetHeight: 1200,
+      frames: 1,
+      sheetFrames: 20,
+      offsetX: 5,
+      flashFile: pngFile,
+      flashWidth: 60,
+      flashHeight: 40,
+      extraHand: {
+        enabled: true,
+        radius: 6,
+        rotation: 0,
+        scale: 1.5,
+        offsetX: 10,
+        offsetY: 5,
+        fireScale: 1,
+        fireOffsetX: 0,
+        fireOffsetY: 0,
+      },
+    } as WeaponProject['hold'],
+    aimClip: {
+      enabled: true,
+      ticks: 16,
+      finish: 'endTurn',
+      keys: [{ t: 4, angle: 0, dx: 0, dy: 0, scale: 1, alpha: 1, ease: 'out_quad' }],
+      echo: { enabled: false, count: 0, every: 1, fade: 0.6, blend: 'alpha' },
+    } as WeaponProject['aimClip'],
+    melee: {
+      ...DEFAULT_MELEE,
+      enabled: true,
+      hits: [
+        { frame: 12, damage: 20, power: 4, lift: 0 },
+        {
+          frame: 4,
+          damage: 10,
+          power: 2,
+          lift: 0,
+          sound: { id: 0, priority: 8, file: { file: jabWav, fileName: 'jab.wav', previewUrl: '', size: 4 } },
+        },
+      ],
+    },
+  });
+  const mLua = generateLuaCode(meleeUnsorted);
+  const mPart = await weaponBundlePart(meleeUnsorted);
+  check(
+    'unsorted melee hits align per-strike wav path with sounds list and packed file',
+    mLua.includes('wav = "sounds/edges/melee_hit1.wav"') &&
+      mLua.includes('"sounds/edges/melee_hit1.wav"') &&
+      !mLua.includes('melee_hit2.wav') &&
+      mPart.plain.some((entry) => entry.path === 'sounds/edges/melee_hit1.wav'),
+    mLua,
+  );
+  check(
+    'hold cell_h divides sheetHeight by sheetFrames rather than played frames',
+    mLua.includes('cell_w = 60,') && mLua.includes('cell_h = 60,') && !mLua.includes('cell_h = 1200,'),
+    mLua.split('\n').filter((l) => l.includes('cell_')).join(' | '),
+  );
+  check(
+    'extraHand emits fire_scale = 1 and fire_offset = {0, 0} when aiming values differ',
+    mLua.includes('fire_scale = 1,') && mLua.includes('fire_offset = { x = 0, y = 0 },'),
+    mLua,
+  );
+}
+
+// ---- F8: fullGroup, bounce_power, inherit+homing_bit, 0 spin/anim, carried on_fire, parseCustomLua/hookBodyOf, NaN guard ----
+{
+  // 1. formatNumber NaN guard
+  const pngFile = new File([new Uint8Array([137, 80, 78, 71])], 'm.png', { type: 'image/png' });
+  const nanProj = makeProject({
+    missileSprite: {
+      enabled: true,
+      mode: 'custom',
+      stockSprite: '',
+      sheet: '',
+      anim: 'rotation',
+      frames: 1,
+      fps: 15,
+      animSpeed: 1,
+      spinRate: 1,
+      scale: 1,
+      mirror: true,
+      z: 5,
+      hideStock: true,
+      animate: false,
+      spin: false,
+      size: Number.NaN,
+      sheetFile: pngFile,
+    },
+  });
+  const nanLua = generateLuaCode(nanProj);
+  check('formatNumber guards NaN to 0 without emitting NaN', !nanLua.includes('NaN') && nanLua.includes('size = 0,'), nanLua);
+
+  // 2a. fullGroup keeps bounce.explosion.push_pct = 100 when donor slab also had 100
+  const homingBase = stockDonorBaseline('homing_missile')!;
+  const hToBounce = makeProject({
+    ...(stockDonor('homing_missile') as Partial<WeaponProject>),
+    id: 'wfws.check.htob',
+    name: 'HToBounce',
+    based_on: 'stock.homing_missile',
+    donorBaseline: homingBase,
+    useWepFile: false,
+    action: 'bounce',
+    body: {
+      ...(stockDonor('homing_missile')!.body!),
+      bounce_pct: 50,
+    },
+    recordOverrides: { ...homingBase.recordOverrides },
+  });
+  const hToBounceLua = generateLuaCode(hToBounce);
+  check(
+    'fullGroup bounce preserves push_pct = 100 even when homing_missile donor slab matches 100',
+    hToBounceLua.includes('push_pct = 100,') && !hToBounceLua.includes('push_pct = 0,'),
+    hToBounceLua,
+  );
+
+  // 2b. fullGroup homing keeps user homing.trail.sprite instead of overwriting with 0
+  const grenadeToHoming = makeProject({
+    action: 'homing',
+    body: { ...DEFAULT_BODY, homing: 'lock', homing_arm_ms: 500, homing_time_ms: 4000 },
+    recordOverrides: {
+      'missile.homing.trail.sprite': '131',
+    },
+  });
+  const gToHomingLua = generateLuaCode(grenadeToHoming);
+  check(
+    'fullGroup homing preserves user missile.homing.trail.sprite = 131',
+    gToHomingLua.includes('sprite = 131,'),
+    gToHomingLua,
+  );
+
+  // 3. clustlet bounce_power-only edit emits bounce.explosion.power
+  const baseBounce = stockDonorBaseline('grenade')!;
+  const clustBounceProj = makeProject({
+    donorBaseline: {
+      ...baseBounce,
+      body: {
+        ...baseBounce.body,
+        cluster: true,
+        clustlet: { ...DEFAULT_CLUSTLET, bit_action: 'bounce', contact: 'bounce', bounce_explode: true, bounce_power: 15 },
+      },
+      burst: 'clusters',
+    },
+    burst: 'clusters',
+    body: {
+      ...baseBounce.body,
+      cluster: true,
+      clustlet: { ...DEFAULT_CLUSTLET, bit_action: 'bounce', contact: 'bounce', bounce_explode: true, bounce_power: 42 },
+    },
+  });
+  const clustBounceLua = generateLuaCode(clustBounceProj);
+  check(
+    'clustlet bounce_power-only change emits bounce = { explosion = { power = 42 } }',
+    clustBounceLua.includes('bounce = {') && clustBounceLua.includes('power = 42,'),
+    clustBounceLua,
+  );
+
+  // 4. bitFlight inherit + homing_bit emits bits table with primary sheet and homing block
+  // 5. spinRate = 0 and animSpeed = 0 emit explicitly on main, bit, and dig roles
+  const inheritBitProj = makeProject({
+    action: 'dig',
+    burst: 'clusters',
+    body: {
+      ...DEFAULT_BODY,
+      cluster: true,
+      clustlet: { ...DEFAULT_CLUSTLET, bit_action: 'homing', homing: 'lock', homing_arm_ms: 400, homing_time_ms: 3000 },
+    },
+    missileSprite: {
+      enabled: true,
+      mode: 'custom',
+      stockSprite: '',
+      sheet: '',
+      anim: 'rotation',
+      frames: 1,
+      fps: 15,
+      animSpeed: 0,
+      spinRate: 0,
+      scale: 0,
+      mirror: true,
+      z: 5,
+      hideStock: true,
+      animate: false,
+      spin: false,
+      sheetFile: pngFile,
+    },
+    bitFlight: { ...DEFAULT_ROLE_ART, mode: 'inherit' },
+    behaviorArt: {
+      homing_bit: { ...DEFAULT_ROLE_ART, mode: 'builder', animSpeed: 0, spinRate: 0, sheetFile: pngFile },
+      dig: { ...DEFAULT_DIG_ROLE_ART, mode: 'builder', animSpeed: 0, spinRate: 0, scale: 0 },
+    },
+  });
+  const inheritBitLua = generateLuaCode(inheritBitProj);
+  check(
+    'bitFlight inherit with homing_bit emits bits table (not bare "inherit") with primary sheet and homing block',
+    !inheritBitLua.includes('bits = "inherit"') &&
+      inheritBitLua.includes('bits = {\n        sheet = "sprites/edges/missile.png"') &&
+      inheritBitLua.includes('sheet = "sprites/edges/state_homing_bit.png"'),
+    inheritBitLua,
+  );
+  check(
+    'animSpeed = 0, spinRate = 0, scale = 0 emit on primary, roleArtRows, and digArtOverrideRows',
+    (inheritBitLua.match(/anim_speed = 0,/g)?.length ?? 0) === 4 &&
+      (inheritBitLua.match(/spin = 0,/g)?.length ?? 0) === 4 &&
+      (inheritBitLua.match(/scale = 0,/g)?.length ?? 0) === 3,
+    inheritBitLua,
+  );
+
+  // 6. hasCarriedOnFire suppresses fireSequence emission AND px.fire_seq auto-dependency
+  const carriedFireProj = makeProject({
+    fireSequence: {
+      enabled: true,
+      mode: 'missiles',
+      count: 3,
+      delay: 5,
+      speed: 18,
+      standoff: 0,
+      spreadX: 0,
+      spreadY: 0,
+      offsetX: 0,
+      offsetY: 0,
+      liveAim: true,
+      cancelOnWeaponChange: true,
+      actorSprite: '',
+      actorGravity: false,
+      actorCollide: false,
+      actorPersist: false,
+    },
+    carriedLua: {
+      preamble: [],
+      prologue: [],
+      hooks: [{ key: 'on_fire', text: 'function(ev)\n  wa.log("custom")\nend', line: 1 }],
+      unresolved: [],
+    },
+  });
+  const carriedFireLua = generateLuaCode(carriedFireProj);
+  const carriedFireDeps = autoDependenciesForProject(carriedFireProj).map((d) => d.id);
+  check(
+    'carried on_fire suppresses fire_seq emission and px.fire_seq dependency',
+    !carriedFireLua.includes('wf-lib/fire_seq') &&
+      !carriedFireLua.includes('fire_seq_mis') &&
+      !carriedFireDeps.includes('px.fire_seq'),
+    `${carriedFireDeps.join(',')} | ${carriedFireLua}`,
+  );
+
+  // 7. parseCustomLua handles bare `do ... end` and `repeat ... until`
+  const blockSnippet = `on_explode = function(ev)
+  do
+    local inner = 1
+  end
+  local x = 0
+  repeat
+    x = x + 1
+  until x >= 2
+  wa.log("after_repeat")
+end
+local afterHook = 42`;
+  const parsedBlock = parseCustomLua(blockSnippet);
+  check(
+    'parseCustomLua uses scanBlockEnd so do..end and repeat..until stay inside on_explode',
+    parsedBlock.hasOnExplode &&
+      parsedBlock.onExplodeBody.includes('after_repeat') &&
+      parsedBlock.remainingSnippet.trim() === 'local afterHook = 42',
+    JSON.stringify(parsedBlock),
+  );
+
+  // 8. hookBodyOf ignores substring "end" inside trailing identifiers like `blend` or `send`
+  const blendHook = hookBodyOf('{ on = function(ev)\n  wa.log("ok")\nend, blend = 1 }');
+  check(
+    'hookBodyOf closes at whole-word end rather than trailing "blend"',
+    blendHook.body === 'wa.log("ok")',
+    blendHook.body,
+  );
+}
+
+// ---- F9: wepParser decodes fire bursts, burstRaw=3, before timings, masked sprites, handling flags ----
+{
+  const buildWep = (words: Record<number, number>): ArrayBuffer => {
+    const buf = new ArrayBuffer(4 + 0x1d0);
+    const bytes = new Uint8Array(buf);
+    bytes[0] = 0x06;
+    bytes[1] = 0xdd;
+    bytes[2] = 0xbb;
+    bytes[3] = 0x5a;
+    const dv = new DataView(buf);
+    for (const [off, val] of Object.entries(words)) {
+      dv.setInt32(4 + Number(off), val, true);
+    }
+    return buf;
+  };
+
+  const fireWep = parseWepBinary(
+    buildWep({
+      0x0c: 1,
+      0x10: 1,
+      0x14: 1,
+      0x18: 0,
+      0x1c: 0,
+      0x30: 1,
+      0x38: 0,
+      0x9c: 70000,
+      0xf0: 2,
+      0xf8: 10,
+      0xfc: 250,
+      0x100: 4000,
+      0x104: 1,
+    }),
+    'fire_test.wep',
+  );
+  check('fire burst .wep decodes burst = "fire"', fireWep.projectState.burst === 'fire');
+  check(
+    'fire burst .wep decodes fireConfig (generations halved, decay_mode 1 = on_hit)',
+    fireWep.projectState.fireConfig?.spread_generations === 5 &&
+      fireWep.projectState.fireConfig?.spread_delay_ms === 250 &&
+      fireWep.projectState.fireConfig?.burn_time_ms === 4000 &&
+      fireWep.projectState.fireConfig?.decay_mode === 'on_hit',
+    JSON.stringify(fireWep.projectState.fireConfig),
+  );
+  check(
+    '.wep keeps full 32-bit explosion_sound.before without recNum truncation',
+    fireWep.projectState.recordOverrides?.['missile.explosion_sound.before'] === 70000,
+    String(fireWep.projectState.recordOverrides?.['missile.explosion_sound.before']),
+  );
+  check(
+    '.wep decodes handling.remember_selection, available_in_caves, ends_turn, and retreat = 0',
+    fireWep.projectState.recordOverrides?.['handling.remember_selection'] === true &&
+      fireWep.projectState.recordOverrides?.['handling.available_in_caves'] === true &&
+      fireWep.projectState.recordOverrides?.['handling.ends_turn'] === false &&
+      fireWep.projectState.recordOverrides?.['handling.retreat'] === 0,
+    JSON.stringify({
+      rem: fireWep.projectState.recordOverrides?.['handling.remember_selection'],
+      caves: fireWep.projectState.recordOverrides?.['handling.available_in_caves'],
+      ends: fireWep.projectState.recordOverrides?.['handling.ends_turn'],
+      retreat: fireWep.projectState.recordOverrides?.['handling.retreat'],
+    }),
+  );
+
+  const clustHomingWep = parseWepBinary(
+    buildWep({
+      0xf0: 3,
+      0x160: 75000,
+      0x168: 1,
+      0x170: 0x10025,
+      0x178: 0x10083,
+    }),
+    'clust_homing.wep',
+  );
+  check(
+    '.wep treats burstRaw = 3 as clusters',
+    clustHomingWep.projectState.burst === 'clusters' &&
+      clustHomingWep.projectState.body?.cluster === true,
+  );
+  check(
+    '.wep keeps clustlet explosion_sound.before = 75000 and masks cHoming sprites with recNum',
+    clustHomingWep.projectState.body?.clustlet?.explosion_sound_before === 75000 &&
+      clustHomingWep.projectState.body?.clustlet?.homing_sprite === 0x25 &&
+      clustHomingWep.projectState.body?.clustlet?.homing_trail_sprite === 0x83,
+    JSON.stringify({
+      before: clustHomingWep.projectState.body?.clustlet?.explosion_sound_before,
+      hs: clustHomingWep.projectState.body?.clustlet?.homing_sprite,
+      hts: clustHomingWep.projectState.body?.clustlet?.homing_trail_sprite,
+    }),
+  );
+
+  const digStrikeWep = parseWepBinary(
+    buildWep({
+      0xa4: 4,
+      0xb4: 0x1009e,
+      0xb8: 0x1009f,
+    }),
+    'dig.wep',
+  );
+  check(
+    '.wep masks dig sprites with recNum',
+    digStrikeWep.projectState.digConfig?.dive_sprite === 0x9e &&
+      digStrikeWep.projectState.digConfig?.sprite_1 === 0x9f,
+  );
+
+  const strikeWep = parseWepBinary(
+    buildWep({
+      0x30: 3,
+      0x38: 0x1003c,
+    }),
+    'strike.wep',
+  );
+  check(
+    '.wep masks strike.plane with recNum',
+    strikeWep.projectState.recordOverrides?.['strike.plane'] === 0x3c,
+    String(strikeWep.projectState.recordOverrides?.['strike.plane']),
   );
 }
 

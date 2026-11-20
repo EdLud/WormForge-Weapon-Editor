@@ -13,8 +13,9 @@
  *  - `math.sin`/`math.random` in a simulation callback desync a match, which is
  *    why the engine offers `wa.math.*` and `wa.random` at all.
  */
-import { checkLua, fixLockstepRng } from '../src/utils/luaCheck';
-import { NOT_GENERATED_CLOSE, NOT_GENERATED_OPEN, notGeneratedLineRanges } from '../src/utils/luaText';
+import { checkLua, fixLockstepRng, freeNames } from '../src/utils/luaCheck';
+import { availableRequiresForCheck } from '../src/utils/luaGenerator';
+import { NOT_GENERATED_CLOSE, NOT_GENERATED_OPEN, notGeneratedLineRanges, scanBlockEnd, maskLuaCode } from '../src/utils/luaText';
 
 let failed = 0;
 const check = (name: string, ok: boolean, detail = '') => {
@@ -399,6 +400,86 @@ const has = (code: string, rule: string, opts?: Parameters<typeof checkLua>[1]) 
     '}',
   ].join(String.fromCharCode(10));
   check('a clean generated file has no findings', rules(generated) === '', rules(generated));
+}
+
+// ---- F12: luaCheck / scanBlockEnd / freeNames / fixLockstepRng edge fixes --
+{
+  // 1. math.random() floatForm does not emit invalid `math.random` -> `wa.random` fix
+  const rndFinding = checkLua('wa.log(math.random())').find((f) => f.rule === 'lockstep-rng');
+  check(
+    'math.random() float form reports no wa.random rewrite (even without spaces)',
+    !!rndFinding && !rndFinding.fix && rndFinding.message.includes('math.random()'),
+    JSON.stringify(rndFinding),
+  );
+
+  // 2. Paren-less require "mod" is caught by undeclared-require and allowed by availableRequiresForCheck
+  check(
+    'paren-less require "wf-lib/effects/px_effects" is caught when undeclared',
+    has('local fx = require "wf-lib/effects/px_effects"', 'undeclared-require', {
+      availableRequires: ['wf.sdk'],
+    }),
+  );
+  check(
+    'availableRequiresForCheck recognises paren-less require from external dependency',
+    availableRequiresForCheck('local x = require "lib/custom"', ['thirdparty.lib']).includes(
+      'lib/custom',
+    ),
+  );
+
+  // 3. Immediately-invoked module-scope functions are NOT exempt from module-wa
+  check(
+    'module-wa flags IIFE (function() wa.log(1) end)() at module scope',
+    has('(function() wa.log(1) end)()\nreturn { install = function(ctx) end }', 'module-wa', {
+      mode: 'module',
+    }),
+  );
+  check(
+    'module-wa flags pcall(function() wa.log(1) end) at module scope',
+    has('pcall(function() wa.log(1) end)\nreturn { install = function(ctx) end }', 'module-wa', {
+      mode: 'module',
+    }),
+  );
+
+  // 4. Function literal inside for/while header does not consume loop header `do`
+  const loopWithFnHeader = 'for i = 1, (function() return 3 end)() do wa.log(i) end';
+  check(
+    'function()...end inside for header balances in checkLua without lua-ast',
+    rules(loopWithFnHeader) === '',
+    rules(loopWithFnHeader),
+  );
+  const maskedHeader = maskLuaCode(`function(ev) ${loopWithFnHeader} end`);
+  const endIdx = scanBlockEnd(maskedHeader, 'function'.length);
+  check(
+    'scanBlockEnd finds outer function end past for-header closure',
+    endIdx === maskedHeader.length - 3,
+    `${endIdx} vs ${maskedHeader.length - 3}`,
+  );
+
+  // 5a. local function on one line does not treat body arguments as locals
+  check(
+    'local function on one line still reports undeclared global undef',
+    has('local function f() wa.log(1, undef) end', 'undefined-global'),
+  );
+  // 5b. freeNames detects bare global assignment inside a hook
+  const actives = freeNames('function(ev)\n  active = true\nend', ['ctx']);
+  check(
+    'freeNames includes bare global assignment "active" (not mistaking it for table key)',
+    actives.includes('active'),
+    JSON.stringify(actives),
+  );
+  // 5c. Function parameter in later helper does not mask earlier undefined read
+  check(
+    'function parameter scope does not silence read outside that function',
+    has('wa.log(late_param)\nlocal function helper(late_param) return late_param end', 'undefined-global'),
+  );
+
+  // 6. fixLockstepRng handles spaced `math . sin(1)` cleanly without trailing `in`
+  const spacedFixed = fixLockstepRng('local a = math . sin(1)');
+  check(
+    'fixLockstepRng replaces spaced math . sin(1) cleanly',
+    spacedFixed === 'local a = wa.math.sin(1)',
+    spacedFixed,
+  );
 }
 
 if (failed > 0) {

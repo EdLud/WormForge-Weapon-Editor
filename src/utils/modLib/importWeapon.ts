@@ -31,6 +31,7 @@ import { readAsset, readBundleFeatures, unmodelledClaimKeys } from './importFeat
 import { DEFAULT_BODY, DEFAULT_DIG, DEFAULT_FIRE, DEFAULT_ROAM } from '../../data/defaults';
 import { CLAIM_FLAG_KEYS } from '../../data/luaHooks';
 import { stockDonor, stockDonorBaseline } from '../../data/stockDonors';
+import { stockSlotForPosition } from '../../data/stockWeapons';
 import { isTable, type LuaTable } from './luaTable';
 import type { ModFile, ModWeapon } from './scan';
 
@@ -130,6 +131,7 @@ function fireTypeOf(record: LuaTable | undefined): WeaponProject['fireType'] | u
   ) {
     return 'special';
   }
+  if (isTable(record.on_select) && record.on_select.cursor === true) return 'cursor';
   return undefined;
 }
 
@@ -189,6 +191,10 @@ export async function importBundleWeapon(
   }
 
   let donorBaseline: WeaponProject['donorBaseline'];
+  const manifestSlot = stockSlotForPosition(weapon.row, weapon.column);
+  if (project.useWepFile && manifestSlot) {
+    project.slot = manifestSlot;
+  }
   if (!project.useWepFile) {
     // `copy_from` asks the engine for the donor's own record, so the donor's
     // decoded values are the starting point *and* the diff baseline. A record
@@ -197,9 +203,12 @@ export async function importBundleWeapon(
     donorBaseline = stockDonorBaseline(donor);
     project = {
       ...donorRecord,
-      slot: donor,
+      slot: manifestSlot ?? donor,
       based_on: donor,
-      fireType: fireTypeOf(weapon.record) ?? donorRecord.fireType ?? 'power',
+      fireType:
+        donorReadable && donorRecord.fireType === 'cursor'
+          ? 'cursor'
+          : (fireTypeOf(weapon.record) ?? donorRecord.fireType ?? 'power'),
       useWepFile: false,
       wepFile: undefined,
       wepFileName: undefined,
@@ -317,6 +326,7 @@ export async function importBundleWeapon(
     }
     const stripped = remainder
       .replace(/--[^\n]*/g, '')
+      .replace(/\blocal\s+dx\s*,\s*dy\s*=\s*seq_dir\([^)]*\)/g, '')
       .replace(/wa\.sound\.play\([^)]*\)/g, '')
       .trim();
     if (stripped.length > 0) {
@@ -327,13 +337,13 @@ export async function importBundleWeapon(
   }
   if (split.hooks.on_fire && !nested.has('on_fire') && !features.project.fireSequence?.enabled) {
     const body = hookBodyOf(split.hooks.on_fire);
-    // Our own launch-WAV `on_fire` is one `wa.sound.play` of the launch sheet:
-    // the launch role writes that call back on export, so carrying it would play
-    // the sample twice from one trigger.
+    // Our own legacy launch-WAV `on_fire` is one `wa.sound.play` of the launch
+    // sample plus trailing comments: stripping comments prevents duplicating it.
+    const normalizedFireBody = body.body.replace(/--[^\n]*/g, '').replace(/\s+/g, ' ').trim();
     const ourLaunchPlay =
       !!features.project.customSounds?.launch?.file &&
-      /^wa\.sound\.play\([^)]*\)$/.test(body.body.replace(/\s+/g, ' ').trim()) &&
-      body.body.includes('/launch.wav');
+      /^wa\.sound\.play\([^)]*\)$/.test(normalizedFireBody) &&
+      normalizedFireBody.includes('/launch.wav');
     // The emitter's hand-off is the same kind of thing: `emitter_start` /
     // `EMITTER.follow = emitter_round` is what the emitter card writes again.
     const ourEmitterHandOff =
@@ -520,6 +530,7 @@ export async function importBundleWeapon(
       fireConfig: mapped.fireConfig,
       recordOverrides: mapped.recordOverrides,
       recordExtra: mapped.recordExtra,
+      specialSubtype: mapped.specialSubtype ?? project.specialSubtype,
       teleport: mapped.teleport ?? project.teleport,
       // The decoded `.wep` is the diff base; without one the donor is.
       wepBaseline: baseline,
@@ -715,15 +726,14 @@ export async function importBundleWeapon(
   // under the export's folder, or the carried play names a sample the zip lacks.
   const expandFolder = (path: { source: string; target: string }): { source: string; target: string }[] => {
     if (!path.source.endsWith('/')) return [path];
-    const [kind, from] = path.source.split('/');
-    const under = weapon.bundleDir ? `${weapon.bundleDir}/${kind}/${from}/` : `${kind}/${from}/`;
+    const under = weapon.bundleDir ? `${weapon.bundleDir}/${path.source}` : path.source;
     const found: { source: string; target: string }[] = [];
     for (const file of files) {
       const full = file.path.split(String.fromCharCode(92)).join('/');
       if (!full.startsWith(under)) continue;
       const name = full.slice(under.length);
-      if (name.includes('/') || !/\.(png|gif|wav)$/i.test(name)) continue;
-      found.push({ source: `${kind}/${from}/${name}`, target: `${path.target}${name}` });
+      if (!name || name.includes('/') || !/\.(png|gif|wav)$/i.test(name)) continue;
+      found.push({ source: `${path.source}${name}`, target: `${path.target}${name}` });
     }
     return found;
   };
@@ -752,7 +762,9 @@ export async function importBundleWeapon(
         // folder, so the key it came from is the old one.
         const base = target.split('/').pop() ?? target;
         const decl =
-          Object.entries(weapon.spriteDecls).find(([key]) => key.split('/').pop() === base)?.[1] ?? {};
+          weapon.spriteDecls[source] ??
+          Object.entries(weapon.spriteDecls).find(([key]) => key.split('/').pop() === base)?.[1] ??
+          {};
         const frames = typeof decl.frames === 'number' ? decl.frames : 1;
         const fps = typeof decl.fps === 'number' ? decl.fps : 15;
         const play = decl.play === 'pingpong' ? 'pingpong' : 'loop';

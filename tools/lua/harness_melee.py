@@ -46,8 +46,12 @@ def worm_record(w):
 
     def take(_self, opts=None):
         freeze = opts is not None and opts["turn"] == "freeze"
+        # `fire = true` is what lets a melee's ghost shot reach WA: a taken
+        # worm's fire messages are the engine's to eat, so a take without it
+        # swallowed the press and nothing was fired.
+        fire = opts is not None and opts["fire"] == True
         w["taken"] = True
-        EVENTS.append(("take", freeze))
+        EVENTS.append(("take", freeze, fire))
         return True
 
     def release(_self, vx=None, vy=None, opts=None):
@@ -310,7 +314,7 @@ check("engine sheet muted while drawing", ("mute", 1) in EVENTS)
 
 # Space: the swing takes the worm on the same frame and starts drawing.
 step(2, space=True)
-check("Space takes the worm", ("take", True) in EVENTS)
+check("Space takes the worm", ("take", True, True) in EVENTS)
 check("the press frame draws the swing", len(QUADS) > 0, "%d quad(s)" % len(QUADS))
 
 # Hold Space for the whole clip: WA would repeat the key, but the swing ignores it.
@@ -338,7 +342,7 @@ EVENTS.clear()
 WORM["state_id"] = 0x65
 step(50)
 step(51, space=True)
-check("a press starts the swing in a non-aim state", ("take", True) in EVENTS)
+check("a press starts the swing in a non-aim state", ("take", True, True) in EVENTS)
 draws = 0
 for n in range(52, 60):
     step(n, space=True)
@@ -438,7 +442,7 @@ step(30)
 step(31, space=True)
 for n in range(32, 48):
     step(n, space=True)
-check("a miss still runs the whole clip", ("take", True) in EVENTS and ("release", 0, 0) in EVENTS)
+check("a miss still runs the whole clip", ("take", True, True) in EVENTS and ("release", 0, 0) in EVENTS)
 check("a miss deals no damage", not [e for e in EVENTS if e[0] == "hurt"])
 
 # The "Space did nothing" line is only for our own weapon. A press while the

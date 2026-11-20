@@ -4918,3 +4918,66 @@ above, with the weapon's name and id spelled out. From the second weapon on the
 card shows them and they are the manifest's, which is what the 60-weapon test
 pack and the Code tab's `mod.toml` confirm. `profileName`, `replaces` and the
 profile description stay, since they exist nowhere else.
+
+## 2026-11-21: a melee weapon fires, and the shot is a ghost
+
+The melee claim swallowed the trigger. `eat_fire` is not a cosmetic flag:
+`fire_weapon_click_only_eat` sees it and returns 1 before WA builds anything, so
+the worm was only marked active (no projectile, no ammo taken, no launch step, no
+retreat), and the clip then zeroed the turn clock with `finish = "end_turn"`. The
+turn therefore ended at the end of the animation whether or not the record wanted
+it, and the weapon cost no ammo for a shot it never took. The user called it out
+exactly: "the melee arbitrarily ends turn whether or not it should".
+
+WA ends a turn when a projectile is built (`after_use` + the retreat window,
+0x55D490), so the fix is to build one and make it a **ghost**:
+
+    missile = {
+      sprite = 0, trail = { sprite = 0 }, action = "none", burst = "nothing",
+      explosion = { power = 0, push_pct = 0 },
+      explosion_sound = { enabled = false }, launch_sound = 0, flight_sound = 0,
+      impact_particles = false, alarm_worms = false,
+    },
+    handling = { retreat = 5000 },
+
+Nothing leaves the worm that a player can see, hear or feel, and WA takes the
+ammo, plays its own launch step and ends the turn by its own rules. `retreat =
+5000` is the control the player keeps after the shot, long enough for the swing
+and short enough not to sit on an invisible projectile; an author's own
+`handling.retreat` (Turn Handling) wins, and `finish = "end_turn"` is no longer
+written for a melee clip (the Hold page says so next to the select).
+
+`collects_crates = false` rides with it, because a ghost crossing a crate
+would otherwise collect it for the team. `meleeGhost` in `luaGenerator.ts` is the
+single test, and it also puts `'melee'`
+into the missile-family emission: a melee project borrows a power record for its
+aim phase (the Sheep Launcher's), so its `missile` table is a real one. The art
+needed nothing: the swing already mutes the engine's held art to `silent.png`
+while it draws the clip (`hold_mute`, set from the draw pass), so a ghost shot
+running WA's firing state cannot draw a second copy of the weapon.
+
+**Two things were still wrong, and the first report said so** ("its wrong, still
+ends turn"):
+
+1. `handling` was never written. The donor's own retreat (3000) arrives in
+   `recordOverrides` and the diff drops it as inherited, so testing the *key* for
+   `undefined` skipped the 5000. The test is on the emitted `override()` value.
+2. **The ghost never fired.** `worm:take` eats a taken worm's fire messages
+   (`physics::fire_allowed` answers only what the holder allowed), and the swing
+   took the worm with `turn = "freeze"` and no `fire`, so the Space press was
+   swallowed before WA ever built the shot, took the ammo or ran the retreat.
+   `wfws.sdk` 0.16.5 passes `fire = true`: WA's own dispatch then decides, and a
+   clip-only claim still eats the shot there (`eat_fire`), so nothing changed for
+   one that never wanted a shot.
+
+With the shot really fired, its **lifetime is the retreat**: WA hands the turn over
+when the shot it fired is gone or the retreat runs out, whichever comes first, so a
+ghost that detonated on contact at the worm's feet still ended the turn a frame
+after the swing. The record now writes `fuse = 5000` beside `retreat = 5000` (a
+nonzero `fuse` is WA's "timed, not impact detonated" switch), and the author's own
+`handling.retreat` moves both numbers together. It pops harmlessly, invisibly, at
+the moment the turn ends anyway.
+
+`check_mod_import.ts` pins the three halves (no `eat_fire`, the ghost rows, no
+`finish`), the WF 50 entry in `test_pack/README.md` states what a player should
+see, and `wfcheck` stays clean on all 61 files.

@@ -56,6 +56,8 @@ import {
 } from '../src/utils/modLib/importPack';
 import { stockDonor, stockDonorBaseline } from '../src/data/stockDonors';
 import { DEFAULT_BODY } from '../src/data/defaults';
+import { DEFAULT_ROLE_ART } from '../src/data/spriteBuilder';
+import { DEFAULT_TERRAIN_STAMP } from '../src/data/terrainStamp';
 import type { PackProject, WeaponProject } from '../src/types/weapon';
 
 /**
@@ -1003,6 +1005,159 @@ const DECLARED_HOLD = /\[sprites\."[^"]*\/hold\.png"\]/g;
     'an undeclared SDK require refuses the export',
     message.includes('undeclared-require'),
     message || 'no error',
+  );
+
+  // Replacing Ninja Rope or Skip Go must not emit a duplicate TOML key in the profile.
+  const ropeProfile = generatePackProfile(
+    pack([
+      bareProject({ id: 'wfws.pack.rope_mod', slot: 'ninja_rope', based_on: 'ninja_rope' }),
+      bareProject({ id: 'wfws.pack.skip_mod', slot: 'skip_go', based_on: 'skip_go' }),
+    ]),
+  );
+  ok(
+    'profile does not emit duplicate stock.ninja_rope or stock.skip_go keys',
+    (ropeProfile.match(/"stock\.ninja_rope"\s*=\s*true/g) || []).length === 1 &&
+      (ropeProfile.match(/"stock\.skip_go"\s*=\s*true/g) || []).length === 1,
+    ropeProfile,
+  );
+
+  // Air strike with missileSprite.mode === 'custom' does not declare an unwritten missile.png.
+  const airStrike = bareProject({
+    id: 'wfws.pack.strike_check',
+    name: 'Strike Check',
+    fireType: 'cursor',
+    based_on: 'air_strike',
+    slot: 'air_strike',
+    missileSprite: {
+      ...DEFAULT_ROLE_ART,
+      enabled: true,
+      mode: 'custom',
+      stockSprite: 'air_strike',
+    } as WeaponProject['missileSprite'],
+  });
+  const strikeToml = generateModToml(airStrike);
+  const strikeFiles = await emitPack(pack([airStrike]));
+  ok(
+    'air strike does not declare unwritten missile.png in mod.toml and emits cleanly',
+    !strikeToml.includes('missile.png') && strikeFiles.has('pack/mod.toml'),
+    strikeToml,
+  );
+
+  // Pack icon + colliding weapon customIconFile both survive at distinct paths.
+  const wIconBytes = new Uint8Array([10, 20, 30]);
+  const pIconBytes = new Uint8Array([40, 50, 60]);
+  const collidePack = {
+    ...pack([
+      {
+        ...bareProject({ id: 'wfws.pack', name: 'Lead' }),
+        customIconFile: new File([wIconBytes], 'lead.png', { type: 'image/png' }),
+        customIconPreview: 'data:,',
+      },
+      bareProject({ id: 'wfws.pack.second', name: 'Second', slot: 'bazooka' }),
+    ]),
+    iconFile: new File([pIconBytes], 'pack.png', { type: 'image/png' }),
+    iconPreview: 'data:,',
+  };
+  const collideToml = generatePackToml(collidePack);
+  const collideFiles = await emitPack(collidePack);
+  ok(
+    'pack icon avoids colliding with weapon icon sharing last id segment',
+    collideToml.includes('mod_icon = "sprites/pack/mod_icon.png"') &&
+      (collideFiles.get('pack/sprites/pack/icon.png') as Uint8Array)?.[0] === 10 &&
+      (collideFiles.get('pack/sprites/pack/mod_icon.png') as Uint8Array)?.[0] === 40,
+    collideToml.split('\n').filter((l) => l.includes('icon')).join(' | '),
+  );
+
+  // Imported stamp sheet with frames = 16 emits frames = 16 in mod.toml.
+  const stampProject = bareProject({
+    id: 'wfws.pack.stamp16',
+    name: 'Stamp 16',
+    terrainStamp: {
+      ...DEFAULT_TERRAIN_STAMP,
+      enabled: true,
+      sheet: {
+        file: new File([new Uint8Array([1, 2])], 'stamp.png', { type: 'image/png' }),
+        fileName: 'stamp.png',
+        previewUrl: '',
+        frames: 16,
+        fps: 15,
+        play: 'loop',
+        rotationFrames: 16,
+      },
+    },
+  });
+  ok(
+    'terrain stamp manifest preserves imported frame count instead of hardcoding 32',
+    /\[sprites\."sprites\/stamp16\/stamp\.png"\]\r?\nframes = 16\b/.test(generateModToml(stampProject)),
+    generateModToml(stampProject),
+  );
+
+  // validateBundle allows WA soundbank paths and refuses missing 1-frame claim sprites.
+  const missingSpriteFiles = new Map<string, string | Uint8Array>([
+    ['pack/weapons/alpha.lua', 'return {\n  install = function(ctx)\n    wa.weapons.replace{\n      sprites = { "sprites/pack/missing.png" },\n      sounds = { "soundbank/Kamikaze/Collect" },\n    }\n  end,\n}'],
+  ]);
+  let spriteErr = '';
+  try {
+    validateBundle(
+      missingSpriteFiles,
+      pack([bareProject({ id: 'wfws.pack.alpha', name: 'Alpha' })]),
+      '[[components]]\nid = "wfws.pack.alpha"\nentry = "weapons/alpha.lua"\n',
+      'pack',
+    );
+  } catch (error) {
+    spriteErr = (error as Error).message;
+  }
+  ok(
+    'validateBundle refuses missing 1-frame claim sprite while allowing soundbank/ entries',
+    spriteErr.includes('declared sprite `sprites/pack/missing.png` is not in the bundle') &&
+      !spriteErr.includes('soundbank/Kamikaze/Collect'),
+    spriteErr || 'no error',
+  );
+
+  // renamespaceWeapons retargets art folders when a weapon id equals the old pack id.
+  const renamedPack = renamespaceWeapons(
+    {
+      ...pack([
+        bareProject({
+          id: 'author.old',
+          name: 'Lead',
+          customSprites: {
+            custom: {
+              purpose: 'missile',
+              name: 'lead.png',
+              path: 'sprites/old/lead.png',
+              file: new File([new Uint8Array([1])], 'lead.png', { type: 'image/png' }),
+              previewUrl: '',
+              frames: 1,
+              fps: 15,
+              play: 'loop',
+            },
+          },
+          carriedLua: {
+            preamble: [],
+            prologue: [],
+            unresolved: [],
+            hooks: [{ key: 'on_fire', text: 'function(ev) wa.sound.play(ev.worm, "sounds/old/pew.wav") end', line: 1 }],
+            registrations: [],
+          },
+        }),
+        bareProject({ id: 'author.old.two', name: 'Two' }),
+      ]),
+      id: 'author.old',
+    },
+    'author.old',
+    'author.new',
+  );
+  ok(
+    'renamespaceWeapons retargets art paths when weapon.id matches pack.id',
+    renamedPack.weapons[0].id === 'author.new' &&
+      renamedPack.weapons[0].customSprites?.custom?.path === 'sprites/new/lead.png' &&
+      renamedPack.weapons[0].carriedLua?.hooks?.[0]?.text.includes('sounds/new/pew.wav') === true,
+    JSON.stringify({
+      id: renamedPack.weapons[0].id,
+      custom: renamedPack.weapons[0].customSprites?.custom?.path,
+      hook: renamedPack.weapons[0].carriedLua?.hooks?.[0]?.text,
+    }),
   );
 }
 

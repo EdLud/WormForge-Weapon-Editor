@@ -26,32 +26,40 @@ export const LUA_KEYWORDS = new Set([
 export function scanBlockEnd(masked: string, from: number, limit = 50000): number {
   const word = /[A-Za-z_][A-Za-z0-9_]*/g;
   word.lastIndex = from;
-  let depth = 1;
-  let pendingDo = false;
+  const stack: ('block' | 'for_header' | 'while_header' | 'repeat')[] = ['block'];
   let steps = 0;
   let m: RegExpExecArray | null;
   while ((m = word.exec(masked)) !== null && steps < limit) {
     steps += 1;
     const name = m[0];
-    if (name === 'for' || name === 'while') {
-      depth += 1;
-      pendingDo = true;
+    if (name === 'for') {
+      stack.push('for_header');
       continue;
     }
-    if (name === 'function' || name === 'if' || name === 'repeat') {
-      depth += 1;
-      pendingDo = false;
+    if (name === 'while') {
+      stack.push('while_header');
+      continue;
+    }
+    if (name === 'repeat') {
+      stack.push('repeat');
+      continue;
+    }
+    if (name === 'function' || name === 'if') {
+      stack.push('block');
       continue;
     }
     if (name === 'do') {
-      if (pendingDo) pendingDo = false;
-      else depth += 1;
+      const top = stack[stack.length - 1];
+      if (top === 'for_header' || top === 'while_header') {
+        stack[stack.length - 1] = 'block';
+      } else {
+        stack.push('block');
+      }
       continue;
     }
     if (name === 'end' || name === 'until') {
-      pendingDo = false;
-      depth -= 1;
-      if (depth === 0) return m.index;
+      stack.pop();
+      if (stack.length === 0) return m.index;
     }
   }
   return -1;

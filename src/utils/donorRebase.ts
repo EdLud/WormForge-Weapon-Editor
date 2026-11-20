@@ -54,7 +54,7 @@ function rebaseGroup<T extends Record<string, any>>(
     const currentValue = current ? current[key] : undefined;
     const baseValue = base ? base[key] : undefined;
     const edited =
-      base !== undefined && baseValue !== undefined && !same(currentValue, baseValue);
+      base !== undefined && currentValue !== undefined && !same(currentValue, baseValue);
     if (edited) {
       out[key] = currentValue;
     } else if (donorValue !== undefined) {

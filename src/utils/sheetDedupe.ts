@@ -30,10 +30,44 @@
  * aliased role repeats the kept path. A repeat is noise (and binds the sheet twice
  * in a claim that counts entries), so the list keeps one entry per picture.
  */
+function splitSpriteListItems(body: string): string[] {
+  const items: string[] = [];
+  let current = '';
+  let quote: string | null = null;
+  for (let i = 0; i < body.length; i += 1) {
+    const ch = body[i];
+    if (quote) {
+      current += ch;
+      if (ch === '\\' && i + 1 < body.length) {
+        current += body[i + 1];
+        i += 1;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === ',') {
+      const trimmed = current.trim();
+      if (trimmed) items.push(trimmed);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  const tail = current.trim();
+  if (tail) items.push(tail);
+  return items;
+}
+
 export function compactSpriteLists(text: string): string {
   return text.replace(/sprites = \{([^}]*)\}/g, (whole, body: string) => {
-    const items = body.match(/"[^"]*"/g);
-    if (!items) return whole;
+    const items = splitSpriteListItems(body);
+    if (items.length === 0) return whole;
     const unique = items.filter((item, index) => items.indexOf(item) === index);
     if (unique.length === items.length) return whole;
     return `sprites = { ${unique.join(', ')} }`;
@@ -133,6 +167,7 @@ export function applySheetAliases(text: string, alias: Map<string, string>): str
   for (const from of paths) {
     const to = alias.get(from)!;
     out = out.split(`"${from}"`).join(`"${to}"`);
+    out = out.split(`'${from}'`).join(`'${to}'`);
   }
   return out;
 }

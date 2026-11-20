@@ -169,6 +169,26 @@ check(
   compacted,
 );
 
+const compactedWithSdk = compactSpriteLists(
+  'sprites = { "sprites/m/hold.png", "sprites/m/hold.png", trail.BEAM, trail.GLOW, fx.SPARK, fx.BLOB, fx.SMOKE },',
+);
+check(
+  'compacting a claim sprite list preserves Effects SDK constants',
+  compactedWithSdk ===
+    'sprites = { "sprites/m/hold.png", trail.BEAM, trail.GLOW, fx.SPARK, fx.BLOB, fx.SMOKE },',
+  compactedWithSdk,
+);
+
+const singleQuoted = applySheetAliases(
+  "local s = 'sprites/m/missile.png'",
+  new Map([['sprites/m/missile.png', 'sprites/m/hold.png']]),
+);
+check(
+  'aliases rewrite single-quoted sprite paths too',
+  singleQuoted === "local s = 'sprites/m/hold.png'",
+  singleQuoted,
+);
+
 // A repeated table is invalid TOML, so it can never survive, whatever its body.
 const repeated = collapseSpriteSections(
   [

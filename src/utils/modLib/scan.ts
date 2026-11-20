@@ -12,7 +12,7 @@
 import { maskLuaCode } from '../luaText';
 import { parseToml, type TomlDocument } from './modToml';
 import { scanLua, firstTable, isTable, type LuaTable } from './luaTable';
-import { readAssignmentTable, readCallTable } from './luaTable';
+import { applyPathAssignments, readAssignmentTable, readCallTable } from './luaTable';
 import { matchingBrace, resolveTableStrings, stringConstants } from './luaStrings';
 
 /**
@@ -486,7 +486,7 @@ function readRecord(text: string): {
     }
   }
 
-  const source =
+  const rawSource =
     replace ??
     merged ??
     definition ??
@@ -494,6 +494,18 @@ function readRecord(text: string): {
     returnedRecord ??
     (looksLikeRecord(returned) ? returned : undefined) ??
     findRecordLike(scan);
+  const pathTargets =
+    rawSource === replace && ref
+      ? [ref]
+      : rawSource === assigned
+        ? ['record', 'weapon.record']
+        : rawSource === definition
+          ? ['definition', 'weapon.definition']
+          : [];
+  const source =
+    rawSource && pathTargets.length > 0
+      ? applyPathAssignments(text, rawSource, pathTargets).table
+      : rawSource;
   // A claim table written with names (`hold = { sheet = SHEET }`, `sounds = {
   // SND .. "start.wav" }`) reads back with those fields empty, because the table
   // reader keeps literals only. Resolve them against the text the table was
@@ -502,19 +514,19 @@ function readRecord(text: string): {
   // put one weapon's path on another's art.
   if (source) {
     const claimText =
-      (source === replace ? claimTextOf(text, 'wa.weapons.replace', 'call') : undefined) ??
-      (source === assigned
+      (rawSource === replace ? claimTextOf(text, 'wa.weapons.replace', 'call') : undefined) ??
+      (rawSource === assigned
         ? (claimTextOf(text, 'record', 'assign') ??
           claimTextOf(text, 'weapon.record', 'assign'))
         : undefined) ??
       // A record handed back as data: `definition = { … }`, either assigned
       // (`weapon.definition = { … }`) or a field of the module's own table.
-      (source === definition
+      (rawSource === definition
         ? (claimTextOf(text, 'definition', 'assign') ??
           claimTextOf(text, 'weapon.definition', 'assign') ??
           claimTextOf(text, 'definition', 'field'))
         : undefined) ??
-      (source === returned ? claimTextOf(text, '', 'return') : undefined);
+      (rawSource === returned ? claimTextOf(text, '', 'return') : undefined);
     if (claimText) resolveTableStrings(source, claimText, stringConstants(text));
   }
   const defaults = isTable(returned?.defaults)

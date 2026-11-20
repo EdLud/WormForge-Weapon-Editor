@@ -24,6 +24,7 @@ import type {
   WeaponProject,
 } from '../../types/weapon';
 import type { LuaTable, LuaValue } from './luaTable';
+import { stockSpriteId } from '../../data/stockSprites';
 
 const isTable = (value: LuaValue | undefined): value is LuaTable =>
   !!value && typeof value === 'object';
@@ -182,6 +183,8 @@ export interface MappedRecord {
   packArt: Partial<Record<'missile_trail' | 'cluster_trail', string>>;
   /** `on_select = { cursor = true }` on a cursor record. */
   teleport?: boolean;
+  /** `fires.subtype` selector when declared by the module. */
+  specialSubtype?: number;
 }
 
 /**
@@ -208,6 +211,7 @@ export function mapRecord(
   let digConfig = { ...base.digConfig };
   let fireConfig = { ...base.fireConfig };
   let teleport: boolean | undefined;
+  let specialSubtype: number | undefined;
 
   if (!record) {
     return {
@@ -394,7 +398,9 @@ export function mapRecord(
         packArt.missile_trail = trailSprite;
         overrides['missile.trail.enabled'] = true;
       } else {
-        overrides['missile.trail.enabled'] = trailSprite !== undefined && trailSprite !== '0';
+        if (trailSprite !== undefined) {
+          overrides['missile.trail.enabled'] = trailSprite !== '0';
+        }
         set('missile.trail.sprite', trailSprite);
       }
       set('missile.trail.power', int(t.take('power')));
@@ -634,8 +640,15 @@ export function mapRecord(
         const kind = homingKind(h.take('kind'));
         // The clustlet's own field is the narrower `off | lock | dodge`.
         if (kind === 'off' || kind === 'lock' || kind === 'dodge') clustlet.homing = kind;
-        const sprite = text(h.take('sprite'));
-        if (sprite !== undefined) clustlet.homing_sprite = Number(sprite) || 0;
+        const toSpriteId = (raw: LuaValue | undefined): number | undefined => {
+          const name = text(raw);
+          if (name === undefined) return undefined;
+          const numeric = Number(name);
+          if (Number.isFinite(numeric)) return Math.round(numeric);
+          return stockSpriteId(name);
+        };
+        const sprite = toSpriteId(h.take('sprite'));
+        if (sprite !== undefined) clustlet.homing_sprite = sprite;
         const animation = int(h.take('animation'));
         if (animation !== undefined) clustlet.homing_animation = animation;
         const arm = int(h.take('arm'));
@@ -645,8 +658,8 @@ export function mapRecord(
         const trail = h.take('trail');
         if (isTable(trail)) {
           const t = new Tape(trail);
-          const sprite = int(t.take('sprite'));
-          if (sprite !== undefined) clustlet.homing_trail_sprite = sprite;
+          const trailSprite = toSpriteId(t.take('sprite'));
+          if (trailSprite !== undefined) clustlet.homing_trail_sprite = trailSprite;
           const power = int(t.take('power'));
           if (power !== undefined) clustlet.homing_trail_power = power;
           const speed = int(t.take('speed'));
@@ -698,12 +711,10 @@ export function mapRecord(
     parachute: ['wind_pct'],
     utility: ['effect'],
   };
-  // `fires.type` / `method` / `subtype` are the family and behaviour selectors:
-  // the archetype (`fireType`) and `specialSubtype` own them, so they are
-  // consumed and dropped rather than left in `recordExtra`, where they would be
-  // written after the record and override the archetype's own subtype.
+  // `fires.type` / `method` are family selectors owned by the archetype; `subtype`
+  // maps into `fires.subtype` / `specialSubtype` so it round-trips.
   const SELECTORS: Record<string, string[]> = {
-    fires: ['type', 'method', 'subtype'],
+    fires: ['type', 'method'],
   };
   for (const [group, fields] of Object.entries(NATIVE_GROUPS)) {
     const table = tape.take(group);
@@ -712,6 +723,13 @@ export function mapRecord(
     for (const field of fields) {
       const value = g.take(field);
       if (value !== undefined && value !== null) overrides[`${group}.${field}`] = value;
+    }
+    if (group === 'fires') {
+      const sub = int(g.take('subtype'));
+      if (sub !== undefined) {
+        overrides['fires.subtype'] = sub;
+        specialSubtype = sub;
+      }
     }
     for (const field of SELECTORS[group] ?? []) g.take(field);
     keep([group], g.remaining);
@@ -739,5 +757,6 @@ export function mapRecord(
     recordExtra: Object.keys(recordExtra).length > 0 ? recordExtra : undefined,
     packArt,
     teleport,
+    specialSubtype,
   };
 }

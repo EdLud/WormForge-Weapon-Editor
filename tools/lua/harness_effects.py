@@ -138,12 +138,16 @@ def preload(name, path):
 
 preload('wf-lib/effects/trail', f'{ROOT}/libs/trail.lua')
 preload('wf-lib/effects/px_effects', f'{ROOT}/libs/px_effects.lua')
+preload('wf-lib/effects/custom_explosion', f'{ROOT}/libs/custom_explosion.lua')
 fx = lua.eval('require("wf-lib/effects/px_effects")')
 trail = lua.eval('require("wf-lib/effects/trail")')
+blast = lua.eval('require("wf-lib/effects/custom_explosion")')
 if isinstance(fx, tuple):
     fx = fx[0]
 if isinstance(trail, tuple):
     trail = trail[0]
+if isinstance(blast, tuple):
+    blast = blast[0]
 
 
 def lua_table(chunk):
@@ -558,6 +562,42 @@ check(
     'the log names an adopted component',
     any('px.saw_place' in line and 'drawn as px.saw_grenade' in line for line in LOGS),
     str(LOGS[-2:]),
+)
+
+# ------------------------------------------------ custom_explosion + emitter fixes ---
+wa._mod = 'px.saw_grenade'
+wa.world = wa.world or lua.table()
+wa.world.blast = lambda o: 0
+captured_burst = []
+orig_burst = fx['burst']
+def capture_burst(spec):
+    captured_burst.append(dict(spec))
+    return orig_burst(spec)
+fx['burst'] = capture_burst
+blast.explode(lua_table(
+    '{ x = 400, y = 400, damage = 20, push = 50, hole = 20, destroy = true, '
+    'effect = { radius = 60, core = 30, rainbow = true } }'
+))
+check(
+    'blast.explode forwards core and rainbow to fx.burst',
+    len(captured_burst) == 1 and captured_burst[0].get('core') == 30 and captured_burst[0].get('rainbow') is True,
+    str(captured_burst[0] if captured_burst else 'none'),
+)
+fx['burst'] = orig_burst
+
+th = fx.emitter(lua_table(
+    '{ x = 300, y = 300, preset = "thunder", spark = true, glow = true, '
+    'color = { r = 0, g = 0, b = 255 }, trail = { r = 255, g = 10, b = 20 } }'
+))
+check(
+    'thunder emitter with explicit spark = true and glow = true enables both',
+    th is not None and th['spark'] is not None and th['glow'] is not None,
+    f"spark={th['spark'] if th else None}, glow={th['glow'] if th else None}",
+)
+check(
+    'explicit emitter trail RGB is preserved over top-level color',
+    th is not None and th['trail'] is not False and th['trail']['r'] == 255 and th['trail']['g'] == 10 and th['trail']['b'] == 20,
+    f"trail={dict(th['trail']) if th and th['trail'] else None}",
 )
 
 print()

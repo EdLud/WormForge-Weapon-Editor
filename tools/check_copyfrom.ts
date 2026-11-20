@@ -143,6 +143,18 @@ const has = (lua: string, text: string) => lua.includes(text);
   check('rebase keeps an edited damage', kept.body.damage === 77, String(kept.body.damage));
   check('rebase keeps an edited push', kept.recordOverrides['missile.explosion.push_pct'] === 42, String(kept.recordOverrides['missile.explosion.push_pct']));
   check('rebase drops the old donor gravity_pct edit', kept.body.gravity_pct === 100, String(kept.body.gravity_pct));
+
+  // Keys not present in the old donor baseline (e.g. handling.ends_turn = false) must survive rebase.
+  const endsTurnEdited: WeaponProject = {
+    ...grenade,
+    recordOverrides: { ...grenade.recordOverrides, 'handling.ends_turn': false },
+  };
+  const rebasedEndsTurn = rebaseToDonor(endsTurnEdited, 'bazooka');
+  check(
+    'rebase preserves user edit to a key missing from old donor baseline (handling.ends_turn = false)',
+    rebasedEndsTurn.recordOverrides['handling.ends_turn'] === false,
+    String(rebasedEndsTurn.recordOverrides['handling.ends_turn']),
+  );
 }
 
 if (failures.length > 0) {

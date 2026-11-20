@@ -2361,7 +2361,7 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
         );
       }
     }
-    if (project.missileSprite.logIdentity) modLines.push(`  log = true,`);
+    if (project.missileSprite?.logIdentity) modLines.push(`  log = true,`);
     modLines.push(`})`);
     return modLines.join('\n');
   })();
@@ -3732,12 +3732,25 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
           {playerClip.enabled && (
             <>
               <p className="rounded-lg border border-amber-200 bg-amber-50/70 px-2.5 py-2 text-[11px] text-amber-800 dark:border-amber-800/60 dark:bg-amber-950/25 dark:text-amber-300">
-                Space plays this clip and <span className="font-semibold">does not fire</span>: the
-                claim carries <span className="font-mono">eat_fire = true</span>, so nothing leaves
-                the worm. With <span className="font-semibold">End the turn</span> below, the swing
-                hands the turn back when it finishes; without it the worm stays aiming, which is
-                only right when a hit box or a custom <span className="font-mono">on_fire</span>{' '}
-                ends the shot itself.
+                {project.melee?.enabled ? (
+                  <>
+                    Space <span className="font-semibold">fires</span> this weapon, and the shot the
+                    record builds is a <span className="font-semibold">ghost</span>: no art, no
+                    trail, no blast, no damage, no sound. That is what takes the ammo and lets WA
+                    end the turn by its own rules, with the retreat window as the player&apos;s last
+                    control, so <span className="font-semibold">When it ends</span> is not written
+                    for a strike.
+                  </>
+                ) : (
+                  <>
+                    Space plays this clip and <span className="font-semibold">does not fire</span>:
+                    the claim carries <span className="font-mono">eat_fire = true</span>, so nothing
+                    leaves the worm. With <span className="font-semibold">End the turn</span> below,
+                    the swing hands the turn back when it finishes; without it the worm stays
+                    aiming, which is only right when a hit box or a custom{' '}
+                    <span className="font-mono">on_fire</span> ends the shot itself.
+                  </>
+                )}
               </p>
 
               <div className="grid gap-3 sm:grid-cols-2">
@@ -3762,14 +3775,22 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
                   <select
                     id="hold-swing-finish"
                     value={playerClip.finish}
+                    disabled={!!project.melee?.enabled}
                     onChange={(event) =>
                       updateClip({ finish: event.target.value as AimClipConfig['finish'] })
                     }
-                    className="h-8 w-full cursor-pointer rounded-lg border border-stone-300 bg-white px-2 text-xs text-stone-800 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-200"
+                    className="h-8 w-full cursor-pointer rounded-lg border border-stone-300 bg-white px-2 text-xs text-stone-800 disabled:cursor-not-allowed disabled:opacity-60 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-200"
                   >
                     <option value="endTurn">End the turn</option>
                     <option value="none">Nothing (a hit or a custom on_fire ends it)</option>
                   </select>
+                  {project.melee?.enabled && (
+                    <p className="text-[10px] leading-relaxed text-stone-500 dark:text-stone-400">
+                      Not written: a melee weapon fires a ghost shot, so WA ends the turn itself
+                      and the retreat window is the control between. Use{' '}
+                      <strong>Turn Handling</strong> to change when the turn ends.
+                    </p>
+                  )}
                 </div>
               </div>
 
@@ -4650,7 +4671,7 @@ export const HoldPreview: React.FC<HoldPreviewProps> = ({ project, onChange }) =
                     <input
                       id="flight-log-identity"
                       type="checkbox"
-                      checked={!!project.missileSprite.logIdentity}
+                      checked={!!project.missileSprite?.logIdentity}
                       onChange={(e) =>
                         onChange({
                           missileSprite: {

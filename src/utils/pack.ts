@@ -70,7 +70,11 @@ export function renamespaceWeapons(pack: PackProject, fromId: string, toId: stri
     ...pack,
     weapons: pack.weapons.map((weapon) =>
       weapon.id === from
-        ? { ...weapon, id: to }
+        ? retargetWeaponArt(
+            { ...weapon, id: to },
+            sanitizeModFolder(from),
+            sanitizeModFolder(to),
+          )
         : weapon.id.startsWith(`${from}.`)
           ? { ...weapon, id: `${to}${weapon.id.slice(from.length)}` }
           : weapon,

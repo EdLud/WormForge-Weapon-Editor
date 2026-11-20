@@ -559,6 +559,39 @@ function readBurstRows(table: LuaTable, config: ExplosionEffectConfig): Explosio
  * own emission: a hand-written stamp call is the author's custom Lua, so it is
  * kept (and reported) instead of being silently deleted.
  */
+function extractOnExplodeHookBody(moduleText: string): string {
+  const tableForm = /on_explode\s*=\s*\{\s*on\s*=\s*function\s*\(\s*(\w*)\s*\)/.exec(
+    moduleText,
+  );
+  const callForm = tableForm
+    ? undefined
+    : /on_explode\s*=\s*function\s*\(\s*(\w*)\s*\)/.exec(moduleText);
+  const match = tableForm ?? callForm;
+  if (!match) return '';
+
+  const start = match.index + match[0].length;
+  const rest = moduleText.slice(start);
+  const maskedRest = maskLuaCode(rest);
+  const token = /\b(function|if|for|while|end)\b/g;
+  let depth = 1;
+  let end = -1;
+  let iterations = 0;
+  let found: RegExpExecArray | null;
+  while ((found = token.exec(maskedRest)) !== null && iterations < 5000) {
+    iterations += 1;
+    if (found[1] === 'end') {
+      depth -= 1;
+      if (depth === 0) {
+        end = found.index;
+        break;
+      }
+    } else {
+      depth += 1;
+    }
+  }
+  return rest.slice(0, end === -1 ? rest.length : end);
+}
+
 function customExplodeBody(
   moduleText: string,
   stripStamp = false,
@@ -583,32 +616,7 @@ function customExplodeBody(
   const match = tableForm ?? callForm;
   if (!match) return '';
 
-  const start = match.index + match[0].length;
-  const rest = moduleText.slice(start);
-  // Same bounded block scan `parseCustomLua` uses: every opener needs one `end`.
-  // It runs on the masked copy, because a comment must not close the block: the
-  // carried-region markers are comments and the close marker contains the word
-  // "end", which cut a re-imported body short and left a dangling `--` in the
-  // author's snippet. Masking keeps every offset, so the slice stays raw text.
-  const maskedRest = maskLuaCode(rest);
-  const token = /\b(function|if|for|while|end)\b/g;
-  let depth = 1;
-  let end = -1;
-  let iterations = 0;
-  let found: RegExpExecArray | null;
-  while ((found = token.exec(maskedRest)) !== null && iterations < 5000) {
-    iterations += 1;
-    if (found[1] === 'end') {
-      depth -= 1;
-      if (depth === 0) {
-        end = found.index;
-        break;
-      }
-    } else {
-      depth += 1;
-    }
-  }
-  const body = rest.slice(0, end === -1 ? rest.length : end);
+  const body = extractOnExplodeHookBody(moduleText);
 
   const kept: string[] = [];
   const lines = body.split('\n');
@@ -625,7 +633,7 @@ function customExplodeBody(
     if (stripStamp && trimmed.startsWith('if stamp_clear(')) {
       let depth = 0;
       for (; i < lines.length; i += 1) {
-        for (const token of lines[i].match(/\b(if|function|for|while|end)\b/g) ?? []) {
+        for (const token of maskLuaCode(lines[i]).match(/\b(if|function|for|while|end)\b/g) ?? []) {
           depth += token === 'end' ? -1 : 1;
         }
         if (depth <= 0) break;
@@ -682,7 +690,7 @@ function customExplodeBody(
     // `_missile` form for WA's own blast) is generated from the Damage Type
     // toggle, so it is one of ours too. Left in, it would be re-emitted as the
     // author's custom Lua and then armed twice on the next export.
-    if (/^zap\.set_message_electric(?:_missile)?\(/.test(trimmed)) continue;
+    if (stripOwnedBurst && /^zap\.set_message_electric(?:_missile)?\(/.test(trimmed)) continue;
     kept.push(line);
   }
   // A body of comments is not code: nothing to carry, and carrying it would put a
@@ -830,8 +838,7 @@ export async function readBundleFeatures(args: {
                   // from the same table, so the keys are the hand's own).
                   ...(num(fireTable.hand_radius) !== undefined &&
                   (num(fireTable.hand_radius) as number) !==
-                    Number(hold.handRadius ?? 10) &&
-                  (num(fireTable.hand_radius) as number) > 0.5
+                    Number(hold.handRadius ?? 10)
                     ? { fireHandRadius: num(fireTable.hand_radius) }
                     : {}),
                   ...(num(fireTable.hand_rotation) !== undefined &&
@@ -864,7 +871,11 @@ export async function readBundleFeatures(args: {
                           ) / 1000,
                       }
                     : {}),
-                  ...(fireTable.draw_hand === false ? { fireDrawHand: false } : {}),
+                  ...(fireTable.draw_hand === false
+                    ? { fireDrawHand: false }
+                    : fireTable.draw_hand === true
+                      ? { fireDrawHand: true }
+                      : {}),
                   // The firing window and the main weapon, both new with the
                   // `fire` role (an old `firing` table has neither).
                   ...(holdFireTable
@@ -1086,12 +1097,11 @@ export async function readBundleFeatures(args: {
         }
       }
       const meleeSoundOf = async (role: 'hit' | 'miss'): Promise<MeleeSound> => {
-        const fallback = role === 'hit' ? DEFAULT_MELEE.hitSound : DEFAULT_MELEE.missSound;
         const wav = str(meleeTable[`${role}_wav`]);
-        const id = Math.max(0, Math.round(num(meleeTable[`${role}_sound`]) ?? fallback.id));
+        const id = Math.max(0, Math.round(num(meleeTable[`${role}_sound`]) ?? 0));
         const priority = Math.max(
           0,
-          Math.round(num(meleeTable[`${role}_priority`]) ?? fallback.priority),
+          Math.round(num(meleeTable[`${role}_priority`]) ?? 8),
         );
         if (!wav) return { id, priority };
         const asset = await readAsset(files, bundleDir, wav);
@@ -1636,8 +1646,9 @@ export async function readBundleFeatures(args: {
   // table, but an overlay arms WA's own blast instead (`set_message_electric_
   // missile`) and carries no kind, so the arm itself is the other half of the
   // signal. Either way the module is required only for an electric burst.
+  const onExplodeText = extractOnExplodeHookBody(moduleText);
   const armedElectric =
-    /zap\.set_message_electric(?:_missile)?\(/.test(moduleText) &&
+    /zap\.set_message_electric(?:_missile)?\(/.test(onExplodeText) &&
     moduleText.includes('wf-lib/electric/damage');
   if (blastCall || burstCall) {
     let effect = explosionBase;
@@ -1694,7 +1705,7 @@ export async function readBundleFeatures(args: {
       const match = new RegExp(
         `\\b${axis}\\s*=[^\\n]*?\\.${axis}\\s*([+-])\\s*([\\d.]+)`,
       ).exec(text);
-      if (!match) return axis === 'y' ? -3 : 0;
+      if (!match) return 0;
       const value = Number(match[2]);
       return match[1] === '-' ? -value : value;
     };
@@ -1744,6 +1755,9 @@ export async function readBundleFeatures(args: {
   const intervalTable = firstTable(scan, 'SOUND');
   const intervalPath = str(intervalTable?.path);
   if (intervalPath) soundPaths.add(intervalPath);
+  const launchTable = firstTable(scan, 'LAUNCH_SOUND');
+  const launchPathFromTable = str(launchTable?.path);
+  if (launchPathFromTable) soundPaths.add(launchPathFromTable);
   if (shotSound) soundPaths.add(shotSound.path);
 
   if (soundPaths.size > 0) {
@@ -1789,20 +1803,23 @@ export async function readBundleFeatures(args: {
           }
         : undefined;
       if (role === 'launch') {
-        // The launch WAV is the `on_fire` play, which is the only one that names
-        // the firing event rather than the round.
         sounds.launchEnabled = true;
         sounds.launch = sound;
+        const escaped = path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const fromTable =
+          launchTable && str(launchTable.path) === path ? num(launchTable.priority) : undefined;
         const priority = new RegExp(
-          `wa\\.sound\\.play\\(ev\\.worm,\\s*["']${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']\\s*,\\s*(\\d+)\\)`,
+          `wa\\.sound\\.play\\(ev\\.worm,\\s*["']${escaped}["']\\s*,\\s*(\\d+)\\)`,
         ).exec(moduleText);
-        if (priority) sounds.launchPriority = Number(priority[1]);
+        if (fromTable !== undefined) sounds.launchPriority = fromTable;
+        else if (priority) sounds.launchPriority = Number(priority[1]);
       } else if (role === 'explosion') {
         sounds.explosionEnabled = true;
         sounds.explosion = sound;
-        const priority = /wa\.sound\.play\(ev\.worm,\s*["'][^"']+["']\s*,\s*(\d+)\)/.exec(
-          moduleText,
-        );
+        const escaped = path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const priority = new RegExp(
+          `wa\\.sound\\.play\\(ev\\.worm,\\s*["']${escaped}["']\\s*,\\s*(\\d+)\\)`,
+        ).exec(moduleText);
         sounds.explosionPriority = priority ? Number(priority[1]) : sounds.explosionPriority;
       } else if (role === 'interval') {
         sounds.intervalEnabled = true;
@@ -1835,72 +1852,7 @@ export async function readBundleFeatures(args: {
   for (const [slot, path] of Object.entries(mappedPackArt) as [PackArtSlot, string][]) {
     setPackPath(slot, path);
   }
-  const sourceSprites = source?.sprites;
-  const claimSprites = isTable(sourceSprites) ? sourceSprites : undefined;
-  // A claim `sprites` list is every sheet the claim needs, and a shared file's
-  // name belongs to whoever used it first: the exporter's sheet dedupe can point
-  // a **hold** sheet at another weapon's `body.png` because the bytes matched, and
-  // a name-based reading then called it the weapon's strike art (which also
-  // suppressed `params`, so the re-exported aim layer lost its `gpu_prefix`). A
-  // path a known role already owns is not pack art.
-  // The roles are read from the calls the claim is built from, so every sheet
-  // `sb.hold` / `sb.flight` / `wa.land.stamp` names is art a role already owns.
-  // A path there is not pack art, however its file happens to be named.
-  const roleOwned = new Set<string>();
-  const ownPaths = (value: LuaValue | undefined, depth = 0): void => {
-    if (depth > 4) return;
-    if (typeof value === 'string') {
-      // Only paths: an `anim = "track"` or a `hand = holds.PX_HANDS[2]` literal is
-      // not a sheet name, and a path always has a slash and an extension.
-      if (value.includes('/') && /\.[a-z0-9]+$/i.test(value)) roleOwned.add(value);
-      return;
-    }
-    if (Array.isArray(value)) {
-      for (const item of value) ownPaths(item, depth + 1);
-      return;
-    }
-    if (isTable(value)) {
-      for (const item of Object.values(value)) ownPaths(item, depth + 1);
-    }
-  };
   const stampCall = readCallTable(moduleText, 'wa.land.stamp');
-  ownPaths(sbHold?.table);
-  ownPaths(flight?.table);
-  ownPaths(stampCall?.table);
-  for (const path of [
-    // A hold that needs no layer is a plain claim table, so its sheet is read
-    // into the project rather than out of a call.
-    project.hold?.sheet,
-    project.missileSprite?.sheet,
-    ...Object.values(project.customSprites ?? {}).map((asset) => asset?.path),
-    ...(project.carriedLua?.art?.sprites ?? []),
-  ]) {
-    if (typeof path === 'string' && path) roleOwned.add(path);
-  }
-  if (claimSprites) {
-    for (const value of Object.values(claimSprites)) {
-      if (typeof value !== 'string') continue;
-      if (roleOwned.has(value)) continue;
-      // Our own exports name the files by role (`trail.png`, `bit.png`,
-      // `bit_homing.png`, `bit_trail.png`, `body.png`), so match the stem
-      // exactly: `bit_flight.png` is the builder's bit sheet, not cluster art.
-      const base = value.split('/').pop()?.toLowerCase() ?? '';
-      const stem = base.replace(/\.[^.]+$/, '');
-      const slot: PackArtSlot | undefined =
-        stem === 'trail'
-          ? 'missile_trail'
-          : stem === 'bit'
-            ? 'cluster_sprite'
-            : stem === 'bit_homing'
-              ? 'cluster_homing_sprite'
-              : stem === 'bit_trail'
-                ? 'cluster_trail'
-                : stem === 'body'
-                  ? 'strike_sprite'
-                  : undefined;
-      if (slot) setPackPath(slot, value);
-    }
-  }
   const sourceCluster = source?.cluster;
   const claimCluster = isTable(sourceCluster) ? sourceCluster : undefined;
   setPackPath('cluster_sprite', str(claimCluster?.sprite));
