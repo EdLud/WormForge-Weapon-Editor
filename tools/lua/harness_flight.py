@@ -38,6 +38,9 @@ lua = LuaRuntime(unpack_returned_tuples=True)
 
 # ---------------------------------------------------------------- the fake wa ---
 WORLD = {"frame": 0, "keys": {"space": False}}
+# The worms `wa.worms.all()` lists; the one with `turn` is the follower's owner.
+# Empty is a real state: a worm that has lost control is still flying its shot.
+WORMS = []
 LOG = []
 SPAWNS = []
 CALLS = {}
@@ -51,7 +54,7 @@ wa.world = lua.table()
 wa.world.frame = lambda: WORLD["frame"]
 wa.world.keys = lambda: lua.table_from(WORLD["keys"])
 wa.worms = lua.table()
-wa.worms.all = lambda: lua.table()
+wa.worms.all = lambda: lua.table_from([lua.table_from(w) for w in WORMS])
 wa.math = lua.table()
 wa.math.sin = math.sin
 wa.math.cos = math.cos
@@ -71,7 +74,10 @@ wa.weapons.hold_sheet = lambda weapon, n: None
 
 def spawn(spec):
     # A follower actor: `sb.flight` writes `.x/.y/.vx/.vy/.facing` and calls
-    # `frame`, `gfx` and `despawn` on it.
+    # `frame`, `gfx` and `despawn` on it. A missile frame has no worm of its
+    # own, so the engine refuses a spawn that names no owner, as here.
+    if spec["owner"] is None:
+        raise RuntimeError("spawn needs an owner worm or actor")
     SPAWNS.append(spec)
     actor = lua.table()
     for name in ("frame", "gfx", "despawn", "sound"):
@@ -273,6 +279,41 @@ check("bit_window = 1 still catches the burst", sb.role(41) == "bit", repr(sb.ro
 advance(4)
 step(42, 54, "test.window")
 check("bit_window = 1 ends before the next shot", sb.role(42) == "main", repr(sb.role(42)))
+
+# ---- Owner: the follower is spawned when no worm has the turn ---------------
+# A worm that lost control leaves no turn worm while its shot is in the air. The
+# spawn used to fail every frame there, with WA's sprite already hidden, so the
+# round flew with no art at all.
+WORMS.clear()
+flight("test.owner", track=False)
+before = len(SPAWNS)
+step(70, 0, "test.owner")
+check("with no turn worm the follower is still spawned", len(SPAWNS) == before + 1, str(len(SPAWNS) - before))
+check("and is no team's", len(SPAWNS) > before and SPAWNS[-1]["owner"] == "none", repr(SPAWNS[-1]["owner"]) if len(SPAWNS) > before else "none spawned")
+WORMS.append({"id": 3, "turn": True})
+step(71, 0, "test.owner", 400, 400)
+check("with a turn worm it is that worm's", SPAWNS[-1]["owner"] is not None and SPAWNS[-1]["owner"]["id"] == 3, repr(SPAWNS[-1]["owner"]))
+WORMS.clear()
+
+# ---- The deferred frame does not show WA's stock sprite ----------------------
+# A burst listed on the round's own frame is decided a frame later. WA draws
+# `m.sprite` in between, which showed its stock clustlet (54) for one frame at
+# every split. The builder hides it during the wait and keeps it as the signal.
+flight("test.flash", track=False, bits=bits_table())
+WORLD["frame"] += 1
+call(80, 54, "test.flash", 1000, 1000)
+# One missile across both phases: `m.sprite` is the missile's own field in WA,
+# so a write in one phase is what WA draws after the frame.
+bit = missile(81, 54, "test.flash", 1000, 1000)
+for phase in ("pre", "post"):
+    bit.phase = phase
+    for fn in FRAMES:
+        fn(bit)
+check("a burst bit waiting for its answer hides WA's sprite", bit.sprite == 0, repr(bit.sprite))
+check("and is not decided yet", sb.role(81) is None, repr(sb.role(81)))
+WORLD["frame"] += 1
+call(81, 0, "test.flash", 1000, 1000)
+check("the next frame it is a bit", sb.role(81) == "bit", repr(sb.role(81)))
 
 if fails > 0:
     print(f"\n{fails} check(s) failed")
