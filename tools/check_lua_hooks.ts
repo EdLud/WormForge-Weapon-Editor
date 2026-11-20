@@ -589,6 +589,118 @@ const lines = (...rows: string[]) => rows.join(nl);
   );
 }
 
+// ---- F13: block depth, install lookup and the claim-hook scan -------------
+{
+  // `until` closes `repeat` without ending the statement: the condition after it
+  // belongs to the same block, and the body region stops before `install`'s own
+  // `end` (a split that walked onto it noted a phantom unclosed block).
+  const split = splitModule(
+    lines(
+      'return {',
+      '  install = function(ctx)',
+      '    local x = 0',
+      '    repeat',
+      '      x = x + 1',
+      '    until x > 3',
+      '    local y = 1',
+      '  end,',
+      '}',
+    ),
+  );
+  const texts = split.install?.statements.map((s) => s.text) ?? [];
+  check(
+    'repeat ... until <cond> inside install is one statement',
+    texts.length === 3 && texts[1].endsWith('until x > 3') && texts[2] === 'local y = 1',
+    JSON.stringify(texts),
+  );
+  check('and the split reports nothing unclosed', split.notes.length === 0, split.notes.join(' | '));
+}
+{
+  // `uninstall` ends in `install`, and so used to match as the install function.
+  const split = splitModule(
+    lines(
+      'local function uninstall(x)',
+      '  return x',
+      'end',
+      'function M.install(ctx)',
+      '  wa.on.draw(function() end)',
+      'end',
+    ),
+  );
+  check(
+    'function uninstall(x) is not taken for install',
+    !!split.install && !split.install.bodyText.includes('return x') && split.install.bodyText.includes('wa.on.draw'),
+    JSON.stringify(split.install?.bodyText),
+  );
+  const plain = splitModule(lines('function install(ctx)', '  wa.on.draw(function() end)', 'end'));
+  check('a plain function install(ctx) is found', !!plain.install?.bodyText.includes('wa.on.draw'));
+}
+{
+  // A table hook with keys before `on =`: the teleport claim's own shape.
+  const split = splitModule(
+    lines(
+      'return {',
+      '  install = function(ctx)',
+      '    wa.weapons.replace{',
+      '      copy_from = "stock.teleport",',
+      '      on_select = { cursor = true, on = function(sel) mark(sel) end },',
+      '    }',
+      '  end,',
+      '}',
+    ),
+  );
+  check(
+    'on_select = { cursor = true, on = function ... } is captured',
+    split.hooks.on_select === 'function(sel) mark(sel) end',
+    split.hooks.on_select ?? 'none',
+  );
+}
+{
+  // A hook-named key in a table that is not the claim (a helper's options, an
+  // unrelated table) is not a claim hook of this weapon.
+  const split = splitModule(
+    lines(
+      'local function helper()',
+      '  local t = { on_explode = function(ev) boom(ev) end }',
+      '  return t',
+      'end',
+      'return {',
+      '  install = function(ctx)',
+      '    wa.weapons.replace{ copy_from = "stock.grenade" }',
+      '  end,',
+      '}',
+    ),
+  );
+  check(
+    'on_explode outside wa.weapons.replace is not a claim hook',
+    split.hooks.on_explode === undefined,
+    split.hooks.on_explode ?? 'none',
+  );
+}
+{
+  // A hand-written trail that happens to use the same names (`TRAIL`,
+  // `trail.add`) through its own library is the author's code: claiming it as
+  // ours dropped the handler on import.
+  const foreignTrail = lines(
+    'return {',
+    '  install = function(ctx)',
+    '    local trail = require("lib/my_trail")',
+    '    local TRAIL = { max = 10 }',
+    '    wa.on.missile_frame(function(m)',
+    '      if m.weapon ~= ctx.id then return end',
+    '      trail.add(m.id, nil, TRAIL)',
+    '    end)',
+    '  end,',
+    '}',
+  );
+  const out = ownOutputOf(splitModule(foreignTrail));
+  check(
+    'a TRAIL handler without wf-lib/effects/trail is foreign',
+    out.own.length === 0 && out.foreign.length === 1,
+    `own ${out.own.map((o) => o.emission.feature).join(',') || 'none'}, foreign ${out.foreign.length}`,
+  );
+}
+
 if (failed > 0) {
   console.error(`\n${failed} check(s) failed`);
   process.exit(1);
