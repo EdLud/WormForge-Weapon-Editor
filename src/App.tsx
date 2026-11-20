@@ -210,8 +210,12 @@ export default function App() {
   // Keyboard navigation hotkeys (1: Record, 2: Hold, 3: Effects, 4: Code)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement).tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      // Ctrl/Cmd/Alt + digit is the browser's (tab switching), and a
+      // contenteditable is a text field like the three tags are.
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target?.isContentEditable) return;
 
       if (e.key === '1') setActiveTab('editor');
       else if (e.key === '2') setActiveTab('hold');
@@ -401,7 +405,11 @@ export default function App() {
         // inherited from the .wep; only edits become named overrides. A bundle
         // import supplies its own baseline (the decoded `.wep` *before* the
         // module's declared tables), so those edits are what gets written.
-        wepBaseline: parsed.wepBaseline ?? (useWepFile
+        // Snapshotted whenever a file came with the import, not only when it is
+        // used: the settings toggle can switch to the file later, and a baseline
+        // taken then would be the *edited* project, so every edit made in
+        // between would match it and silently drop from the export.
+        wepBaseline: parsed.wepBaseline ?? (parsed.wepFile
           ? {
               body: { ...body, clustlet: { ...body.clustlet } },
               action,

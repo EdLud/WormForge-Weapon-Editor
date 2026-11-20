@@ -35,6 +35,9 @@ import { scanLua } from '../src/utils/modLib/luaTable';
 import { parseWepBinary } from '../src/utils/wepParser';
 import { DEFAULT_IMPORT_HOLD, readBundleFeatures } from '../src/utils/modLib/importFeatures';
 import { weaponBundlePart } from '../src/utils/packExporter';
+import { normalizeTintHex, parseHexColour } from '../src/utils/sheetTint';
+import { burstFade, emitterReachWidths, emitterTrailWidths } from '../src/utils/previewSettings';
+import { commitStockSprite } from '../src/data/stockSprites';
 import type { WeaponProject } from '../src/types/weapon';
 
 let failed = 0;
@@ -1592,6 +1595,48 @@ local afterHook = 42`;
     strikeWep.projectState.recordOverrides?.['strike.plane'] === 0x3c,
     String(strikeWep.projectState.recordOverrides?.['strike.plane']),
   );
+}
+
+// ---- F14: the preview reads the colour and the zeros the export writes -----
+{
+  // Canvas 2D drops a colour without its `#` and keeps a black fill, so a pasted
+  // `ff8800` made the effect vanish while `hexToRgb` exported it orange.
+  check('a bare 6-hex tint gains its #', normalizeTintHex('ff8800') === '#ff8800', normalizeTintHex('ff8800'));
+  check('a 3-hex tint expands', normalizeTintHex('#f80') === '#ff8800', normalizeTintHex('#f80'));
+  check('a bare 3-hex tint expands', normalizeTintHex('f80') === '#ff8800', normalizeTintHex('f80'));
+  check('a 6-hex tint with # is kept', normalizeTintHex(' #82B4FF ') === '#82b4ff', normalizeTintHex(' #82B4FF '));
+  check(
+    'anything else is the untinted white',
+    normalizeTintHex('orange') === '#ffffff' && normalizeTintHex('') === '#ffffff' && normalizeTintHex('#ff88') === '#ffffff',
+  );
+  const rgb = parseHexColour('f80');
+  check('parseHexColour reads 3-hex too', rgb.r === 255 && rgb.g === 136 && rgb.b === 0, JSON.stringify(rgb));
+
+  // `fade = 0` is a constant burst in Lua (`o.fade or 0.55` is 0).
+  check('burst fade 0 stays 0', burstFade({ fade: 0 }) === 0, String(burstFade({ fade: 0 })));
+  check('and a missing fade is the SDK default', burstFade({} as { fade: number }) === 0.55);
+
+  // A zero width hides that pass in the SDK; the preview substituted 8 and 13.
+  const reach = emitterReachWidths({ reachCoreWidth: 0, reachGlowWidth: 0 });
+  check('reach widths of 0 stay 0', reach.coreW === 0 && reach.glowW === 0, JSON.stringify(reach));
+  const reachDefault = emitterReachWidths({} as { reachCoreWidth: number; reachGlowWidth: number });
+  check('and missing reach widths are 8 and 13', reachDefault.coreW === 8 && reachDefault.glowW === 13, JSON.stringify(reachDefault));
+  const trail = emitterTrailWidths({ coreWidth: 0, glowWidth: 5 });
+  check('an emitter ribbon core of 0 stays 0', trail.coreW === 0 && trail.glowW === 5, JSON.stringify(trail));
+  check('and a negative width draws nothing', emitterTrailWidths({ coreWidth: -3, glowWidth: -1 }).coreW === 0);
+}
+
+// ---- F15: a numeric sprite box only commits a sprite --------------------------
+{
+  // Typing `skunk2` passes through `s`, `sk`, ...: none of those may reach the
+  // project, where `Number("s")` was a NaN written into the exported Lua.
+  check('a half-typed name commits nothing', commitStockSprite('s') === undefined && commitStockSprite('skun') === undefined);
+  const skunk = commitStockSprite('skunk2');
+  check('a stock name commits its id', skunk !== undefined && /^[0-9]+$/.test(skunk), String(skunk));
+  check('an empty box commits empty', commitStockSprite('  ') === '');
+  check('an id commits as itself', commitStockSprite('153') === '153' && commitStockSprite('0') === '0');
+  check('a flagged id commits the id it flags', commitStockSprite(String(0x10000 + 153)) === '153');
+  check('a negative or fractional number is not an id', commitStockSprite('-1') === undefined && commitStockSprite('1.5') === undefined);
 }
 
 if (failed > 0) {

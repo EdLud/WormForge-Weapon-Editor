@@ -4,6 +4,7 @@ import type { CustomSoundAsset, MeleeHit, MeleeSound, WeaponProject } from '../t
 import { DEFAULT_MELEE, meleeStrikes, meleeTotalDamage } from '../data/melee';
 import { SOUND_PRIORITIES } from '../data/soundPresets';
 import { KeyTickInput } from './KeyTickInput';
+import { NumberInput } from './NumberInput';
 import { SoundUpload } from './EffectsCards';
 
 interface MeleeCardProps {
@@ -64,9 +65,8 @@ const MeleeSoundField: React.FC<{
           >
             Id
           </label>
-          <input
+          <NumberInput
             id={`melee-${role}-sound`}
-            type="number"
             min={0}
             max={2000}
             value={sound.id}
@@ -159,8 +159,7 @@ const StrikeSoundCell: React.FC<{
           patch({ file: asset });
         }}
       />
-      <input
-        type="number"
+      <NumberInput
         min={0}
         max={2000}
         value={sound.id}
@@ -321,9 +320,8 @@ export const MeleeCard: React.FC<MeleeCardProps> = ({ project, onChange }) => {
               >
                 Scan Reach (px)
               </label>
-              <input
+              <NumberInput
                 id="melee-radius"
-                type="number"
                 min={4}
                 max={200}
                 value={melee.radius}
@@ -343,9 +341,8 @@ export const MeleeCard: React.FC<MeleeCardProps> = ({ project, onChange }) => {
               >
                 Scan Width (px, each side)
               </label>
-              <input
+              <NumberInput
                 id="melee-width"
-                type="number"
                 min={2}
                 max={120}
                 value={melee.width}
@@ -461,11 +458,13 @@ export const MeleeCard: React.FC<MeleeCardProps> = ({ project, onChange }) => {
                       value: number,
                       patch: (value: number) => Partial<MeleeHit>,
                       step = 1,
+                      // Only damage and power are non-negative: a negative vy is an
+                      // upward throw, and vx and lift take a sign too.
+                      min?: number,
                     ) => (
-                      <input
-                        type="number"
+                      <NumberInput
                         step={step}
-                        min={0}
+                        min={min}
                         aria-label={ariaLabel}
                         value={value}
                         onChange={(event) => {
@@ -491,6 +490,8 @@ export const MeleeCard: React.FC<MeleeCardProps> = ({ project, onChange }) => {
                             `Strike ${index + 1} damage`,
                             hit.damage,
                             (value) => ({ damage: value }),
+                            1,
+                            0,
                           )}
                         </td>
                         {melee.pushMode === 'aim' ? (
@@ -500,6 +501,7 @@ export const MeleeCard: React.FC<MeleeCardProps> = ({ project, onChange }) => {
                               hit.power,
                               (value) => ({ power: value }),
                               0.5,
+                              0,
                             )}
                           </td>
                         ) : (
@@ -649,9 +651,8 @@ export const MeleeCard: React.FC<MeleeCardProps> = ({ project, onChange }) => {
                   >
                     Default vx
                   </label>
-                  <input
+                  <NumberInput
                     id="melee-push-vx"
-                    type="number"
                     step={0.5}
                     min={-20}
                     max={20}
@@ -672,9 +673,8 @@ export const MeleeCard: React.FC<MeleeCardProps> = ({ project, onChange }) => {
                   >
                     Default vy
                   </label>
-                  <input
+                  <NumberInput
                     id="melee-push-vy"
-                    type="number"
                     step={0.5}
                     min={-20}
                     max={20}

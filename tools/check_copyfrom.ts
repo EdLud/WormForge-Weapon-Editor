@@ -20,6 +20,7 @@ import { DEFAULT_CUSTOM_SOUNDS } from '../src/data/soundPresets';
 import { DEFAULT_ROLE_ART } from '../src/data/spriteBuilder';
 import { generateLuaCode } from '../src/utils/luaGenerator';
 import { rebaseToDonor } from '../src/utils/donorRebase';
+import { recordField } from '../src/utils/recordField';
 
 const failures: string[] = [];
 const check = (name: string, ok: boolean, detail = '') => {
@@ -155,6 +156,50 @@ const has = (lua: string, text: string) => lua.includes(text);
     rebasedEndsTurn.recordOverrides['handling.ends_turn'] === false,
     String(rebasedEndsTurn.recordOverrides['handling.ends_turn']),
   );
+}
+
+// ---- F15: what the editor shows is what the record will hold -------------
+{
+  // `recordField` is the one reading every record control goes through: the
+  // author's value, else the baseline the export diffs against, else the
+  // control's own default. Showing a default instead (a Grenade's launch power
+  // as 100%) lied about the weapon and wrote the lie on the first edit.
+  const grenade = stockDonorBaseline('grenade')!;
+  const wepBaseline = {
+    ...grenade,
+    recordOverrides: { ...grenade.recordOverrides, 'missile.explosion.power': 45, 'handling.shots': 3 },
+  };
+  const base = {
+    recordOverrides: {},
+    donorBaseline: grenade,
+    wepBaseline,
+    useWepFile: false,
+  } as unknown as WeaponProject;
+  check(
+    'recordField reads the donor when the .wep is not used, even with a .wep baseline stored',
+    recordField(base, 'fires.launch_power_pct', 100) === 0 && recordField(base, 'handling.shots', 1) === 1,
+    `${recordField(base, 'fires.launch_power_pct', 100)}, ${recordField(base, 'handling.shots', 1)}`,
+  );
+  const masks = recordField(base, 'missile.bounce.hits', undefined) as Record<string, boolean> | undefined;
+  check(
+    'and the donor masks, not an empty one',
+    !!masks && Object.keys(masks).length === 9 && masks.land === true,
+    JSON.stringify(masks),
+  );
+  const usingWep = { ...base, useWepFile: true } as WeaponProject;
+  check(
+    'recordField reads the .wep baseline when the file is used',
+    recordField(usingWep, 'missile.explosion.power', 0) === 45 && recordField(usingWep, 'handling.shots', 1) === 3,
+  );
+  const own = {
+    ...usingWep,
+    recordOverrides: { 'missile.explosion.power': 0, 'missile.alarm_worms': false },
+  } as unknown as WeaponProject;
+  check(
+    'an override beats both baselines, 0 and false included',
+    recordField(own, 'missile.explosion.power', 99) === 0 && recordField(own, 'missile.alarm_worms', true) === false,
+  );
+  check('a field nobody names is the fallback', recordField(base, 'no.such.field', 7) === 7);
 }
 
 if (failures.length > 0) {

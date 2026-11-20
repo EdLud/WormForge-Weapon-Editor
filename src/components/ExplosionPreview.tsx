@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ExplosionEffectConfig } from '../types/weapon';
 import { assetUrl } from '../utils/assetUrl';
 import { tintedSheet } from '../utils/sheetTint';
+import { burstFade } from '../utils/previewSettings';
 import frozenWormSrc from '../../spec/wicestnd.png';
 
 /**
@@ -236,7 +237,7 @@ export function ExplosionPreview({ config }: ExplosionPreviewProps) {
     const cy = height / 2;
     const seed = 1337 + replay * 7919;
     const age = Math.min(frame, live + 1);
-    const fade = config.fade || 0.55;
+    const fade = burstFade(config);
     const duration = Math.max(1, Math.round(config.duration));
     const rebufferAt = Math.max(1, Math.round(config.rebuffer ? 16 : 0));
     const rebuffered = config.rebuffer && age >= rebufferAt;
@@ -462,6 +463,6 @@ export function ExplosionPreview({ config }: ExplosionPreviewProps) {
 
 function currentRadiusForLabel(config: ExplosionEffectConfig, frame: number): number {
   const duration = Math.max(1, Math.round(config.duration));
-  const progress = clamp01((Math.min(frame, config.live) * (config.fade || 0.55)) / duration);
+  const progress = clamp01((Math.min(frame, config.live) * burstFade(config)) / duration);
   return Math.max(1, config.radius) * (1 + Math.max(0, config.grow) * progress);
 }

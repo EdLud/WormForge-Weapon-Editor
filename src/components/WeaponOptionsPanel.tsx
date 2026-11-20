@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { ChevronDown, Settings2 } from 'lucide-react';
 import type { WeaponOptionConfig, WeaponProject } from '../types/weapon';
+import { NumberInput } from './NumberInput';
 
 interface WeaponOptionsPanelProps {
   project: WeaponProject;
@@ -141,14 +142,14 @@ export const WeaponOptionsPanel: React.FC<WeaponOptionsPanelProps> = ({ project,
                     <span className="truncate">{value === true ? 'On' : 'Off'}</span>
                   </label>
                 ) : option.kind === 'int' ? (
-                  <input
+                  <NumberInput
                     id={id}
-                    type="number"
                     min={option.min}
                     max={option.max}
                     value={typeof value === 'number' ? value : 0}
                     onChange={(event) => {
-                      // Zero is a value: `parseInt` on an empty box is a real 0.
+                      // Only text that parses reaches here: an empty box or a lone
+                      // `-` is a draft, not the option's minimum.
                       const next = parseInt(event.target.value, 10);
                       setValue(option.key, Number.isFinite(next) ? next : (option.min ?? 0));
                     }}

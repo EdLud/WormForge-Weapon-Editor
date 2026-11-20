@@ -4,6 +4,7 @@ import type { EmitterConfig } from '../types/weapon';
 import { EMITTER_PRESETS } from '../data/emitter';
 import { assetUrl } from '../utils/assetUrl';
 import { hexOf, parseHexColour, tintedSheet } from '../utils/sheetTint';
+import { emitterReachWidths, emitterTrailWidths } from '../utils/previewSettings';
 
 /**
  * 50 Hz preview of `fx.emitter` (`wf-lib/effects/px_effects`), PX's
@@ -239,8 +240,7 @@ function cosmetics(cfg: EmitterConfig) {
     bulge: cfg.reachBulge,
     noise: Math.max(0, cfg.reachNoise),
     segments: Math.max(1, Math.min(255, Math.round(cfg.reachSegments))),
-    coreW: cfg.reachCoreWidth > 0 ? cfg.reachCoreWidth : 8,
-    glowW: cfg.reachGlowWidth > 0 ? cfg.reachGlowWidth : 13,
+    ...emitterReachWidths(cfg),
   };
 }
 
@@ -741,8 +741,7 @@ export function EmitterPreview({ config, roundOk }: EmitterPreviewProps) {
     if (cfg.trail.enabled && state.trail.length >= 2) {
       const n = state.trail.length;
       const noise = Math.max(0, cfg.trail.noise);
-      const coreW = cfg.trail.coreWidth > 0 ? cfg.trail.coreWidth : 8;
-      const glowW = cfg.trail.glowWidth;
+      const { coreW, glowW } = emitterTrailWidths(cfg.trail);
       const points = state.trail.map((point, index) => {
         let x = point.x;
         let y = point.y;
@@ -763,10 +762,12 @@ export function EmitterPreview({ config, roundOk }: EmitterPreviewProps) {
         const colour = rainbow || cfg.trail.rainbow ? hexOf(r, g, b) : cfg.trail.color;
         return { x: sx(x), y: sy(y), width: f * coreW, alpha: f, colour };
       });
-      ribbon(points, 'beam', false);
+      if (coreW > 0) ribbon(points, 'beam', false);
       if (glowW > 0) {
+        // `f * glow_w`, as trail.lua sizes it: scaling the core width instead
+        // divided by a zero core.
         ribbon(
-          points.map((p) => ({ ...p, width: (p.width / coreW) * glowW })),
+          points.map((p) => ({ ...p, width: p.alpha * glowW })),
           'glow',
           false,
         );
@@ -837,7 +838,7 @@ export function EmitterPreview({ config, roundOk }: EmitterPreviewProps) {
           }
           return points;
         };
-        ribbon(build(bolt.coreW), 'beam', false);
+        if (bolt.coreW > 0) ribbon(build(bolt.coreW), 'beam', false);
         if (bolt.glowW > 0) ribbon(build(bolt.glowW), 'glow', false);
       }
     }

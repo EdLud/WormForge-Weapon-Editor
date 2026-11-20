@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 /**
  * Tap-to-read tooltips.
@@ -36,19 +36,22 @@ export const TooltipTap: React.FC = () => {
   const [tip, setTip] = useState<Tip | null>(null);
   const holder = useRef<HTMLElement | null>(null);
 
-  useEffect(() => {
-    const close = () => {
-      const element = holder.current;
-      if (element) {
-        const text = element.getAttribute('data-tip-tap');
-        if (text !== null) {
-          element.setAttribute('title', text);
-          element.removeAttribute('data-tip-tap');
-        }
+  // At component scope, because the bubble's own `onClick` needs it too: inside
+  // the effect, that JSX `close` resolved to the global `window.close`.
+  const close = useCallback(() => {
+    const element = holder.current;
+    if (element) {
+      const text = element.getAttribute('data-tip-tap');
+      if (text !== null) {
+        element.setAttribute('title', text);
+        element.removeAttribute('data-tip-tap');
       }
-      holder.current = null;
-      setTip(null);
-    };
+    }
+    holder.current = null;
+    setTip(null);
+  }, []);
+
+  useEffect(() => {
 
     const onPointerDown = (event: Event) => {
       const target = event.target as HTMLElement | null;
@@ -122,7 +125,7 @@ export const TooltipTap: React.FC = () => {
       window.removeEventListener('scroll', close, true);
       window.removeEventListener('resize', close);
     };
-  }, []);
+  }, [close]);
 
   if (!tip) return null;
 

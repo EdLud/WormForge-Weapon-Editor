@@ -17,6 +17,11 @@ type DraftProps = Omit<
 > & {
   value: number | string | undefined | null;
   onChange?: (event: React.ChangeEvent<HTMLInputElement>) => void;
+  /**
+   * Pass a cleared box on as `''`, for a field where empty is a value of its own
+   * (a keyframe with no frame of its own). Off, an empty box writes nothing.
+   */
+  allowEmpty?: boolean;
 };
 
 /** The draft text, plus the handlers that keep it in step with the project. */
@@ -24,6 +29,7 @@ export const useNumberDraft = (
   value: number | string | undefined | null,
   onChange?: (event: React.ChangeEvent<HTMLInputElement>) => void,
   onBlur?: (event: React.FocusEvent<HTMLInputElement>) => void,
+  allowEmpty = false,
 ) => {
   const [draft, setDraft] = useState<string | null>(null);
   const shown = draft ?? (value === undefined || value === null ? '' : String(value));
@@ -31,8 +37,10 @@ export const useNumberDraft = (
   const handleChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const text = event.target.value;
     if (text.trim() === '') {
-      // Cleared: show the empty box, write nothing. Blur puts the value back.
+      // Cleared: show the empty box, write nothing. Blur puts the value back,
+      // unless empty is a value here, in which case the caller hears it.
       setDraft('');
+      if (allowEmpty) onChange?.(event);
       return;
     }
     if (Number.isNaN(Number(text))) {
@@ -56,9 +64,10 @@ export const NumberInput: React.FC<DraftProps> = ({
   value,
   onChange,
   onBlur,
+  allowEmpty,
   ...props
 }) => {
-  const { shown, handleChange, handleBlur } = useNumberDraft(value, onChange, onBlur);
+  const { shown, handleChange, handleBlur } = useNumberDraft(value, onChange, onBlur, allowEmpty);
   return (
     <input type="number" {...props} value={shown} onChange={handleChange} onBlur={handleBlur} />
   );
@@ -74,9 +83,10 @@ export const UnitNumberInput: React.FC<DraftProps & { unit?: string }> = ({
   value,
   onChange,
   onBlur,
+  allowEmpty,
   ...props
 }) => {
-  const { shown, handleChange, handleBlur } = useNumberDraft(value, onChange, onBlur);
+  const { shown, handleChange, handleBlur } = useNumberDraft(value, onChange, onBlur, allowEmpty);
   if (!unit) {
     return (
       <input

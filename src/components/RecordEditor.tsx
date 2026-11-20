@@ -34,6 +34,7 @@ import { NumberInput, useNumberDraft } from './NumberInput';
 import { MeleeCard } from './MeleeCard';
 import { LuaFindings } from './LuaFindings';
 import { checkLua, fixLockstepRng } from '../utils/luaCheck';
+import { recordField } from '../utils/recordField';
 
 type CollisionTargetKey = Exclude<keyof CollisionMask, 'extra_bits'>;
 
@@ -399,15 +400,21 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
     onChange({ recordOverrides: updated });
   };
 
+  // What the record will hold once the bundle loads: the author's override, else
+  // the donor's or the .wep's own value, else the fallback. Showing the fallback
+  // instead made a field the template sets look unset, and the first edit wrote
+  // that wrong value (a Grenade showed 100% launch power and empty bounce masks).
+  const field = (path: string, fallback: unknown) => recordField(project, path, fallback);
+
   const endsOnContactMask: CollisionMask =
-    project.recordOverrides['missile.ends_on_contact'] || {
+    field('missile.ends_on_contact', undefined) || {
       land: true,
       worms: true,
       mines: true,
       crates: true,
       water: true,
     };
-  const bounceHitsMask: CollisionMask = project.recordOverrides['missile.bounce.hits'] || {};
+  const bounceHitsMask: CollisionMask = field('missile.bounce.hits', undefined) || {};
 
   const toggleMaskTarget = (path: string, key: CollisionTargetKey, current: CollisionMask) => {
     updateOverride(path, toggleMaskValue(current, key));
@@ -431,7 +438,7 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
         min={opts.min}
         max={opts.max}
         step={opts.step}
-        value={project.recordOverrides[path] ?? fallback}
+        value={field(path, fallback)}
         onChange={(e) => updateOverride(path, Number(e.target.value))}
         title={buildTooltip(desc, opts.code ?? path)}
         unit={opts.unit}
@@ -468,7 +475,7 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
 
   const animField = (path: string, label: string, fallback: number) =>
     animSelect(
-      Number(project.recordOverrides[path] ?? fallback),
+      Number(field(path, fallback)),
       (next) => updateOverride(path, next),
       label,
       path,
@@ -847,7 +854,7 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
                     desc="Whether the aircraft drops proximity Mines or falling Missiles."
                   />
                   <select
-                    value={String(project.recordOverrides['strike.munition'] ?? 2)}
+                    value={String(field('strike.munition', 2))}
                     onChange={(e) => updateOverride('strike.munition', Number(e.target.value))}
                     className={selectClass}
                   >
@@ -885,7 +892,7 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
                     id="fire-launch-power"
                     min={0}
                     max={400}
-                    value={project.recordOverrides['fires.launch_power_pct'] ?? 100}
+                    value={field('fires.launch_power_pct', 100)}
                     onChange={(e) =>
                       updateOverride('fires.launch_power_pct', Number(e.target.value))
                     }
@@ -927,7 +934,7 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
                   id="missile-push-pct"
                   min={0}
                   max={400}
-                  value={project.recordOverrides['missile.explosion.push_pct'] ?? 100}
+                  value={field('missile.explosion.push_pct', 100)}
                   onChange={(e) => updateOverride('missile.explosion.push_pct', Number(e.target.value))}
                   title={buildTooltip('Explosion push force percentage (0% removes knockback).', 'missile.explosion.push_pct')}
                   unit="%"
@@ -1019,7 +1026,7 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
                   id="missile-speed-pct"
                   min={10}
                   max={400}
-                  value={project.recordOverrides['missile.speed_pct'] ?? 100}
+                  value={field('missile.speed_pct', 100)}
                   onChange={(e) => updateOverride('missile.speed_pct', Number(e.target.value))}
                   title={buildTooltip('Initial projectile speed percentage.', 'missile.speed_pct')}
                   unit="%"
@@ -1031,14 +1038,14 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
           <div className="border-t border-stone-200/80 pt-3.5 dark:border-stone-800">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <CheckboxCard
-                checked={!!project.recordOverrides['missile.explode_on_space']}
+                checked={!!field('missile.explode_on_space', false)}
                 onChange={(v) => updateOverride('missile.explode_on_space', v)}
                 label="Detonate on Space"
                 code="missile.explode_on_space"
                 desc="Allows triggering detonation mid-flight by pressing Space (Super Banana Bomb style)."
               />
               <CheckboxCard
-                checked={!!project.recordOverrides['missile.alarm_worms']}
+                checked={!!field('missile.alarm_worms', false)}
                 onChange={(v) => updateOverride('missile.alarm_worms', v)}
                 label="Panic Nearby Worms"
                 code="missile.alarm_worms"
@@ -1064,7 +1071,7 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
             <SubSectionTitle title="Pre-Explosion Warning Sound" code="missile.explosion_sound" />
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 items-end">
               <CheckboxCard
-                checked={!!project.recordOverrides['missile.explosion_sound.enabled']}
+                checked={!!field('missile.explosion_sound.enabled', false)}
                 onChange={(v) => updateOverride('missile.explosion_sound.enabled', v)}
                 label="Play Warning Sound"
                 code="missile.explosion_sound.enabled"
@@ -1155,14 +1162,14 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
                         desc="Percentage of velocity preserved when bouncing off terrain."
                       />
                       <span className="mb-1 font-mono font-bold tabular-nums text-forge-600 dark:text-forge-400">
-                        {project.recordOverrides['missile.bounce.terrain_keep_speed_pct'] ?? 75}%
+                        {field('missile.bounce.terrain_keep_speed_pct', 75)}%
                       </span>
                     </div>
                     <input
                       type="range"
                       min={10}
                       max={100}
-                      value={project.recordOverrides['missile.bounce.terrain_keep_speed_pct'] ?? 75}
+                      value={field('missile.bounce.terrain_keep_speed_pct', 75)}
                       onChange={(e) =>
                         updateOverride('missile.bounce.terrain_keep_speed_pct', Number(e.target.value))
                       }
@@ -1179,7 +1186,7 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
                     <NumberInput
                       min={0}
                       max={20}
-                      value={project.recordOverrides['missile.bounce.max_bounces'] ?? 0}
+                      value={field('missile.bounce.max_bounces', 0)}
                       onChange={(e) => updateOverride('missile.bounce.max_bounces', Number(e.target.value))}
                       className={inputClass}
                     />
@@ -1202,12 +1209,12 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
                 </div>
 
                 <CheckboxCard
-                  checked={(project.recordOverrides['missile.bounce.explosion.power'] ?? 0) > 0}
+                  checked={(field('missile.bounce.explosion.power', 0) ?? 0) > 0}
                   onChange={(checked) =>
                     updateOverride(
                       'missile.bounce.explosion.power',
                       checked
-                        ? project.recordOverrides['missile.bounce.explosion.power'] || body.damage || 20
+                        ? field('missile.bounce.explosion.power', 0) || body.damage || 20
                         : 0
                     )
                   }
@@ -1216,7 +1223,7 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
                   desc="Triggers a contact blast every time the projectile bounces. Power 0 disables it."
                 />
 
-                {(project.recordOverrides['missile.bounce.explosion.power'] ?? 0) > 0 && (
+                {(field('missile.bounce.explosion.power', 0) ?? 0) > 0 && (
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-1">
                     {numField('missile.bounce.explosion.power', 'Contact Blast Power', 20, 'Damage and crater radius per bounce.', { min: 0, max: 500 })}
                     {numField('missile.bounce.explosion.push_pct', 'Contact Knockback', 100, 'Knockback percentage per bounce.', { min: 0, max: 400, unit: '%' })}
@@ -1288,7 +1295,7 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
                       id="homing-sprite"
                       label="Homing Sprite"
                       code="missile.homing.sprite"
-                      value={project.recordOverrides['missile.homing.sprite'] ?? ''}
+                      value={field('missile.homing.sprite', '')}
                       onChange={(v) => updateOverride('missile.homing.sprite', v)}
                       desc="Stock sprite shown while homing."
                     />
@@ -1297,7 +1304,7 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
                       id="homing-trail-sprite"
                       label="Homing Trail Sprite"
                       code="missile.homing.trail.sprite"
-                      value={project.recordOverrides['missile.homing.trail.sprite'] ?? ''}
+                      value={field('missile.homing.trail.sprite', '')}
                       onChange={(v) => updateOverride('missile.homing.trail.sprite', v)}
                       options={TRAIL_SPRITES}
                       desc="Stock trail sprite emitted while homing (0 or blank disables it)."
@@ -1350,6 +1357,8 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
                       placeholder="0"
                       value={project.roamConfig?.gas_animal_sprite ?? 0}
                       onChange={(v) =>
+                        // Only an id reaches here; the guard keeps a NaN out of the record regardless.
+                        Number.isFinite(Number(v)) &&
                         onChange({
                           roamConfig: {
                             ...project.roamConfig,
@@ -1373,6 +1382,7 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
                       placeholder="0"
                       value={project.roamConfig?.flight_1 ?? 0}
                       onChange={(v) =>
+                        Number.isFinite(Number(v)) &&
                         onChange({
                           roamConfig: { ...project.roamConfig, flight_1: v === '' ? 0 : Number(v) },
                         })
@@ -1387,6 +1397,7 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
                       placeholder="0"
                       value={project.roamConfig?.flight_2 ?? 0}
                       onChange={(v) =>
+                        Number.isFinite(Number(v)) &&
                         onChange({
                           roamConfig: { ...project.roamConfig, flight_2: v === '' ? 0 : Number(v) },
                         })
@@ -2002,9 +2013,10 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
                             placeholder="0"
                             value={project.body.clustlet.roam?.gas_animal_sprite ?? 0}
                             onChange={(v) =>
+                              Number.isFinite(Number(v)) &&
                               updateClustlet({
                                 roam: {
-                                  ...(project.body.clustlet.roam as RoamActionConfig),
+                                  ...(project.body.clustlet.roam ?? DEFAULT_BIT_ROAM),
                                   gas_animal_sprite: v === '' ? 0 : Number(v),
                                 },
                               })
@@ -2149,7 +2161,7 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
                           ? String(project.recordOverrides['missile.sprite'])
                           : project.missileSprite?.hideStock
                             ? '0'
-                            : project.missileSprite?.stockSprite || 'bazooka'
+                            : project.missileSprite?.stockSprite || String(field('missile.sprite', 'bazooka'))
                       }
                       onChange={(e) => {
                         const val = e.target.value;
@@ -2261,7 +2273,7 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
                 <label className="flex cursor-pointer items-center gap-1.5">
                   <input
                     type="checkbox"
-                    checked={!!project.recordOverrides['missile.trail.enabled']}
+                    checked={!!field('missile.trail.enabled', false)}
                     onChange={(e) => {
                       if (!e.target.checked) {
                         updateOverride('missile.trail.enabled', false);
@@ -2269,7 +2281,7 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
                       }
                       updateOverrides({
                         'missile.trail.enabled': true,
-                        ...(project.recordOverrides['missile.trail.power'] === undefined
+                        ...(field('missile.trail.power', undefined) === undefined
                           ? {
                               'missile.trail.power': 25,
                               'missile.trail.speed': 250,
@@ -2347,9 +2359,9 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
                   <NumberInput
                     min={1}
                     max={100}
-                    value={project.recordOverrides['missile.trail.power'] ?? 25}
+                    value={field('missile.trail.power', 25)}
                     onChange={(e) => updateOverride('missile.trail.power', Number(e.target.value))}
-                    disabled={!project.recordOverrides['missile.trail.enabled']}
+                    disabled={!field('missile.trail.enabled', false)}
                     className={inputClass}
                   />
                 </div>
@@ -2360,9 +2372,9 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
                     min={0}
                     max={1000}
                     step={10}
-                    value={project.recordOverrides['missile.trail.speed'] ?? 250}
+                    value={field('missile.trail.speed', 250)}
                     onChange={(e) => updateOverride('missile.trail.speed', Number(e.target.value))}
-                    disabled={!project.recordOverrides['missile.trail.enabled']}
+                    disabled={!field('missile.trail.enabled', false)}
                     className={inputClass}
                   />
                 </div>
@@ -2371,10 +2383,10 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
                   id="trail-sprite"
                   label="Trail Particle Sprite"
                   code="missile.trail.sprite"
-                  value={project.recordOverrides['missile.trail.sprite'] ?? 'smklt25'}
+                  value={field('missile.trail.sprite', 'smklt25')}
                   onChange={(v) => updateOverride('missile.trail.sprite', v)}
                   options={TRAIL_SPRITES}
-                  disabled={!project.recordOverrides['missile.trail.enabled']}
+                  disabled={!field('missile.trail.enabled', false)}
                   desc="Stock sprite name or ID; replaced if a custom trail sheet is uploaded. 0 disables the trail."
                 />
 
@@ -2388,11 +2400,11 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
                     min={0}
                     max={20}
                     step={0.25}
-                    value={project.recordOverrides['missile.trail.bubbles_per_second'] ?? 0}
+                    value={field('missile.trail.bubbles_per_second', 0)}
                     onChange={(e) =>
                       updateOverride('missile.trail.bubbles_per_second', Number(e.target.value))
                     }
-                    disabled={!project.recordOverrides['missile.trail.enabled']}
+                    disabled={!field('missile.trail.enabled', false)}
                     className={inputClass}
                   />
                 </div>
@@ -2419,7 +2431,7 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
               />
 
               <CheckboxCard
-                checked={!!project.recordOverrides['missile.impact_particles']}
+                checked={!!field('missile.impact_particles', false)}
                 onChange={(v) => updateOverride('missile.impact_particles', v)}
                 label="Holy Impact Particles"
                 code="missile.impact_particles"
@@ -2447,7 +2459,7 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
                   type="number"
                   min={0}
                   placeholder="e.g. 95 (0 = silent)"
-                  value={project.recordOverrides['missile.flight_sound'] ?? ''}
+                  value={field('missile.flight_sound', '')}
                   onChange={(e) => {
                     const val = e.target.value.trim();
                     updateOverride('missile.flight_sound', val === '' ? undefined : Number(val));
@@ -2466,7 +2478,7 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
                   type="number"
                   min={0}
                   placeholder="e.g. 42 (0 = none)"
-                  value={project.recordOverrides['missile.launch_sound'] ?? ''}
+                  value={field('missile.launch_sound', '')}
                   onChange={(e) => {
                     const val = e.target.value.trim();
                     updateOverride('missile.launch_sound', val === '' ? undefined : Number(val));
@@ -2485,7 +2497,7 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
                   type="number"
                   min={0}
                   placeholder="e.g. 110"
-                  value={project.recordOverrides['missile.bounce.sound'] ?? ''}
+                  value={field('missile.bounce.sound', '')}
                   onChange={(e) => {
                     const val = e.target.value.trim();
                     updateOverride('missile.bounce.sound', val === '' ? undefined : Number(val));
@@ -2581,7 +2593,7 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
               code="gun.hits"
               desc="Entities and terrain that raycast bullets collide with."
             />
-            {maskGrid('gun.hits', (project.recordOverrides['gun.hits'] || {}) as CollisionMask)}
+            {maskGrid('gun.hits', (field('gun.hits', undefined) || {}) as CollisionMask)}
           </div>
         </div>
       )}
@@ -2650,7 +2662,7 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
                   code="mine.detects"
                   desc="Entities that trip the mine's proximity sensor."
                 />
-                {maskGrid('mine.detects', (project.recordOverrides['mine.detects'] || {}) as CollisionMask)}
+                {maskGrid('mine.detects', (field('mine.detects', undefined) || {}) as CollisionMask)}
               </div>
             </>
           )}
@@ -2750,7 +2762,7 @@ export const RecordEditor: React.FC<RecordEditorProps> = ({
                     />
                     <select
                       id="utility-effect"
-                      value={String(project.recordOverrides['utility.effect'] ?? 'low_gravity')}
+                      value={String(field('utility.effect', 'low_gravity'))}
                       onChange={(e) => updateOverride('utility.effect', e.target.value)}
                       className={selectClass}
                     >
