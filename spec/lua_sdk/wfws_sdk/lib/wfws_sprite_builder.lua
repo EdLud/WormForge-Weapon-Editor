@@ -748,8 +748,8 @@ function M.flight(ctx, opts)
         end
         sweep_stale(now)
         deferred[id], deferred_at[id] = true, now
-        -- Either answer is ours to draw, so WA's sprite is hidden for the wait:
-        -- left alone, a burst showed WA's stock clustlet for this one frame. The
+        -- Either answer is ours to draw, so the stock sprite is hidden for the wait:
+        -- left alone, a burst showed the stock clustlet for this one frame. The
         -- id is kept as the state signal, as the first sight below keeps it,
         -- so a state that hands the missile back still restores it.
         if m.sprite ~= 0 then
@@ -878,7 +878,7 @@ function M.flight(ctx, opts)
           gravity = false, collide = false,
           -- No worm has the turn while a worm that lost control is still
           -- flying its shot, and a spawn without an owner errors: the bits
-          -- then flew with WA's sprite hidden and no art at all. The follower
+          -- then flew with the stock sprite hidden and no art at all. The follower
           -- only draws, so no team is the right owner when there is no worm.
           owner = owner or current_worm() or "none", on = gone(id, gen),
         }),
