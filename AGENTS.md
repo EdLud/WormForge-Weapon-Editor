@@ -498,9 +498,17 @@ The editor ships `spec/lua_sdk/wfws_sdk/` (id `wfws.sdk`), exporting
   and the exporter writes it (uploaded or `defaultArt`), so a declared path always
   exists. Behaviour art requires the primary builder; strikes have no builder path
   at all.
-- Known limits: a state does not revert when WA stops writing its sprite; a swap
-  respawns the follower (one-frame flicker); inert cluster pellets are drawn as
-  particles and never become missiles, so they get no builder art.
+- **A state switch keeps its follower** (`wfws.sdk` 0.16.6): `a:look(sheet)`
+  swaps the sheet on the same actor, so the engine's tweening keeps its history
+  and the switch frame moves like any other. A respawn had no history and held
+  for one frame. A new follower (launch, a split) still holds one frame, which
+  only a native missile-art verb can remove. With no turn worm the follower is
+  `owner = "none"` (a spawn without an owner errors, and the round flew bare),
+  and a burst bit waiting its one undecided frame has WA's sprite hidden, or
+  the stock clustlet showed for that frame.
+- Known limits: a state does not revert when WA stops writing its sprite; inert
+  cluster pellets are drawn as particles and never become missiles, so they get
+  no builder art.
 - UI: `HoldPreview.tsx` section 2, a 6-role hotbar (`Main`, `Home`, `Bits`,
   `HomeBit`, `Sheep`, `Dig`; unavailable slots greyed) with mode
   (`Native`/`Builder`/`Inherit`/`Probe`), upload, super-sheet slicing, animation,
@@ -2210,7 +2218,7 @@ melee strikes, the WFWS flight builder (primary, bits, timed homing, dig, roam),
 ribbon trail, explosion burst, the effect emitter, terrain stamp with impact,
 sequential fire, custom WAVs, pack art, the bundle reader (records, this editor's
 own features, and the code it does not model with its closure and art), the
-exporter and the pack bundle. `wfws.sdk` 0.16.5 and `effects.sdk` 0.4.3 ship
+exporter and the pack bundle. `wfws.sdk` 0.16.6 and `effects.sdk` 0.4.3 ship
 inside every export that needs them.
 
 Where the work stands. The detail lives in the file named beside each line, so this
