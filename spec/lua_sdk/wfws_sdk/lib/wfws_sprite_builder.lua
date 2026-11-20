@@ -869,7 +869,7 @@ function M.flight(ctx, opts)
       -- State changed: the same actor takes the new sheet. A new actor has no
       -- motion history, so its first frame drew untweened, a one-frame hold
       -- at every switch; `look` keeps the actor and so keeps its history.
-      -- The new state's cycle starts from its own first frame, as before.
+      -- The new state's cycle starts from its first frame, as before.
       f.actor:look(cfg.sheet)
       f.cfg = cfg
       cycl_phase[id] = nil
